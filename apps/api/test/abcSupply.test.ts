@@ -151,7 +151,7 @@ describe("ABC Supply", () => {
     abc.mockImplementation(async () => Response.json({ error: "invalid_client" }, { status: 401 }));
     await expect(requestToken({ ...KEYS, environment: "production" }, abc as never)).rejects.toThrow(/didn't accept that Client ID and secret for your real prices/);
     abc.mockImplementation(async () => Response.json({ error: "invalid_scope" }, { status: 400 }));
-    await expect(requestToken(KEYS, abc as never)).rejects.toThrow(/Individual Business/);
+    await expect(requestToken(KEYS, abc as never)).rejects.toThrow(/multiple ABC customers/);
     abc.mockImplementation(async () => { throw new Error("offline"); });
     await expect(requestToken(KEYS, abc as never)).rejects.toThrow(/Couldn't reach ABC Supply/);
   });

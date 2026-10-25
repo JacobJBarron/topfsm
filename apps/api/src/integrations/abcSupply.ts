@@ -110,7 +110,7 @@ const keysRefused = (environment: AbcEnvironment) =>
     ? "ABC Supply's sandbox didn't accept that Client ID and secret. Copy both again from your app in ABC's developer portal (Manage Applications, then Manage)."
     : "ABC Supply didn't accept that Client ID and secret for your real prices. Copy both again from your app in ABC's developer portal. If you only just sent ABC the Production Request, it can take a business day or two before they work; until then, try Sandbox.";
 const SCOPE_REFUSED =
-  "ABC Supply won't give this app prices. In ABC's developer portal, the app's Integration usage intent has to be Individual Business (for your own company), not a software company's. Make a new app that way and paste its keys.";
+  "ABC Supply won't give this app prices. It has to be an app for your own company, not a software company's: in ABC's developer portal, make a new app, answer No when ABC asks if it will be used by multiple ABC customers, and paste its keys.";
 
 /** A token for the app, from ABC's sign-in server (they last 30 minutes). */
 export async function requestToken(keys: AbcKeys, fetcher: FetchLike = fetch): Promise<{ access_token: string; expires_at: number }> {
@@ -298,7 +298,7 @@ export function defaultChoice(accounts: AbcAccount[]): { account: AbcAccount; br
 }
 
 const NO_ACCOUNTS: Record<AbcEnvironment, string> = {
-  sandbox: "ABC Supply's sandbox has no test accounts for this app. Check the app's Integration usage intent is Individual Business, or ask ABC's API support.",
+  sandbox: "ABC Supply's sandbox has no test accounts for this app. Check the app was made for your own company (No to being used by multiple ABC customers), or ask ABC's API support.",
   production:
     "ABC Supply accepted the keys, but no ABC account is linked to this app yet. On your app in ABC's developer portal, send the Production Request with your ABC account number and your myABCSupply email. ABC usually approves it in a business day or two.",
 };
