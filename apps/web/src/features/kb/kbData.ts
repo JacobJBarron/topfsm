@@ -29,7 +29,7 @@ export function useCategories() {
   const { company } = useSession();
   return useQuery({
     queryKey: ["kb", company.id, "categories"],
-    queryFn: async () => unwrap(await supabase().from("sop_categories").select("id, name, icon, sort").eq("company_id", company.id).order("sort").order("name")),
+    queryFn: async () => unwrap(await supabase().from("sop_categories").select("id, name, icon, sort, cover_path").eq("company_id", company.id).order("sort").order("name")),
   });
 }
 

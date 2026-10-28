@@ -2004,14 +2004,14 @@ isOneToOne: false
                   ]
                 },"sop_categories": {
                   Row: {
-                    "company_id": string,"created_at": string,"icon": string | null,"id": string,"name": string,"sort": number,"updated_at": string
+                    "company_id": string,"cover_path": string | null,"created_at": string,"icon": string | null,"id": string,"name": string,"sort": number,"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "company_id": string,"created_at"?: string,"icon"?: string | null,"id"?: string,"name": string,"sort"?: number,"updated_at"?: string
+                    "company_id": string,"cover_path"?: string | null,"created_at"?: string,"icon"?: string | null,"id"?: string,"name": string,"sort"?: number,"updated_at"?: string
                   }
                   Update: {
-                    "company_id"?: string,"created_at"?: string,"icon"?: string | null,"id"?: string,"name"?: string,"sort"?: number,"updated_at"?: string
+                    "company_id"?: string,"cover_path"?: string | null,"created_at"?: string,"icon"?: string | null,"id"?: string,"name"?: string,"sort"?: number,"updated_at"?: string
                   }
                   Relationships: [
                     {
