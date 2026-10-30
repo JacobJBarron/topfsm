@@ -54,6 +54,9 @@ export const TRIGGERS: TriggerDef[] = [
   { verb: "quote.lost", label: "A quote is marked lost", group: "Quotes", subject: "quote", delayable: true },
   { verb: "job.created", label: "A job is created", group: "Jobs", subject: "job", delayable: true },
   { verb: "job.completed", label: "A job is completed", group: "Jobs", subject: "job", delayable: true },
+  // A recurring job stays active, so it's never "completed": its third visit stands in, once
+  // (supabase/migrations/20261030000100_recurring_review_asks.sql).
+  { verb: "job.recurring_third_visit", label: "A recurring job's third visit is done", group: "Jobs", subject: "job", delayable: true },
   { verb: "visit.reminder", label: "A visit is tomorrow", group: "Visits", subject: "visit", delayable: false },
   { verb: "visit.en_route", label: "A crew is on the way", group: "Visits", subject: "visit", delayable: false },
   { verb: "visit.started", label: "A visit starts", group: "Visits", subject: "visit", delayable: false },

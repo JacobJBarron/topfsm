@@ -193,10 +193,15 @@ function Reviews() {
     queryKey: ["review-requests", session.company.id],
     queryFn: async () => unwrap(await supabase().from("review_requests").select("id, channel, status, sent_at, clicked_at, error, client:clients(id, display_name)").eq("company_id", session.company.id).order("sent_at", { ascending: false }).limit(50)),
   });
-  const rule = useQuery({
+  // A recurring job is never completed, so it has a starter rule of its own (its third visit).
+  const rules = useQuery({
     queryKey: ["automation-rules", session.company.id, "review"],
-    queryFn: async () => unwrap(await supabase().from("automation_rules").select("id, enabled").eq("company_id", session.company.id).eq("template_key", "review_after_job").maybeSingle()),
+    queryFn: async () => unwrap(await supabase().from("automation_rules").select("id, enabled, template_key").eq("company_id", session.company.id).in("template_key", ["review_after_job", "review_recurring"])),
   });
+  const reviewRules = [
+    { rule: rules.data?.find((r) => r.template_key === "review_after_job"), label: "After a job" },
+    { rule: rules.data?.find((r) => r.template_key === "review_recurring"), label: "Recurring work" },
+  ];
   const ask = useMutation({
     mutationFn: () => api.post<{ sent: boolean; link: string; detail: string }>("/reviews/request", { client_id: client!.id, channel }),
     onSuccess: (r) => {
@@ -256,11 +261,13 @@ function Reviews() {
         </form>
         <div className="card card-pad stack-sm">
           <strong>Ask automatically</strong>
-          <p className="muted text-sm" style={{ margin: 0 }}>A day after each job. At most once a month per client.</p>
-          {rule.data ? (
-            <Link to={`/automations/${rule.data.id}`} className="btn btn-sm" style={{ justifySelf: "start" }}>
-              <Icon name="bolt" size={14} />{rule.data.enabled ? "On · edit the rule" : "Off · set it up"}
-            </Link>
+          <p className="muted text-sm" style={{ margin: 0 }}>A day after each job, and on recurring work a day after its third visit, once for each job. At most once a month per client.</p>
+          {reviewRules.some((r) => r.rule) ? (
+            reviewRules.map(({ rule, label }) => rule && (
+              <Link key={rule.id} to={`/automations/${rule.id}`} className="btn btn-sm" style={{ justifySelf: "start" }}>
+                <Icon name="bolt" size={14} />{label} · {rule.enabled ? "On" : "Off, set it up"}
+              </Link>
+            ))
           ) : (
             <Link to="/automations/new" className="btn btn-sm" style={{ justifySelf: "start" }}><Icon name="bolt" size={14} />Create a rule</Link>
           )}
