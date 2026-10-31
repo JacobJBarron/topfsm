@@ -33,6 +33,7 @@ export function UninstallSummary({ winBacks, followUp }: { winBacks: number | nu
     "Review, referral and campaign links already sent",
     "Promo codes on quotes and online booking",
     "Referral credits clients have earned, or earn later from links already shared, on their invoices",
+    "Photo links already sent to Facebook, Instagram and Google, until they expire",
     followUp ? "Following up on sent quotes, which isn't marketing" : followUp === null ? "Following up on sent quotes, while its rule in Automations is on" : null,
   ].filter(Boolean) as string[];
   return (
@@ -44,10 +45,11 @@ export function UninstallSummary({ winBacks, followUp }: { winBacks: number | nu
         <li>Campaigns: scheduled ones go back to drafts, and one that's sending stops where it is</li>
         <li>Automated campaigns. {waitingWords(winBacks)}</li>
         <li>Bringing in Google reviews, and replying to them</li>
+        <li>Social posts: scheduled ones go back to drafts, and one that's posting stops before its next network</li>
       </ul>
       <p style={{ margin: 0 }}>These keep working:</p>
       <ul className="app-steps">{keeps.map((k) => <li key={k}>{k}</li>)}</ul>
-      <p style={{ margin: 0 }}>Your campaigns, promo codes, review requests, referrals and Google reviews are kept, and come back if you install it again.</p>
+      <p style={{ margin: 0 }}>Your campaigns, promo codes, review requests, referrals, Google reviews and social posts are kept, and come back if you install it again.</p>
     </div>
   );
 }

@@ -52,7 +52,7 @@ export async function deliverNotifications(env: Env, options: { minAgeSeconds?: 
   const url = (link: string | null) => (base && link ? `${base}${link}` : base || null);
   // Where several at once lead: a sub's job offers and pay to My jobs, Google reviews to Marketing →
   // Reviews, anything else home.
-  const batchLink = (items: Row[]) => (items.every((i) => i.kind === "jobs") ? "/field/jobs" : items.every((i) => notificationTopic(i.kind) === "reviews") ? "/marketing?tab=reviews" : "/");
+  const batchLink = (items: Row[]) => (items.every((i) => i.kind === "jobs") ? "/field/jobs" : items.every((i) => notificationTopic(i.kind) === "reviews") ? "/marketing?tab=reviews" : items.every((i) => notificationTopic(i.kind) === "social") ? "/marketing?tab=social" : "/");
   // Low ratings first: those are the reviews to answer before the rest. Otherwise as they came.
   const lowFirst = (items: Row[]) => [...items].sort((a, b) => Number(b.kind === "review_low") - Number(a.kind === "review_low"));
 

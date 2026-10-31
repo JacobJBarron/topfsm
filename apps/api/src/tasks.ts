@@ -20,18 +20,20 @@ import { emitInactiveClients } from "./services/automatedCampaigns";
 import { processAutomations } from "./services/automations";
 import { processCampaigns } from "./services/campaigns";
 import { syncDueReviews } from "./services/googleReviews";
+import { checkMetaAccess, postDueSocial, tidySocialImages } from "./services/social";
 import { sendDueReminders } from "./services/reviews";
 import { deliverNotifications } from "./services/delivery";
 import { remindSubs } from "./services/subs";
 import { dailyOutlook } from "./services/external";
 import { autoRoutes } from "./services/routes";
 
-export const TASKS = ["automations", "campaigns", "notify", "outbox", "calendars", "recurrence", "followups", "weather", "address", "railway", "hosting", "plans", "trash", "storage", "routes", "website", "reviews", "inactive", "review_sync"] as const;
+export const TASKS = ["automations", "campaigns", "notify", "outbox", "calendars", "recurrence", "followups", "weather", "address", "railway", "hosting", "plans", "trash", "storage", "routes", "website", "reviews", "inactive", "review_sync", "social"] as const;
 export type TaskName = (typeof TASKS)[number];
 
 /** Cron expressions -> tasks, run by server.ts's scheduler. */
 export const CRON_TASKS: Record<string, TaskName[]> = {
-  "* * * * *": ["automations", "campaigns", "notify"],
+  // Social posts whose time has come (services/social.ts), one claim at a time.
+  "* * * * *": ["automations", "campaigns", "notify", "social"],
   "*/2 * * * *": ["address"],
   // Review reminders go at 1:30pm in each company's time zone (services/reviews.ts).
   "*/5 * * * *": ["outbox", "reviews"],
@@ -88,6 +90,9 @@ export async function runTask(name: TaskName, env: Env): Promise<Record<string, 
         applicants: await tidyApplicantFiles(admin),
         // Guide covers, and quote and visit photos, uploaded for a save that failed.
         photos: await tidyUnrecordedFiles(admin),
+        // Social posts' pictures whose links ran out, and each Page's sign-in, read from Meta.
+        social: await tidySocialImages(admin),
+        meta: await checkMetaAccess(env, admin),
       };
     }
     case "trash":
@@ -104,6 +109,8 @@ export async function runTask(name: TaskName, env: Env): Promise<Record<string, 
       return emitInactiveClients(env);
     case "review_sync":
       return syncDueReviews(env);
+    case "social":
+      return postDueSocial(env);
   }
 }
 

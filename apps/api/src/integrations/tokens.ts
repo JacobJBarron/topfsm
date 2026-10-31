@@ -21,8 +21,8 @@ export interface StoredSecret {
   extra?: Record<string, string>;
 }
 
-/** What a company's own app at the provider leaves in `extra`, and keeps when it disconnects. */
-const APP_KEY_FIELDS = ["client_id", "client_secret", "environment", "accounts_server"] as const;
+/** What a company's own app at the provider leaves in `extra`, and keeps when it disconnects (Meta's Configuration ID too). */
+const APP_KEY_FIELDS = ["client_id", "client_secret", "environment", "accounts_server", "config_id"] as const;
 
 /** A company's own app keys from a stored secret, without its tokens. Empty when it has none. */
 export function appKeysOf(extra: Record<string, string> | undefined): Record<string, string> {

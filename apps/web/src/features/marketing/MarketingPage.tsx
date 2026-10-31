@@ -1,6 +1,6 @@
 /**
  * Marketing (Apps → Crewtavo - Marketing): campaigns (the automated ones, AutomatedCampaigns, and
- * one-off emails to client segments, with what each brought in), promo codes, Google review requests
+ * one-off emails to client segments, with what each brought in), social posts (Social), promo codes, Google review requests
  * (Reviews) and referral credits and asks (Referrals), and visits to the business's website once
  * Website Analytics is installed (WebsiteSection). Uninstalled, the page says so, and still shows website
  * visits when Website Analytics is installed (Home and Website Analytics open them here).
@@ -28,9 +28,10 @@ import { resultsSummary, useCampaignResults } from "./CampaignResults";
 import { PromoCodes } from "./PromoCodes";
 import { Referrals } from "./Referrals";
 import { Reviews } from "./Reviews";
+import { Social } from "./Social";
 import { analyticsOn } from "./website";
 
-type Tab = "campaigns" | "promos" | "reviews" | "referrals" | "website";
+type Tab = "campaigns" | "social" | "promos" | "reviews" | "referrals" | "website";
 // Charts load with the tab, not with the rest of Marketing.
 const WebsiteSection = lazy(() => import("./WebsiteSection").then((m) => ({ default: m.WebsiteSection })));
 
@@ -76,12 +77,14 @@ export function MarketingPage() {
       )}
       <div className="underline-tabs" role="tablist">
         <button type="button" role="tab" aria-selected={tab === "campaigns"} onClick={() => setTab("campaigns")}><Icon name="mail" size={16} />Campaigns</button>
+        <button type="button" role="tab" aria-selected={tab === "social"} onClick={() => setTab("social")}><Icon name="share" size={16} />Social</button>
         <button type="button" role="tab" aria-selected={tab === "promos"} onClick={() => setTab("promos")}><Icon name="tag" size={16} />Promo codes</button>
         <button type="button" role="tab" aria-selected={tab === "reviews"} onClick={() => setTab("reviews")}><Icon name="star" size={16} />Reviews</button>
         <button type="button" role="tab" aria-selected={tab === "referrals"} onClick={() => setTab("referrals")}><Icon name="gift" size={16} />Referrals</button>
         {website && <button type="button" role="tab" aria-selected={tab === "website"} onClick={() => setTab("website")}><Icon name="globe" size={16} />Website</button>}
       </div>
       {tab === "campaigns" && <Campaigns />}
+      {tab === "social" && <Social />}
       {tab === "promos" && <PromoCodes />}
       {tab === "reviews" && <Reviews />}
       {tab === "referrals" && <Referrals />}
@@ -106,7 +109,7 @@ function MarketingOff() {
       <PageHeader title="Marketing" />
       <div className="card">
         <EmptyState icon="marketing" title="Marketing is off" action={canTurnOn && <Link className="btn btn-primary" to="/apps/marketing">Install Marketing</Link>}>
-          {canTurnOn ? "Ask happy clients for reviews and referrals, and send campaigns. Install it to bring back everything you had." : "Ask an owner or admin to install Marketing from Apps."}
+          {canTurnOn ? "Ask happy clients for reviews and referrals, send campaigns and post to your social pages. Install it to bring back everything you had." : "Ask an owner or admin to install Marketing from Apps."}
           {" "}Referral credits clients have earned, or earn later from links already shared, still go on their invoices.
           {followUp?.enabled && <>{" "}Following up on sent quotes keeps going.</>}
           {followUp?.enabled && can(session, "automations") && <>{" "}<Link to={`/automations/${followUp.rule_id}`}>Turn it off in Automations</Link>.</>}

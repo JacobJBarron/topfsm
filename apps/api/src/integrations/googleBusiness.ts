@@ -11,6 +11,7 @@
 import type { LocationProblem } from "@crewtavo/core/reviews";
 import type { Env } from "../env";
 import type { Db } from "../lib/supabase";
+import { SentButUnrecorded } from "./accounting";
 import { IntegrationError } from "./registry";
 import { accessToken, SignInRefused } from "./tokens";
 
@@ -85,24 +86,26 @@ export function googleProblem(status: number, body: unknown, scope: "list" | "lo
   return problem("error");
 }
 
-/** A call to Google as the company's sign-in, which gives up after 20 seconds. */
-async function gbp(env: Env, admin: Db, companyId: string, url: string, init: { method?: "GET" | "PUT" | "DELETE"; body?: unknown; scope?: "list" | "location"; token?: string } = {}): Promise<GoogleJson | null> {
-  let token = init.token;
-  if (!token) {
-    try {
-      ({ token } = await accessToken(env, admin, companyId, "google_business"));
-    } catch (error) {
-      if (error instanceof SignInRefused || (error instanceof IntegrationError && /isn't connected|reconnected/.test(error.message))) {
-        throw new GoogleBusinessError("signin", 401, error.message);
-      }
-      throw error;
+/** The company's Google sign-in, refreshed when it's about to run out. One that needs Reconnect is a "signin" problem. */
+export async function googleToken(env: Env, admin: Db, companyId: string): Promise<string> {
+  try {
+    return (await accessToken(env, admin, companyId, "google_business")).token;
+  } catch (error) {
+    if (error instanceof SignInRefused || (error instanceof IntegrationError && /isn't connected|reconnected/.test(error.message))) {
+      throw new GoogleBusinessError("signin", 401, error.message);
     }
+    throw error;
   }
+}
+
+/** A call to Google as the company's sign-in, which gives up after 20 seconds. */
+async function gbp(env: Env, admin: Db, companyId: string, url: string, init: { method?: "GET" | "PUT" | "POST" | "DELETE"; body?: unknown; scope?: "list" | "location"; token?: string; timeoutMs?: number } = {}): Promise<GoogleJson | null> {
+  const token = init.token ?? (await googleToken(env, admin, companyId));
   const response = await fetch(url, {
     method: init.method ?? "GET",
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json", ...(init.body ? { "Content-Type": "application/json" } : {}) },
     body: init.body ? JSON.stringify(init.body) : undefined,
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.timeout(init.timeoutMs ?? 20_000),
   });
   if (response.status === 204) return null;
   const json = (await response.json().catch(() => ({}))) as GoogleJson;
@@ -258,4 +261,58 @@ export async function describeGoogleBusiness(env: Env, admin: Db, companyId: str
     if (error instanceof GoogleBusinessError) return { accounts: null, problem: error };
     return { accounts: null, problem: new GoogleBusinessError("error", 0, error instanceof Error ? error.message : String(error)) };
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Posts (Marketing → Social, services/social.ts)
+// ---------------------------------------------------------------------------------------------
+
+/** A post that may have reached Google and got no answer: checked, never sent again by itself. */
+export class GoogleMaySent extends SentButUnrecorded {
+  override name = "GoogleMaySent";
+}
+
+export interface LocalPost {
+  name: string;
+  /** The post's link on Google Search. */
+  searchUrl: string | null;
+  /** LIVE, PROCESSING or REJECTED. */
+  state: string | null;
+  summary: string;
+  createTime: number;
+}
+
+const localPostOf = (raw: GoogleJson): LocalPost => ({
+  name: String(raw.name ?? ""),
+  searchUrl: httpsOnly(raw.searchUrl),
+  state: typeof raw.state === "string" ? raw.state : null,
+  summary: String(raw.summary ?? ""),
+  createTime: Date.parse(String(raw.createTime ?? "")) || 0,
+});
+
+/**
+ * A post on the location's Business Profile (v4 localPosts, topicType STANDARD), with one photo
+ * Google fetches from `photoUrl`, or words alone. `parent` is accounts/…/locations/…, and `token` the
+ * sign-in (googleToken), got first so that a refresh going wrong is never taken for a post that may
+ * have gone. Gives up after 30 seconds; no answer after sending, or a server error, is GoogleMaySent.
+ */
+export async function createLocalPost(env: Env, admin: Db, companyId: string, parent: string, post: { summary: string; photoUrl?: string | null }, token: string): Promise<LocalPost> {
+  const body: GoogleJson = { languageCode: "en", topicType: "STANDARD", summary: post.summary };
+  if (post.photoUrl) body.media = [{ mediaFormat: "PHOTO", sourceUrl: post.photoUrl }];
+  try {
+    return localPostOf((await gbp(env, admin, companyId, `${V4}/${parent}/localPosts`, { method: "POST", body, scope: "location", timeoutMs: 30_000, token }))!);
+  } catch (error) {
+    // Google may have made the post before its server went wrong.
+    if (error instanceof GoogleBusinessError && error.status >= 500) throw new GoogleMaySent(`Google answered ${error.status}, so the post may have gone.`);
+    if (error instanceof GoogleBusinessError || error instanceof IntegrationError) throw error;
+    const cause = (error as { cause?: { code?: string } })?.cause?.code;
+    if (cause && ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"].includes(cause)) throw new GoogleBusinessError("busy", 0, "Couldn't reach Google just now.");
+    throw new GoogleMaySent("Google didn't answer, so the post may have gone.");
+  }
+}
+
+/** The location's latest posts, to find one that may have gone up after a timeout. Read only. */
+export async function recentLocalPosts(env: Env, admin: Db, companyId: string, parent: string, token?: string): Promise<LocalPost[]> {
+  const json = await gbp(env, admin, companyId, `${V4}/${parent}/localPosts?pageSize=20`, { scope: "location", token });
+  return Array.isArray(json?.localPosts) ? json!.localPosts.map(localPostOf) : [];
 }

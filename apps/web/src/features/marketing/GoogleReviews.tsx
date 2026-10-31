@@ -14,7 +14,7 @@
 import { REPLY_MAX, replyTimeWords, responseRate, reviewerName, starsLabel, type ReviewMonth } from "@crewtavo/core/reviews";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/Button";
 import { confirm } from "@/components/ui/Confirm";
 import { Dialog } from "@/components/ui/Dialog";
@@ -382,6 +382,7 @@ function ReviewRow({ review: r, names, highlight, live, onMatch, onNotThem, onCh
   onNotThem: () => void;
   onChanged: () => void;
 }) {
+  const navigate = useNavigate();
   const [more, setMore] = useState(false);
   const [broken, setBroken] = useState(false);
   const known = reviewerName(r);
@@ -409,6 +410,8 @@ function ReviewRow({ review: r, names, highlight, live, onMatch, onNotThem, onCh
             items={[
               { label: r.client ? "Match to another client…" : "Match to a client…", icon: "user", onSelect: onMatch },
               { label: "Not this client", icon: "x", hidden: !r.client, onSelect: onNotThem },
+              // A 4 or 5-star review with words can be posted as a card (Marketing → Social).
+              { label: "Post on social", icon: "share", hidden: (r.rating ?? 0) < 4 || !text.trim(), onSelect: () => navigate(`/marketing?tab=social&compose=review&review=${r.id}`) },
             ]}
           />
         </div>

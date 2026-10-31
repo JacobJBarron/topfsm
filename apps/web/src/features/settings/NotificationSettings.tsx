@@ -32,7 +32,8 @@ const OFF_RAILWAY_HOSTING = { label: "Storage", hint: "When the company's files 
 
 /**
  * Google reviews go to owners, admins and office staff with the marketing area, and Google Business
- * Profile needing someone to owners and admins who connect apps, while Marketing is installed.
+ * Profile needing someone to owners and admins who connect apps, while Marketing is installed. Social
+ * posts reach the same people (Facebook & Instagram needing a sign-in goes to those who connect apps).
  */
 const reviewNotices = (session: Session) => reviewNoticesFor(session, marketingOn(session.company.settings));
 
@@ -48,7 +49,7 @@ function topicsFor(session: Session) {
     );
   }
   const reviews = reviewNotices(session);
-  return NOTIFICATION_TOPICS.filter((t) => t.key !== "jobs" && (t.key !== "chat" || chatOn(session)) && (t.key !== "hosting" || hostingWarnings(session)) && (t.key !== "subs" || managesSubs(session)) && (t.key !== "reviews" || reviews)).map((t) =>
+  return NOTIFICATION_TOPICS.filter((t) => t.key !== "jobs" && (t.key !== "chat" || chatOn(session)) && (t.key !== "hosting" || hostingWarnings(session)) && (t.key !== "subs" || managesSubs(session)) && (t.key !== "reviews" || reviews) && (t.key !== "social" || reviews)).map((t) =>
     t.key === "hosting" && session.config.platform !== "railway" ? { ...t, ...OFF_RAILWAY_HOSTING } : t.key === "reviews" && reviews === "access" ? { ...t, hint: REVIEW_ACCESS_HINT } : t,
   );
 }

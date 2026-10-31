@@ -51,6 +51,7 @@ import { fromBase64Url, signToken, verifyToken } from "../lib/crypto";
 import { appUrl, asJson, dbError, HttpError, must, readJson, uuid } from "../lib/http";
 import { allow } from "../lib/limit";
 import { clientLink, readClientLink, type LinkKind } from "../lib/links";
+import { storedFile } from "../lib/storedFile";
 import { adminClient } from "../lib/supabase";
 import { clientIp } from "../lib/visitor";
 import { buildCalendar } from "../lib/ics";
@@ -1018,42 +1019,6 @@ publicRoutes.post("/hub/:token/message", async (c) => {
   return c.json({ ok: true }, 201);
 });
 
-/**
- * A file from the files bucket, read only up to `max` bytes: null when it isn't there or is larger,
- * which is never read whole. These routes answer anyone, and the folders they read can hold what a
- * member uploads straight to Storage (up to its 200 MB limit), so a request never makes the server
- * hold more than a picture's worth.
- */
-async function storedFile(admin: ReturnType<typeof adminClient>, path: string, max: number): Promise<Uint8Array | null> {
-  const { data, error } = await admin.storage.from("files").download(path).asStream();
-  if (error || !data) return null;
-  const reader = data.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > max) {
-        await reader.cancel();
-        return null;
-      }
-      chunks.push(value);
-    }
-  } catch {
-    // Storage stopped partway: as good as not there.
-    return null;
-  }
-  const bytes = new Uint8Array(size);
-  let at = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  return bytes;
-}
-
 /** A map drawing's picture is a JPEG of the map (MeasurePage), a few hundred KB to a few MB. */
 const DRAWING_MAX_BYTES = 20_000_000;
 
@@ -1090,6 +1055,24 @@ publicRoutes.get("/public/logo/:company/:file", async (c) => {
   const current = path === `${companyId}/logo/${file}.png`;
   return c.body(bytes, 200, { "Content-Type": "image/png", "Cache-Control": current ? "public, max-age=31536000, immutable" : "public, max-age=3600" });
 });
+
+// A social post's picture (services/social.ts), fetched by Meta and Google when they post it: by its
+// random token alone, so it names nothing and can't be guessed, and only until 7 days after the post
+// finishes. An unknown token and an expired one are the same 404. It doesn't ask whether Marketing is
+// installed: links already given out keep working until they expire.
+publicRoutes.on(["GET", "HEAD"], "/public/social/:file", async (c) => {
+  const file = c.req.param("file") ?? "";
+  if (!/^[A-Za-z0-9_-]{32}\.jpg$/.test(file)) throw new HttpError(404, "Picture not found.");
+  const admin = adminClient(c.env);
+  const { data } = await admin.from("social_post_images").select("path").eq("token", file.slice(0, 32)).gt("expires_at", new Date().toISOString()).maybeSingle();
+  const bytes = data ? await storedFile(admin, data.path, SOCIAL_IMAGE_MAX_BYTES) : null;
+  if (!bytes || !isJpeg(bytes)) throw new HttpError(404, "Picture not found.");
+  const headers = { "Content-Type": "image/jpeg", "Content-Length": String(bytes.length), "X-Content-Type-Options": "nosniff", "X-Robots-Tag": "noindex", "Cache-Control": "public, max-age=3600" };
+  return c.req.method === "HEAD" ? c.body(null, 200, headers) : c.body(bytes, 200, headers);
+});
+
+/** Instagram takes pictures up to 8 MB, Facebook 10: the server makes them far smaller. */
+const SOCIAL_IMAGE_MAX_BYTES = 8_000_000;
 
 // A picture of the business's own letterhead (services/letterhead.ts), on its estimates and invoices
 // on the Client Hub. Any it ever added, so a signed estimate keeps the letterhead it was signed on. A

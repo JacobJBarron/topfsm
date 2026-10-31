@@ -9,7 +9,7 @@ import type { SnapshotLine } from "@crewtavo/core/estimates";
 import { useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, supabase, unwrap } from "@/lib/api";
-import { signedUrls, uploadFile } from "@/lib/files";
+import { signedUrls, storedType, uploadFile } from "@/lib/files";
 import { useSession } from "@/lib/session";
 import { toast } from "@/lib/toast";
 import { IN_TRASH } from "../../drive/trash";
@@ -617,7 +617,7 @@ export function useNoteActions(quoteId: string) {
           const path = await uploadFile(company.id, `quote/${quoteId}`, file);
           const { error } = await supabase()
             .from("attachments")
-            .insert({ company_id: company.id, owner_type: "quote", owner_id: quoteId, path, file_name: file.name.slice(0, 200) || "photo.jpg", content_type: file.type || "image/jpeg", size_bytes: file.size });
+            .insert({ company_id: company.id, owner_type: "quote", owner_id: quoteId, path, file_name: file.name.slice(0, 200) || "photo.jpg", content_type: storedType(path, file), size_bytes: file.size });
           if (error) throw new Error(error.message);
           saved++;
         } catch (error) {

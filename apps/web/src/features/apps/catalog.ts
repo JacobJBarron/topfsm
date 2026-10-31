@@ -30,14 +30,38 @@ export interface AppRow {
   stripe?: { own: boolean; webhook: boolean; livemode: boolean; import: StripeImport | null };
   /** QuickBooks and Zoho Books: the company can sign in with its own app there (AppKeysCard). */
   takes_app_keys?: boolean;
-  /** That app's keys, once saved (never the secret). */
-  app_keys?: { client_id: string; sandbox: boolean; accounts_server: string | null } | null;
+  /** That app's keys, once saved (never the secret). Meta's Configuration ID too, if there is one. */
+  app_keys?: { client_id: string; sandbox: boolean; accounts_server: string | null; config_id?: string | null } | null;
   /** Sveltia CMS: the website's editor, once its address is added. */
   website?: WebsiteSite | null;
   /** ABC Supply, once it's connected: the account and branch prices come from, and the others to pick. */
   supplier?: SupplierSettings | null;
   /** Google Business Profile: the location reviews come from and what's in the way (routes/apps.ts). */
   google_business?: GoogleBusinessState;
+  /** Facebook & Instagram: the Page and Instagram account posts go to, and what's in the way. */
+  meta?: MetaState;
+}
+
+export interface MetaState {
+  page: { id: string; name: string | null; picture: string | null } | null;
+  instagram: { id: string; username: string | null } | null;
+  /** The Instagram account linked to the Page, whether or not posts go to it. */
+  page_instagram: { id: string; username: string | null } | null;
+  pages: number | null;
+  /** Permissions posting needs that weren't granted. */
+  missing: string[];
+  /** signin (Reconnect), pick (a Page to pick), permissions, or null. */
+  problem: "signin" | "pick" | "permissions" | null;
+  /** A Page in a business portfolio: Instagram needs ads_management and ads_read too. */
+  needs_business_permissions: boolean;
+  live_confirmed_at: string | null;
+  /** When Meta asks for a new sign-in (Unix seconds). */
+  data_access_expires_at: number | null;
+  /** The 60-day sign-in ran out: posting goes on, but changing the Page needs a new sign-in. */
+  user_token_expired: boolean;
+  user_name: string | null;
+  scheduled_posts: number;
+  marketing_on: boolean;
 }
 
 export interface GoogleBusinessState {
@@ -265,13 +289,14 @@ export const APP_INFO: Record<string, AppInfo> = {
   },
   marketing: {
     developer: "Crewtavo",
-    tagline: "Reviews, referrals and campaigns that bring in work",
+    tagline: "Reviews, referrals, campaigns and social posts that bring in work",
     about:
-      "Turn happy clients into more work. Crewtavo asks for a Google review after a job, a visit or a paid invoice, whichever you choose, by text, email or both. Anyone who hasn't opened the link gets up to two reminders, and no client is asked automatically more than once every six months. Every client has a referral link to share, an email can ask for referrals a week after a job, and they get a $ or % credit on their next invoice once the friend pays their first one. Automated campaigns send by themselves: re-engage clients who haven't had a visit in a year, win back lost quotes and follow up on quotes nobody has answered. One-off email campaigns go to the clients you pick, by status, tags, city, the services they've had, their recurring work or time since their last visit, with promo codes and one-click unsubscribe. Every campaign shows who opened it, who clicked and the work it brought in. Clients who opt out aren't asked, and anyone who texts STOP gets no more texts.",
+      "Turn happy clients into more work. Crewtavo asks for a Google review after a job, a visit or a paid invoice, whichever you choose, by text, email or both. Anyone who hasn't opened the link gets up to two reminders, and no client is asked automatically more than once every six months. Every client has a referral link to share, an email can ask for referrals a week after a job, and they get a $ or % credit on their next invoice once the friend pays their first one. Automated campaigns send by themselves: re-engage clients who haven't had a visit in a year, win back lost quotes and follow up on quotes nobody has answered. One-off email campaigns go to the clients you pick, by status, tags, city, the services they've had, their recurring work or time since their last visit, with promo codes and one-click unsubscribe. Every campaign shows who opened it, who clicked and the work it brought in. Post job photos your crew marks OK to share, and 5-star Google reviews as a picture, to your Facebook Page, Instagram and Google Business Profile, now or later, or have new 5-star reviews post by themselves. Clients who opt out aren't asked, and anyone who texts STOP gets no more texts.",
     highlights: [
       { icon: "star", title: "Reviews", text: "Ask after a job, a visit or a paid invoice, with up to two reminders for anyone who hasn't opened the link." },
       { icon: "gift", title: "Referrals", text: "A link for every client, an email asking for referrals after a job, and a $ or % credit on their next invoice once the friend pays." },
       { icon: "mail", title: "Campaigns", text: "Re-engage past clients, win back lost quotes and close pending quotes by themselves, or email the clients you pick, and see opens, clicks and the work they bring in." },
+      { icon: "share", title: "Social", text: "Post job photos and 5-star reviews to Facebook, Instagram and Google, now or later, with a caption Claude can draft." },
     ],
     access: [
       "Show Marketing in the menu to owners, admins and office staff with the marketing area",
@@ -279,6 +304,7 @@ export const APP_INFO: Record<string, AppInfo> = {
       "Leave out clients who opted out of marketing or reviews, and texts to anyone who texted STOP",
       "Put referral credits clients earn on their next invoices",
       "Count opens and clicks on campaign and quote follow-up emails, with a tracking image and tracked links",
+      "Post photos marked OK to share and 5-star reviews to the pages you connect, never with a client's name or address",
       "Uninstalling hides Marketing and stops every automatic message it sends to clients, and keeps everything",
     ],
     connectsWith: "Your email and Twilio",
@@ -299,6 +325,7 @@ export const APP_INFO: Record<string, AppInfo> = {
       "See your business's locations",
       "Read your reviews",
       "Post, change and delete the replies you write here, publicly on Google",
+      "Post to your Business Profile when you post from Marketing → Social",
       "It can't change or remove your reviews",
       "Needs Crewtavo - Marketing",
       "Uninstalling stops bringing reviews in and keeps the ones already here",
@@ -307,6 +334,27 @@ export const APP_INFO: Record<string, AppInfo> = {
     // Google's own page until Crewtavo's docs page for it is written (docs/marketing-plan.md).
     website: "https://www.google.com/business/",
     open: "/marketing?tab=reviews",
+  },
+  meta: {
+    developer: "Meta",
+    tagline: "Post to your Facebook Page and Instagram",
+    about:
+      "Post job photos your crew marks OK to share, and 5-star Google reviews as a square picture, to your Facebook Page and its Instagram account from Marketing → Social, now or at a time you pick. Claude can draft the caption, and posts never name a client or show their address: photos go up without their location. New 5-star reviews can post by themselves, a few a day, with time to change or cancel each one. It connects through a Meta app you make for your own business in about ten minutes, so nobody else's app sits between you and your Page.",
+    highlights: [
+      { icon: "camera", title: "Job photos", text: "Pick up to 10 photos marked OK to share. Instagram gets them padded to fit, never cropped." },
+      { icon: "star", title: "Reviews as pictures", text: "A 5-star review becomes a square card in your brand colour, with the reviewer's first name and last initial." },
+      { icon: "calendar", title: "Now or later", text: "Schedule posts, change or cancel them before they go, and see each one's link or what went wrong." },
+    ],
+    access: [
+      "Post photos and reviews to the Page and Instagram account you pick, when someone posts or schedules one (or automatic posts are on)",
+      "See the Pages you manage and the Instagram accounts linked to them",
+      "It can't read your messages, comments or ads",
+      "Needs Crewtavo - Marketing",
+      "Uninstalling signs your Meta app out of your Page and keeps the posts already made",
+    ],
+    connectsWith: "Your own Meta app",
+    website: "https://developers.facebook.com/docs/development/create-an-app/",
+    open: "/marketing?tab=social",
   },
   google_calendar: {
     developer: "Google",

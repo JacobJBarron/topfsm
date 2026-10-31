@@ -11,7 +11,12 @@ results, is built (`20261031000200_automated_campaigns.sql`, `20261031000210_cam
 `packages/core/src/campaigns.ts`, Marketing → Campaigns). Phase D, Google reviews, is built
 (`20261031000300_google_reviews.sql`, `20261031000310_review_notifications.sql`, `20261031000320_review_stats.sql`,
 `20261031000330_google_review_fixes.sql`, `20261031000340_review_match_choices.sql`, `packages/core/src/reviews.ts`, `apps/api/src/integrations/googleBusiness.ts`, `apps/api/src/services/googleReviews.ts`,
-`apps/api/src/routes/googleReviews.ts`, Apps → Google Business Profile, Marketing → Reviews). Phase E isn't. This is the plan.
+`apps/api/src/routes/googleReviews.ts`, Apps → Google Business Profile, Marketing → Reviews). Phase E, social posting, is built
+(`20261031000400_ok_to_share.sql`, `20261031000410_social_posts.sql`, `20261031000420_automatic_review_posts.sql`,
+`20261031000430_social_notifications.sql`, `20261031000440_social_post_fixes.sql`, `20261031000450_social_post_words.sql`, `packages/core/src/social.ts`, `apps/api/src/integrations/meta.ts`,
+`apps/api/src/services/social.ts`, `apps/api/src/services/metaConnect.ts`, `apps/api/src/routes/social.ts`,
+`apps/api/src/lib/shareImage.ts`, `apps/api/src/lib/reviewCard.ts`, Apps → Facebook & Instagram, Marketing → Social, OK to share on
+photos). This is the plan.
 
 The goal: Crewtavo's own version of Jobber's Marketing Suite (Reviews, Referrals, Campaigns and
 social posting), following how Jobber does each one, shipped as one built-in app in Apps that owns
@@ -74,7 +79,7 @@ How, in the code that's there:
 - **The tabs, modeled on Jobber's Marketing area in Crewtavo's own look:**
   - **Overview:** the numbers that are there today, plus referral revenue and campaign revenue.
   - **Reviews**, **Referrals** and **Campaigns:** below.
-  - **Social:** phase E.
+  - **Social:** posts to Facebook, Instagram and Google Business Profile (phase E, between Campaigns and Promo codes).
   - **Promo codes:** as today.
   - **Website:** visits, from the Website Analytics app, as today.
 
@@ -571,19 +576,198 @@ counted.
   until `crewtavo.com/docs/connections/google-business-profile/` is written in crewtavo-website.
 - **No competitor comparison** (Google's Places API charges per lookup).
 
-### 5. Social posting (phase E)
+### 5. Social posting (phase E, built)
 
-- **Posts to Facebook and Instagram** through the business's own Meta app. Meta doesn't review an
-  app whose admins only post to their own Page, and setup takes about ten minutes with a step-by-step
-  guide.
-- **Posts to Google Business Profile** once phase D's app is connected.
+- **Posts to Facebook and Instagram** through the business's own Meta app. There's no Crewtavo Meta
+  app: each business makes one at developers.facebook.com (about ten minutes, with the guide on the
+  app's page), and Meta doesn't review an app whose admins only post to their own Page, since
+  Standard Access works for people with a role on it.
+- **Posts to Google Business Profile** with phase D's connection (`localPosts`, the same
+  `business.manage` scope), once Google has approved access and a location is in use.
 - **What gets posted:**
-  - 5★ reviews, once phase D brings them in
-  - job photos the crew or office marked **OK to share**
-  - a caption drafted with the Anthropic key
-  - posts can be scheduled
-- **A Share button for X, LinkedIn or anywhere else.** Neither Jobber nor this plan posts to them
-  directly.
+  - photos the crew or office marked **OK to share** (1 to 10), as one post or a carousel
+  - a 4 or 5-star Google review as a square card (`lib/reviewCard.ts`)
+  - words alone, for Facebook and Google (Instagram needs a picture)
+  - a caption a person writes, or drafts with **Suggest a caption** (the company's Claude key); Google
+    needs one to post, so **Post now** and **Schedule post** wait for it there (a draft doesn't)
+  - now, or scheduled to a date and time in the company's time zone
+- **Photos picked before the composer opens** (a post being changed, **Post these photos** on a job's
+  or client's page) are read by id (`GET /social/photos/picked`), so they show in the preview and can
+  be taken off even when they aren't among the 48 newest. Any that can't be posted anymore (not OK to
+  share, the client said no, gone) are taken off, saying why. A network a post being changed can't
+  post to anymore (Facebook & Instagram disconnected, Google not ready) is taken off the same way.
+- **A Share button for X, LinkedIn or anywhere else** (**Share elsewhere**): the pictures as they post
+  (without their location) and the caption, through the browser's share sheet where it takes files,
+  otherwise a download for each picture and **Copy caption**. Neither Jobber nor Crewtavo posts to them.
+
+What was decided building it:
+
+- **Verified against Meta's and Google's docs (31 October 2026).** Graph API v26.0 (29 July 2026), set
+  once (`GRAPH_VERSION`, `integrations/metaConfig.ts`). The short-lived token is swapped for a
+  long-lived one (`fb_exchange_token`, about 60 days); `/me/accounts` with it gives Page tokens that
+  don't expire. Facebook photos through `/{page}/photos` (`url`, `caption`), several as unpublished
+  photos attached to a `/{page}/feed` post, words alone through `/feed`. Instagram through
+  `/{ig-user}/media` (JPEG only, 4:5 to 1.91:1, up to 1440 px across; carousels of item containers)
+  and `/media_publish`, its daily limit read each time from `content_publishing_limit` (Meta's own
+  pages give 50 and 100). Google through `v4/accounts/*/locations/*/localPosts` (`topicType
+  STANDARD`, `summary`, `media[].sourceUrl`). Error codes from Meta's error handling guide: 190 and its
+  subcodes (and 492) are a sign-in, 10 and 200 to 299 a permission, 4, 17, 341 (and 32, 613, 80001,
+  from memory) throttling, 368, 1 and 2 temporary. **Meta's API can't say whether an app is Live**
+  (the App Modes page and the Application node have nothing for it), so the person ticks **I switched
+  my app to Live**, and until then the app page and the Social tab say posts stay hidden from the
+  public. Not verified: whether Meta's IG user endpoints take a Page token (Crewtavo uses the Page
+  token for Instagram too, so posting doesn't stop when the 60-day sign-in does; widely reported to
+  work), the exact names in Meta's app dashboard, and Google's 1,500-character limit and phone rule.
+- **Permissions:** `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`,
+  `business_management` (Pages reached through a business portfolio aren't listed without it),
+  `instagram_basic`, `instagram_content_publish`. A Page in a business portfolio also needs
+  `ads_management` and `ads_read` for Instagram (Meta's content publishing guide): the Page picker
+  reads the Page's business and asks for **Reconnect with business Page permissions** before any post
+  fails. A Facebook Login for Business **Configuration ID** can be pasted instead (under **More
+  options**); without one, Crewtavo asks for the permissions itself. A permission a network posts
+  with that sign-in didn't get (`pages_manage_posts` for Facebook; `instagram_basic` and
+  `instagram_content_publish` for Instagram, with `pages_show_list` and `pages_read_engagement` for
+  both, as Meta's permissions reference gives their dependencies, checked 31 October 2026) makes it **Needs attention** under **Where it posts**, naming the permission; the composer
+  doesn't offer it and the server refuses it until someone reconnects and allows it. A connection
+  with no permissions on record isn't held up.
+- **Two sign-ins.** The person's long-lived token only lists Pages and permissions; every post uses
+  the Page's token. A Page token that stops working (190 or 492 on a post, or `debug_token` in the
+  daily check) marks the app **Needs attention** and tells owners and admins who connect apps once;
+  the person's token running out only says "Sign in again to change the Page", and posting goes on.
+  Signing in again keeps the Page picked when it's still listed (with a fresh token). Owners and admins
+  hear 7 days before Meta's data access runs out (`data_access_expires_at`). Disconnecting revokes
+  with the app's own token (`DELETE /{user}/permissions`), so it works after the 60 days too, and keeps
+  only whether the app is Live, since the app (its keys) stays: connecting again with it doesn't ask
+  again. New app keys start again from nothing, Live included; the same App ID with its secret pasted
+  again keeps Live.
+- **Privacy page for going Live:** the business website's `/privacy`, suggested with **Copy** as the
+  first line of the guide ("Before you start"), used for both the privacy policy URL and the data
+  deletion instructions. With no website on file, the guide says to add one first. A privacy page
+  hosted by Crewtavo is a follow-up: it's legal text the business has to own.
+- **Photo formats:** JPEG (jpeg-js) and PNG (pngjs 7.0.0, MIT, alpha laid on white) only. HEIC, WebP,
+  GIF and TIFF can't be posted: the only pure decoders are WASM or LGPL. **OK to share** is refused on
+  them ("Only JPEG and PNG photos can be posted. Save this one as a JPEG and add it again."); iPhones
+  already send JPEG from the photo picker. Shared photos are turned by their EXIF orientation, at most
+  2048 px, quality 85, re-encoded with no EXIF, ICC or other metadata (no GPS of a client's home).
+  Instagram's copy is padded, never cropped, into 4:5 to 1.91:1 (a carousel's to a square), in the
+  brand colour or a light grey. Photos over 50 MP aren't decoded.
+- **The review card:** SVG drawn to pixels by `@resvg/resvg-wasm` 2.6.2 (MPL-2.0) with static Figtree
+  Regular and SemiBold (OFL-1.1, vendored in `apps/api/assets/fonts`), then a 1080 × 1080 JPEG by
+  jpeg-js: nothing native, so it works in the one bundled server and for automatic posts with no
+  browser. `scripts/build-server.mjs` copies the `.wasm`, the fonts and both licences into
+  `dist/server/assets/` (NOTICE lists no third-party licences, so it's unchanged), and builds
+  `scripts/render-card.mjs --check` to prove it. Gold stars drawn as paths, the words fitted with
+  Figtree's own widths (`fitCardText`, `FIGTREE_WIDTHS`): as large as fits the room left (72 px for a
+  short review, down to 40 px over up to 8 lines, then cut with "…"), with the stars and "— Ana S."
+  centred together above the business, so a short review fills the card instead of leaving a gap. The
+  logo on a white plate (logos are made for light backgrounds) or the business's name (set smaller
+  when it's long), and "Google review" in words at 34 px, which still reads at a feed's size. Emoji are
+  left out (Figtree has none, and a colour emoji font is large): the composer says "The card leaves
+  out its emoji" on such a review and under its preview, so the words never change quietly. The
+  composer's preview is the server's own JPEG. Reviews in other scripts get no card yet.
+- **Never a client's name or address.** A caption that names the chosen photos' clients or the
+  review's matched client (their whole name, or a street address's number and street) is refused; a
+  last name on its own ("Green") is only a warning. Checked again when it posts, review words
+  included, since a review is matched after it comes in. Reviewers are "Ana S." or "A Google user".
+  The guide and the photo hints remind the crew and office that a house number, a car plate or a face
+  shows a home too. A client's **Can be posted on social pages** switch (off: "No social photos")
+  keeps their photos out everywhere.
+- **Each network posted at most once.** One row per network (`social_post_networks`) moves through
+  waiting → sending → posted (or retry, failed, unknown, skipped). It's marked sending just before the
+  call that can't be taken back; a worker that stops then leaves it **Unconfirmed** when its claim runs
+  out, and the post finishes. A timeout after sending gets one read-only look by caption (made since a
+  minute before the send, with as many pictures, and not another post's), else **Unconfirmed**, where a
+  person looks where it says (**Check your Page**, **your Instagram account** or **your Business
+  Profile**: Google has no Page) and says **It's on the Page** (**on Instagram**, **on the profile**)
+  or **It isn't there, post it**. A success recorded late always wins.
+  - **An unclear answer to the call that publishes is a send that may have gone too:** a 5xx (an HTML
+    502 from Meta's edge included) or Meta's codes -1, 1 and 2 on `/{page}/photos`, `/{page}/feed` or
+    `/media_publish`, and a 5xx from Google's `localPosts`. Meta sometimes makes the post and still
+    answers "An unknown error occurred". Only a definite no (throttling, 429, a permission, the daily
+    limit) is tried again by itself.
+  - **Google's sign-in is refreshed before the network is marked sending,** so a refresh that times out
+    is a plain failure to try again, never taken for a post that may have gone.
+  - **Instagram's container is asked first:** one Instagram says is `PUBLISHED` (a publish that heard
+    back unclearly, or **It isn't there, post it** when it was) is recorded as posted, with its link
+    when the look by caption finds it, never published again. One it turned down (`ERROR`) is dropped.
+  - **What's made on the way is kept for the pictures it was made from:** Facebook's unpublished photos
+    and Instagram's item and carousel containers are kept between tries with the picture links they
+    were made with (`steps.images`), and made again when those change. A photo taken off OK to share,
+    or whose client said no, between tries is never posted from an old container, and a carousel left
+    with one photo posts as one. **Post again** starts each network it puts back from nothing.
+  - Other failures wait 2, 4, 8, 16, then 32 minutes, then fail; Instagram's limit and a container still
+    being made wait up to a day. Posts are claimed one at a time, and **Post now** posts that post alone.
+    **Post again** puts back only what failed or was skipped; a post that started can't be edited.
+  - **Cancel post** partway through skips what's still to go and marks the post stopped
+    (`social_posts.stop_kind`): a send out at that moment is recorded when it ends, but one that comes
+    back "try again" is skipped, nothing more is made or begun, and the claim never picks the post up
+    again. **Post again** and **It isn't there, post it** lift it: a person asked.
+- **Photos inside Crewtavo** (the composer's grid and preview, the posts' thumbnails) are sent as their
+  storage paths and signed in the browser (`lib/files.ts` `signedUrls`), as a job's Photos card does:
+  a self-hosted server reaches Storage at `127.0.0.1` through its own gateway, so a link signed there
+  would point at the viewer's own computer.
+- **This server's address has to be public for pictures:** Meta and Google fetch them from it. On an
+  http or private address the composer says so and offers only **Save draft** and **Share elsewhere**
+  for photos and reviews (words alone still post), the server refuses to schedule them, automatic posts
+  can't be turned on, and **Where it posts** says why. A post already scheduled fails with the reason.
+- **Pictures' public links:** `/api/public/social/<32-character random token>.jpg`, made when it posts,
+  never naming an id, until 7 days after the post finishes; unknown and expired are the same 404, and
+  Marketing isn't asked. Files go a day after their links. A photo left out of a post between tries
+  (not OK to share anymore, or its client said no) has its link and file removed at once.
+- **Automatic 5-star posts** (off by default, **Post 5-star reviews automatically** on the Social tab):
+  a new 5-star review with words (as phase D marks news: after the first full sync, posted in the last
+  14 days, so no first sync, re-import or location change posts old reviews) is scheduled for 10 AM, 1
+  PM or 4 PM in the company's time zone, at most 3 a day, from the next day (or today, before 8 AM),
+  only to the networks ready then, never twice for a review (a cancelled one, or one posted by hand,
+  included). Its caption is "Another 5-star review from a happy client. Thank you!" until a person
+  changes it: no AI caption posts unread. The office hears when it goes ("A 5-star review posts tomorrow
+  at 10 AM", push only), and can change its caption, networks or time, or cancel it; its review stays
+  (the composer shows it without a choice, and the server refuses another). The Social tab says the
+  same-day rule. While it's on, the last network ticked can't be unticked: turning it off is how it
+  stops. Turning it off cancels the ones scheduled, after saying how many. Only the server writes
+  `settings.social` (`social_set_auto`, kept from plain saves by `social_settings_guard`). A place it's
+  set to that can't post now (Facebook & Instagram uninstalled, Instagram not linked to the Page, a
+  permission missing) shows unticked with why and stays saved, so posts go there again once it can;
+  with nowhere left that can post, the switch says **Paused** with what to do, rather than On.
+- **Facebook & Instagram disconnected:** posts still scheduled skip them ("Facebook & Instagram was
+  disconnected") and still go to Google; Uninstall's confirm says how many won't go, and **Post again**
+  sends them once it's connected again. Google's problems are phase D's: not approved isn't offered,
+  a sign-in or location to fix fails with what to do, a passing error tries again.
+- **Marketing uninstalled:** scheduled posts go back to drafts ("Marketing was uninstalled"), a post
+  partway through stops before its next network (a send already out is still recorded, and one that
+  comes back "try again" is skipped, marked stopped like a cancel), nothing is claimed or scheduled
+  automatically, the Social tab goes with Marketing and the **OK to share** toggles hide (their values
+  kept). Links already given out work until they expire. Installing again posts nothing by itself.
+- **Not automation rules.** Automatic posts aren't messages to clients, so they're a setting with a
+  database trigger, not a starter rule.
+- **Notifications:** a **Social posts** topic: an automatic post scheduled (`social_scheduled`, bell
+  and push, "A 5-star review posts tomorrow at 10 AM", or "Nov 6 at 10 AM" past tomorrow, as the list
+  says it: `private.auto_post_when` and core's `autoPostWhen`), a post that didn't all go or may have gone, and Facebook & Instagram needing a sign-in
+  (`social_failed`, email too). A post that didn't all go tells whoever made it while they're still in
+  the office with the marketing area, and otherwise the office, as an automatic post does. Its title
+  keeps what posted, what didn't and what may have apart ("A post went to Facebook and may have gone to
+  Instagram. Check your Instagram account."), so nobody posts again what may be there.
+- **The screens:** the Social tab lists **Drafts and scheduled** above **Posts**, with "No posts yet"
+  only when there are none at all; a notification's post is scrolled to once. **Cancel post** and
+  turning automatic posts off name both buttons (**Keep it**, **Leave it on**). The composer dates
+  photos by their visit as written. In the field, photos that can't be marked OK to share say so
+  (a photo the browser shrank is stored as the JPEG it is, so it can be). A client's **Can be posted on
+  social pages** switch refreshes their Photos card at once, **Mark all OK to share** carries on past a
+  photo it's refused and says how many it marked, and the Page picker offers **Sign in with another
+  Facebook account** when the sign-in manages no Page it can post as. **Check again** on Apps →
+  Facebook & Instagram opens the Page picker with **Post to Instagram too** ticked once Instagram is
+  linked.
+  **Drafts and scheduled** is in the order posts go (posting, then scheduled by time, then drafts,
+  newest first). A review's post shows its first words and who wrote it ("— Ana S."), with the card in
+  small (the brand colour and gold stars), so automatic posts with the same caption are told apart; on
+  phones the status moves under the caption and the picture gets smaller. A caption whose last name
+  may be a client's is said in the save's toast. The composer opens without putting the cursor in the
+  caption (photos come first). **Mark all OK to share** counts the photos as it marks them. A client's
+  no is said once on a Photos card, and a job's own page doesn't repeat its number in each group. In the
+  field, a photo that can't be marked has a **Can't share** label where the toggle would be, and the
+  toggle once on is white with a green check, which shows on a green lawn. Rows picked from a list (the
+  Page picker, the composer's reviews) are bordered with a class (`choice-row`): an inline border with a
+  `borderColor` React clears left three sides the text's colour.
 
 ### Not copied
 
@@ -650,7 +834,28 @@ counted.
 - `clients.name_key`, `name_short` (generated from the name), `clients.reviewed_at` (set only by
   the reviews table) and `review_requests.reviewed_at`. `review_stats` gives the Reviews tab's
   numbers as the person asking; `notification_prefs` takes `reviews`.
-- Phase E adds `social_posts` and `attachments.shareable`.
+- `attachments.shareable`, `shareable_by`, `shareable_at` (phase E): OK to share, changed only by
+  `set_photo_shareable` (the team, JPEG and PNG, a client who hasn't said no) and cleared when the file
+  changes (`attachment_share_guard`). `clients.social_photos_opt_out`: "Don't post photos of this
+  client's property". `record_photos` (a job's or a client's photos for the office) and `social_photos`
+  (the photos OK to share, for the composer, keyset on created_at and id).
+- `social_posts` (phase E): source (photos, review, text), the photos, the review (and `review_key`,
+  which outlives its row), caption and who wrote it, networks, status (draft, scheduled, posting,
+  posted, partly_posted, check, failed, cancelled), the time, automatic, the claim, and `stop_kind`
+  (cancelled, marketing_off: stopped partway, so nothing more is sent). Office staff with the
+  marketing area read them; only the server writes them. `GET /social/posts?list=upcoming` orders
+  them by `scheduled_for` (drafts, which have none, last) and pages after the last row's
+  `scheduled_for`, `created_at` and id.
+- `social_post_networks`: each network's state, attempts and tries, the id and link it was given, its
+  error and kind, and the steps safe to use again (unpublished photos, Instagram containers, and the
+  picture links they were made from).
+- `social_post_images`: each post's pictures at their random-token link, until they expire. The
+  server's alone.
+- `companies.settings.social`: `{ auto: { enabled, networks } }`, written only by `social_set_auto`.
+  The `meta` integration's settings: the Page and Instagram account, the permissions granted and
+  declined, `live_confirmed_at` (the one setting kept when it's disconnected), `data_access_expires_at`,
+  `access_notice`; its secret keeps the app's keys (a Configuration ID too), the person's long-lived
+  token and the Page's token.
 
 ## Build order
 
@@ -660,7 +865,7 @@ counted.
 | B. Referral credits | Credits earned and applied, the automatic referral ask, lost, the Referrals numbers | A |
 | C. Automated campaigns | The three automated campaigns, the daily inactive-client trigger, new audiences, opens, clicks and revenue | A |
 | D. Google reviews (built) | The Google Business Profile app, reviews in Crewtavo, suggested replies, alerts, stopping asks once reviewed | A, and Google's approval |
-| E. Social posting | The Facebook & Instagram app, OK to share, posts and scheduling, posting to Google | A (better with D) |
+| E. Social posting (built) | The Facebook & Instagram app, OK to share, posts and scheduling, posting to Google, automatic 5-star posts, review cards | A (better with D) |
 
 - **B and C can be built at the same time in separate sessions, and so can D and E.**
 - **Each phase is one branch,** with database, API and web tests.
@@ -746,6 +951,34 @@ counted.
   you sign in with doesn't have that one.
 - **Sign in with another Google account** from the app page, for a Google account that doesn't manage
   your Business Profile.
+
+## Release notes for phase E
+
+- **OK to share on photos.** Crews tap the corner of a visit photo, and the office marks them on a job's
+  or client's new **Photos** card (**Mark all OK to share** does a whole job), so the office can post
+  them. It works without signal on a job, and a client's page has **Can be posted on social pages** for
+  anyone who'd rather not. HEIC and WebP photos can't be posted yet: JPEG and PNG can.
+- **Facebook & Instagram** in Apps (it needs Crewtavo - Marketing). Make your own Meta app in about ten
+  minutes with the guide on its page, sign in, pick your Page and its Instagram account, then **switch
+  your Meta app to Live**: until it's Live, nobody but you sees the posts. You'll need a privacy page
+  on your website that says how to ask for data to be deleted.
+- **Marketing → Social:** post photos OK to share, a 4 or 5-star Google review as a picture, or words
+  alone, now or at a time you pick, with **Suggest a caption**. Each post shows its link on each network
+  or what went wrong, and posts that started never post twice. **Share elsewhere** takes the pictures
+  and caption anywhere else, like X, LinkedIn or Nextdoor. **Post on social** is on a review's menu, and
+  **Post these photos** on a job's Photos card.
+- **Post 5-star reviews automatically** (off until you turn it on): new 5-star reviews with words post
+  at 10 AM, 1 PM or 4 PM, at most 3 a day, with time to change or cancel each one.
+- **Google posts** go to your Business Profile once Google Business Profile is approved.
+- **Cloudflare (crm.brrhi.com):** allow `/api/public/social/*` past bot protection, so Meta's and
+  Google's crawlers can fetch the pictures.
+- **Uninstalling Marketing** puts scheduled posts back to drafts and stops one partway through.
+- **Photos and review cards need Crewtavo at a public https address,** since Meta and Google fetch
+  them from it. On a local or office-only address, Marketing → Social says so before you post: words
+  alone still post, and **Share elsewhere** works for the rest.
+- **Posts never go twice.** A post Meta or Google may have made (no answer, or an unclear one) is
+  **Unconfirmed** until you check: your Page, your Instagram account or your Business Profile. A post
+  you cancel while it's posting never goes later.
 
 ## Decisions on the open questions (30 October 2026)
 

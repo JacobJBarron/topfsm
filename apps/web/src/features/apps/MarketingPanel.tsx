@@ -13,15 +13,18 @@ export function MarketingPanel() {
         Owners, admins and office staff with the marketing area have <strong>Marketing</strong> in the menu. Choose when clients are asked for a review, and how
         many reminders follow, in <strong>Reviews</strong>. Set the credit for each friend who becomes a client, and when clients are asked for
         referrals, in <strong>Referrals</strong>. In <strong>Campaigns</strong>, turn on the automated campaigns (re-engage past clients, win back
-        lost quotes, close pending quotes), write one-off emails, and see the opens, clicks and work each brings in.
+        lost quotes, close pending quotes), write one-off emails, and see the opens, clicks and work each brings in. In <strong>Social</strong>, post job
+        photos marked OK to share and 5-star reviews to your Facebook Page, Instagram and Google Business Profile, now or later.
       </span>
       <span className="muted">
         Connect <Link to="/apps/google_business">Google Business Profile</Link> to bring your Google reviews into Reviews, reply to them, and stop asking clients who already left one.
+        Connect <Link to="/apps/meta">Facebook & Instagram</Link> to post to your Page and Instagram account.
       </span>
       <div className="row wrap" style={{ gap: 8 }}>
         <Link className="btn" to="/marketing?tab=reviews"><Icon name="star" size={16} />Reviews</Link>
         <Link className="btn" to="/marketing?tab=referrals"><Icon name="gift" size={16} />Referrals</Link>
         <Link className="btn" to="/marketing?tab=campaigns"><Icon name="mail" size={16} />Campaigns</Link>
+        <Link className="btn" to="/marketing?tab=social"><Icon name="share" size={16} />Social</Link>
       </div>
     </section>
   );

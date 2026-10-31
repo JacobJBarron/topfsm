@@ -7,6 +7,8 @@ icon, so AppIcon.tsx shows it edge to edge. outlook.svg is a
 simplified mark in Outlook's colors drawn for Crewtavo. Apple Calendar and "Other calendars" have no
 file: AppIcon.tsx draws today's date and a calendar glyph instead. google-business.svg is a
 simplified storefront in Google's colors drawn for Crewtavo, for the Google Business Profile app.
+meta.svg is a speech bubble and a camera in Facebook's blue and Instagram's gradient, drawn for
+Crewtavo, for the Facebook & Instagram app (not Meta's own logo).
 
 fal.svg is fal.ai's mark from @lobehub/icons-static-svg 1.95.1 (MIT), in fal's red, for the fal.ai app
 (Find paving).

@@ -26,6 +26,7 @@ import { handlesSubPay, useJobPays } from "../subs/payData";
 import { ChangeOrders, useStartChangeOrder } from "./ChangeOrders";
 import { ExpensesCard, useJobExpenses } from "./ExpensesCard";
 import { MaterialsCard, useJobMaterials } from "./JobMaterials";
+import { PhotosCard } from "../files/PhotosCard";
 import { PlansCard } from "../plans/PlansCard";
 import { InvoiceJobDialog, JobDetailsDialog, type JobRecord } from "./JobDialogs";
 import { jobCosts } from "./jobCosts";
@@ -303,6 +304,7 @@ export function JobPage() {
 
           {canSell && <ChangeOrders jobId={j.id} onStart={() => changeOrder.mutate()} starting={changeOrder.isPending} />}
 
+          <PhotosCard jobId={j.id} />
           <PlansCard scope={{ kind: "job", id: j.id, propertyId: j.property?.id ?? null }} />
 
           {/* Each wrapped (display: contents) so focus can find its add button as its dialog closes. */}

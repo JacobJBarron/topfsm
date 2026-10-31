@@ -26,11 +26,13 @@ import { EditClientDialog } from "./ClientForm";
 import { AddContact, ContactsCard, useClientContacts } from "./ContactsCard";
 import { PropertyDialog, type AccessRow, type PropertyRow } from "./PropertyDialog";
 import { Timeline } from "./Timeline";
+import { PhotosCard } from "../files/PhotosCard";
+import { socialKey } from "../marketing/socialData";
 
 type WorkTab = "requests" | "quotes" | "jobs" | "invoices";
-type ClientPatch = { status?: "lead" | "active" | "archived"; marketing_opt_out?: boolean; review_opt_out?: boolean };
+type ClientPatch = { status?: "lead" | "active" | "archived"; marketing_opt_out?: boolean; review_opt_out?: boolean; social_photos_opt_out?: boolean };
 /** The client's switches, which move the moment they're flipped. */
-const SWITCHES = ["marketing_opt_out", "review_opt_out"] as const;
+const SWITCHES = ["marketing_opt_out", "review_opt_out", "social_photos_opt_out"] as const;
 
 export function ClientPage() {
   const { id = "" } = useParams();
@@ -52,7 +54,7 @@ export function ClientPage() {
       unwrapOne(
         await supabase()
           .from("clients")
-          .select("id, display_name, company_name, email, phone, status, tags, lead_source, notes, created_at, billing_address, marketing_opt_out, review_opt_out, sms_opt_out_at, reviewed_at, referred_by, properties(id, label, line1, line2, city, region, postal_code, lat, lng, notes)")
+          .select("id, display_name, company_name, email, phone, status, tags, lead_source, notes, created_at, billing_address, marketing_opt_out, review_opt_out, social_photos_opt_out, sms_opt_out_at, reviewed_at, referred_by, properties(id, label, line1, line2, city, region, postal_code, lat, lng, notes)")
           .eq("id", id)
           .maybeSingle(),
         "This client",
@@ -102,9 +104,14 @@ export function ClientPage() {
       const key = SWITCHES.find((k) => patch[k] !== undefined);
       if (key) queryClient.setQueryData<typeof client.data>(["client", id], (old) => old && { ...old, [key]: !patch[key] });
     },
-    onSettled: () => {
+    onSettled: (_data, _error, patch) => {
       queryClient.invalidateQueries({ queryKey: ["client", id] });
       queryClient.invalidateQueries({ queryKey: ["clients", session.company.id] });
+      // The Photos card below and the composer offer this client's photos, or don't.
+      if (patch.social_photos_opt_out !== undefined) {
+        queryClient.invalidateQueries({ queryKey: ["record-photos", session.company.id] });
+        queryClient.invalidateQueries({ queryKey: socialKey(session.company.id) });
+      }
     },
   });
   const remove = useMutation({
@@ -260,6 +267,7 @@ export function ClientPage() {
         {c.tags.map((t) => <span key={t} className="tag">{t}</span>)}
         {c.marketing_opt_out && <span className="chip chip-amber">Unsubscribed from marketing</span>}
         {c.review_opt_out && <span className="chip chip-amber">No review asks</span>}
+        {c.social_photos_opt_out && <span className="chip chip-amber">No social photos</span>}
         {c.reviewed_at && <ReviewedChip clientId={c.id} />}
         {stopped && <span className="chip chip-amber">Texts off</span>}
       </div>
@@ -374,6 +382,8 @@ export function ClientPage() {
             )}
           </section>
 
+          <PhotosCard clientId={c.id} />
+
           {c.properties.length > 0 && <PlansCard scope={{ kind: "client", properties: c.properties.map((p) => ({ id: p.id, label: p.label || p.line1 })) }} />}
 
           <Timeline clientId={c.id} />
@@ -436,6 +446,14 @@ export function ClientPage() {
                     ) : c.reviewed_at ? (
                       <span className="muted small" style={{ display: "block" }}>Left a Google review, so not asked</span>
                     ) : null}
+                  </dd>
+                  <dt>Photos</dt>
+                  <dd>
+                    <label className="switch-row" style={{ fontWeight: 400 }}>
+                      <input type="checkbox" className="switch" checked={!c.social_photos_opt_out} onChange={(e) => update.mutate({ social_photos_opt_out: !e.target.checked })} />
+                      Can be posted on social pages
+                    </label>
+                    {c.social_photos_opt_out && <span className="muted small" style={{ display: "block" }}>Photos of their property aren't offered for posts</span>}
                   </dd>
                 </>
               )}

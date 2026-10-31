@@ -55,7 +55,8 @@
     "./phone": "./src/phone.ts",
     "./marketing": "./src/marketing.ts",
     "./campaigns": "./src/campaigns.ts",
-    "./reviews": "./src/reviews.ts"
+    "./reviews": "./src/reviews.ts",
+    "./social": "./src/social.ts"
   },
   "scripts": {
     "test": "vitest run",

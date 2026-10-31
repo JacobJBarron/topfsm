@@ -13,6 +13,9 @@ export const NOTIFICATION_TOPICS = [
   // reviews in (apps/api/src/services/googleReviews.ts). By email only 1 and 2 stars (byEmail).
   // Owners and admins who connect apps hear when it needs them (reviewNoticesFor).
   { key: "reviews", label: "Google reviews", hint: "New reviews, low ratings first. Email only for 1 and 2 stars" },
+  // The same people, while Marketing → Social posts (apps/api/src/services/social.ts): an automatic
+  // post scheduled (push only, byEmail), and a post that didn't all go or may have gone.
+  { key: "social", label: "Social posts", hint: "Automatic posts coming up, and posts that didn't go. Email only for those that didn't" },
   // Subs only: their job offers and their pay (on by default, texts too: an offer waits for their answer).
   { key: "jobs", label: "My jobs", hint: "Job offers, and what you're owed and paid" },
   { key: "alerts", label: "Other alerts", hint: "From your company's automations, like a quote being approved" },
@@ -28,9 +31,9 @@ export type NotificationChannel = (typeof NOTIFICATION_CHANNELS)[number];
 
 /** Defaults until a person changes them (same as the column defaults). */
 export const DEFAULT_NOTIFICATION_PREFS: Record<NotificationChannel, NotificationTopic[]> = {
-  email: ["schedule", "jobs", "hosting", "reviews"],
+  email: ["schedule", "jobs", "hosting", "reviews", "social"],
   sms: ["jobs"],
-  push: ["schedule", "client", "equipment", "subs", "jobs", "time", "alerts", "chat", "hosting", "reviews"],
+  push: ["schedule", "client", "equipment", "subs", "jobs", "time", "alerts", "chat", "hosting", "reviews", "social"],
 };
 
 /**
@@ -40,6 +43,8 @@ export function notificationTopic(kind: string): NotificationTopic {
   if (kind === "schedule" || kind === "client" || kind === "equipment" || kind === "time" || kind === "chat" || kind === "hosting" || kind === "subs" || kind === "jobs") return kind;
   // A new review, one of 1 or 2 stars (or changed down to that), and Google access starting or stopping.
   if (kind === "review" || kind === "review_low" || kind === "review_access") return "reviews";
+  // An automatic post scheduled, and a post that didn't all go or Facebook & Instagram needing a sign-in.
+  if (kind === "social_scheduled" || kind === "social_failed") return "social";
   return "alerts";
 }
 
@@ -63,6 +68,7 @@ export const REVIEW_ACCESS_HINT = "When Google Business Profile needs signing in
 
 /**
  * Whether a kind goes by email for someone who has its topic on. A review of 3 stars or more is
- * only for the bell and the phone: an email is for the ones to answer first (review_low).
+ * only for the bell and the phone: an email is for the ones to answer first (review_low). An
+ * automatic post scheduled is the same: only one that didn't go is worth an email.
  */
-export const byEmail = (kind: string) => kind !== "review";
+export const byEmail = (kind: string) => kind !== "review" && kind !== "social_scheduled";

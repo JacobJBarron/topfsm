@@ -125,6 +125,18 @@ export async function saveVisitNotes(v: VisitNotesSave) {
   await api.patch(`/visits/${v.visitId}`, { notes: v.notes }, { companyId: v.companyId });
 }
 
+export interface PhotoShareChange {
+  attachmentId: string;
+  shareable: boolean;
+  /** Where it was tapped. */
+  companyId: string;
+}
+
+/** OK to share on a photo, or not (set_photo_shareable): safe to send twice. */
+export async function setPhotoShareable(v: PhotoShareChange) {
+  unwrap(await supabase().rpc("set_photo_shareable", { p_attachment: v.attachmentId, p_shareable: v.shareable }));
+}
+
 /**
  * Field actions wait for signal ("online" mode): with none, React Query pauses them and lib/offline.ts
  * keeps them on the phone. Every other save fails at once instead (lib/queryClient.ts).
@@ -143,4 +155,5 @@ export function registerFieldActions(queryClient: QueryClient) {
   });
   queryClient.setMutationDefaults(["checklist-save"], { ...WAIT_FOR_SIGNAL, mutationFn: (v: ChecklistSave) => saveChecklist(v) });
   queryClient.setMutationDefaults(["visit-notes"], { ...WAIT_FOR_SIGNAL, mutationFn: (v: VisitNotesSave) => saveVisitNotes(v) });
+  queryClient.setMutationDefaults(["photo-share"], { ...WAIT_FOR_SIGNAL, mutationFn: (v: PhotoShareChange) => setPhotoShareable(v) });
 }

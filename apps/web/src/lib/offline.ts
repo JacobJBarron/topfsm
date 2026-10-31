@@ -30,7 +30,7 @@ export const keepsDayOffline = (role: string) => (OFFLINE_LEVELS as readonly str
 /** Queries worth having with no signal. */
 const KEEP = new Set(["field", "field-visit", "field-jobs", "checklist", "running-timer", "material-choices", "my-crews", "dispatch-options", "crew-clock", "job"]);
 /** Mutations that can wait for a connection (their functions are registered with setMutationDefaults). */
-export const OFFLINE_MUTATIONS = new Set(["visit-status", "checklist-save", "visit-notes"]);
+export const OFFLINE_MUTATIONS = new Set(["visit-status", "checklist-save", "visit-notes", "photo-share"]);
 /** Field actions run one at a time, in the order they were made. */
 export const FIELD_SCOPE = { id: "field-sync" };
 /** Room for everything saved, cached screens included. Unsent actions are saved even past it. */

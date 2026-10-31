@@ -40,7 +40,7 @@ export const NAV_GROUPS: NavItem[][] = [
     { to: "/drive", label: "Drive", icon: "folder", roles: ["admin", "office", "estimator"], feature: "drive", keywords: "files documents folders google drive upload pdf word docx trash" },
   ],
   [
-    { to: "/marketing", label: "Marketing", icon: "marketing", roles: ["admin", "office"], perm: "marketing", feature: "marketing", keywords: "campaigns email blasts reviews referrals" },
+    { to: "/marketing", label: "Marketing", icon: "marketing", roles: ["admin", "office"], perm: "marketing", feature: "marketing", keywords: "campaigns email blasts reviews referrals social facebook instagram posts" },
     { to: "/website", label: "Website", icon: "globe", roles: ["admin", "office"], perm: "marketing", feature: "website", keywords: "site web page blog posts edit content cms sveltia decap" },
     { to: "/finance", label: "Finance", icon: "finance", roles: ["admin", "office"], perm: ["reports", "invoices"], keywords: "reports revenue profit payments money collected net volume fees deposits owed goal" },
     { to: "/metrics", label: "Metrics", icon: "metrics", roles: ["admin", "office"], perm: "reports", keywords: "reports analytics numbers sales conversion lead sources visits hours team clients" },
@@ -49,7 +49,7 @@ export const NAV_GROUPS: NavItem[][] = [
     { to: "/subs", label: "Subcontractors", icon: "users", roles: ["admin", "office"], perm: "subs", keywords: "subs contractors 1099 w-9 w9 insurance certificates coi liability workers comp audit paperwork vendors" },
     { to: "/equipment", label: "Equipment", icon: "truck", keywords: "trucks mowers trailers tools fleet maintenance" },
     { to: "/kb", label: "Knowledge base", icon: "book", keywords: "sop procedures training how to guides" },
-    { to: "/apps", label: "Apps", icon: "apps", roles: ["admin"], perm: "apps", keywords: "integrations connect app store team chat website forms formspree contact form careers job applications hiring drive files documents google drive marketing reviews referrals campaigns google reviews google business profile quickbooks zoho books stripe payments google calendar outlook twilio texts sms claude chatgpt ai assistant sveltia cms website" },
+    { to: "/apps", label: "Apps", icon: "apps", roles: ["admin"], perm: "apps", keywords: "integrations connect app store team chat website forms formspree contact form careers job applications hiring drive files documents google drive marketing reviews referrals campaigns google reviews google business profile facebook instagram social posts quickbooks zoho books stripe payments google calendar outlook twilio texts sms claude chatgpt ai assistant sveltia cms website" },
   ],
 ];
 

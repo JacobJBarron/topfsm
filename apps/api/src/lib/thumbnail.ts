@@ -25,11 +25,28 @@ export function thumbnail(body: Uint8Array, type: string, max = THUMBNAIL_PX): P
   return next;
 }
 
-/** The photo at most `max` px on its longer side, each new pixel the average of the ones it covers; null when it's that small already. */
+/** The photo at most `max` px on its longer side, as a JPEG; null when it's that small already. */
 function shrink(body: Uint8Array, max: number): { body: Uint8Array; type: string } | null {
   const photo = decode(body, { useTArray: true, formatAsRGBA: true, maxResolutionInMP: 40, maxMemoryUsageInMB: 256 });
+  const small = shrinkRgba(photo, max);
+  if (small === photo) return null;
+  return { body: new Uint8Array(encode(small, QUALITY).data), type: "image/jpeg" };
+}
+
+export interface Rgba {
+  data: Uint8Array;
+  width: number;
+  height: number;
+}
+
+/**
+ * RGBA pixels at most `max` px on their longer side, each new pixel the average of the ones it
+ * covers, fully opaque. The same pixels back when they're that small already. Also used for photos
+ * shared to social pages (lib/shareImage.ts).
+ */
+export function shrinkRgba(photo: Rgba, max: number): Rgba {
   const scale = max / Math.max(photo.width, photo.height);
-  if (scale >= 1) return null;
+  if (scale >= 1) return photo;
   const width = Math.max(1, Math.round(photo.width * scale));
   const height = Math.max(1, Math.round(photo.height * scale));
   const out = new Uint8Array(width * height * 4);
@@ -58,5 +75,5 @@ function shrink(body: Uint8Array, max: number): { body: Uint8Array; type: string
       out[o + 3] = 255;
     }
   }
-  return { body: new Uint8Array(encode({ data: out, width, height }, QUALITY).data), type: "image/jpeg" };
+  return { data: out, width, height };
 }

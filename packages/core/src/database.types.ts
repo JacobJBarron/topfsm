@@ -76,14 +76,14 @@ isOneToOne: false
                   ]
                 },"attachments": {
                   Row: {
-                    "caption": string | null,"company_id": string,"content_type": string | null,"created_at": string,"created_by": string | null,"file_name": string,"id": string,"owner_id": string,"owner_type": string,"path": string,"size_bytes": number | null
+                    "caption": string | null,"company_id": string,"content_type": string | null,"created_at": string,"created_by": string | null,"file_name": string,"id": string,"owner_id": string,"owner_type": string,"path": string,"shareable": boolean,"shareable_at": string | null,"shareable_by": string | null,"size_bytes": number | null
                   }
                   ComputedFields: never
                   Insert: {
-                    "caption"?: string | null,"company_id": string,"content_type"?: string | null,"created_at"?: string,"created_by"?: string | null,"file_name": string,"id"?: string,"owner_id": string,"owner_type": string,"path": string,"size_bytes"?: number | null
+                    "caption"?: string | null,"company_id": string,"content_type"?: string | null,"created_at"?: string,"created_by"?: string | null,"file_name": string,"id"?: string,"owner_id": string,"owner_type": string,"path": string,"shareable"?: boolean,"shareable_at"?: string | null,"shareable_by"?: string | null,"size_bytes"?: number | null
                   }
                   Update: {
-                    "caption"?: string | null,"company_id"?: string,"content_type"?: string | null,"created_at"?: string,"created_by"?: string | null,"file_name"?: string,"id"?: string,"owner_id"?: string,"owner_type"?: string,"path"?: string,"size_bytes"?: number | null
+                    "caption"?: string | null,"company_id"?: string,"content_type"?: string | null,"created_at"?: string,"created_by"?: string | null,"file_name"?: string,"id"?: string,"owner_id"?: string,"owner_type"?: string,"path"?: string,"shareable"?: boolean,"shareable_at"?: string | null,"shareable_by"?: string | null,"size_bytes"?: number | null
                   }
                   Relationships: [
                     {
@@ -520,14 +520,14 @@ isOneToOne: false
                   ]
                 },"clients": {
                   Row: {
-                    "billing_address": NonNullable<Json>,"company_id": string,"company_name": string | null,"created_at": string,"custom_fields": NonNullable<Json>,"display_name": string,"email": string | null,"id": string,"lead_source": string | null,"marketing_opt_out": boolean,"name_key": string | null,"name_short": string | null,"notes": string | null,"phone": string | null,"referred_by": string | null,"review_opt_out": boolean,"reviewed_at": string | null,"search": unknown,"sms_opt_out_at": string | null,"status": string,"tags": (string)[],"updated_at": string
+                    "billing_address": NonNullable<Json>,"company_id": string,"company_name": string | null,"created_at": string,"custom_fields": NonNullable<Json>,"display_name": string,"email": string | null,"id": string,"lead_source": string | null,"marketing_opt_out": boolean,"name_key": string | null,"name_short": string | null,"notes": string | null,"phone": string | null,"referred_by": string | null,"review_opt_out": boolean,"reviewed_at": string | null,"search": unknown,"sms_opt_out_at": string | null,"social_photos_opt_out": boolean,"status": string,"tags": (string)[],"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "billing_address"?: NonNullable<Json>,"company_id": string,"company_name"?: string | null,"created_at"?: string,"custom_fields"?: NonNullable<Json>,"display_name": string,"email"?: string | null,"id"?: string,"lead_source"?: string | null,"marketing_opt_out"?: boolean,"name_key"?: never,"name_short"?: never,"notes"?: string | null,"phone"?: string | null,"referred_by"?: string | null,"review_opt_out"?: boolean,"reviewed_at"?: string | null,"search"?: never,"sms_opt_out_at"?: string | null,"status"?: string,"tags"?: (string)[],"updated_at"?: string
+                    "billing_address"?: NonNullable<Json>,"company_id": string,"company_name"?: string | null,"created_at"?: string,"custom_fields"?: NonNullable<Json>,"display_name": string,"email"?: string | null,"id"?: string,"lead_source"?: string | null,"marketing_opt_out"?: boolean,"name_key"?: never,"name_short"?: never,"notes"?: string | null,"phone"?: string | null,"referred_by"?: string | null,"review_opt_out"?: boolean,"reviewed_at"?: string | null,"search"?: never,"sms_opt_out_at"?: string | null,"social_photos_opt_out"?: boolean,"status"?: string,"tags"?: (string)[],"updated_at"?: string
                   }
                   Update: {
-                    "billing_address"?: NonNullable<Json>,"company_id"?: string,"company_name"?: string | null,"created_at"?: string,"custom_fields"?: NonNullable<Json>,"display_name"?: string,"email"?: string | null,"id"?: string,"lead_source"?: string | null,"marketing_opt_out"?: boolean,"name_key"?: never,"name_short"?: never,"notes"?: string | null,"phone"?: string | null,"referred_by"?: string | null,"review_opt_out"?: boolean,"reviewed_at"?: string | null,"search"?: never,"sms_opt_out_at"?: string | null,"status"?: string,"tags"?: (string)[],"updated_at"?: string
+                    "billing_address"?: NonNullable<Json>,"company_id"?: string,"company_name"?: string | null,"created_at"?: string,"custom_fields"?: NonNullable<Json>,"display_name"?: string,"email"?: string | null,"id"?: string,"lead_source"?: string | null,"marketing_opt_out"?: boolean,"name_key"?: never,"name_short"?: never,"notes"?: string | null,"phone"?: string | null,"referred_by"?: string | null,"review_opt_out"?: boolean,"reviewed_at"?: string | null,"search"?: never,"sms_opt_out_at"?: string | null,"social_photos_opt_out"?: boolean,"status"?: string,"tags"?: (string)[],"updated_at"?: string
                   }
                   Relationships: [
                     {
@@ -2264,6 +2264,72 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"social_post_images": {
+                  Row: {
+                    "attachment_id": string | null,"bytes": number,"company_id": string,"created_at": string,"expires_at": string,"height": number,"id": string,"n": number,"path": string,"post_id": string,"token": string,"variant": string,"width": number
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "attachment_id"?: string | null,"bytes": number,"company_id": string,"created_at"?: string,"expires_at": string,"height": number,"id"?: string,"n": number,"path": string,"post_id": string,"token": string,"variant": string,"width": number
+                  }
+                  Update: {
+                    "attachment_id"?: string | null,"bytes"?: number,"company_id"?: string,"created_at"?: string,"expires_at"?: string,"height"?: number,"id"?: string,"n"?: number,"path"?: string,"post_id"?: string,"token"?: string,"variant"?: string,"width"?: number
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "social_post_images_company_id_post_id_fkey"
+      columns: ["company_id","post_id"]
+isOneToOne: false
+      referencedRelation: "social_posts"
+      referencedColumns: ["company_id","id"]
+    }
+                  ]
+                },"social_post_networks": {
+                  Row: {
+                    "attempts": number,"company_id": string,"error": string | null,"error_kind": string | null,"external_id": string | null,"first_tried_at": string | null,"network": string,"next_attempt_at": string | null,"permalink": string | null,"post_id": string,"posted_at": string | null,"sending_at": string | null,"status": string,"steps": NonNullable<Json>,"tries": number
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "attempts"?: number,"company_id": string,"error"?: string | null,"error_kind"?: string | null,"external_id"?: string | null,"first_tried_at"?: string | null,"network": string,"next_attempt_at"?: string | null,"permalink"?: string | null,"post_id": string,"posted_at"?: string | null,"sending_at"?: string | null,"status"?: string,"steps"?: NonNullable<Json>,"tries"?: number
+                  }
+                  Update: {
+                    "attempts"?: number,"company_id"?: string,"error"?: string | null,"error_kind"?: string | null,"external_id"?: string | null,"first_tried_at"?: string | null,"network"?: string,"next_attempt_at"?: string | null,"permalink"?: string | null,"post_id"?: string,"posted_at"?: string | null,"sending_at"?: string | null,"status"?: string,"steps"?: NonNullable<Json>,"tries"?: number
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "social_post_networks_company_id_post_id_fkey"
+      columns: ["company_id","post_id"]
+isOneToOne: false
+      referencedRelation: "social_posts"
+      referencedColumns: ["company_id","id"]
+    }
+                  ]
+                },"social_posts": {
+                  Row: {
+                    "attachment_ids": (string)[],"automatic": boolean,"cancelled_at": string | null,"cancelled_by": string | null,"caption": string,"caption_by": string,"claim": string | null,"company_id": string,"created_at": string,"created_by": string | null,"finished_at": string | null,"id": string,"locked_until": string | null,"networks": (string)[],"note": string | null,"review_id": string | null,"review_key": string | null,"scheduled_for": string | null,"source": string,"started_at": string | null,"status": string,"stop_kind": string | null,"updated_at": string,"updated_by": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "attachment_ids"?: (string)[],"automatic"?: boolean,"cancelled_at"?: string | null,"cancelled_by"?: string | null,"caption"?: string,"caption_by"?: string,"claim"?: string | null,"company_id": string,"created_at"?: string,"created_by"?: string | null,"finished_at"?: string | null,"id"?: string,"locked_until"?: string | null,"networks": (string)[],"note"?: string | null,"review_id"?: string | null,"review_key"?: string | null,"scheduled_for"?: string | null,"source": string,"started_at"?: string | null,"status"?: string,"stop_kind"?: string | null,"updated_at"?: string,"updated_by"?: string | null
+                  }
+                  Update: {
+                    "attachment_ids"?: (string)[],"automatic"?: boolean,"cancelled_at"?: string | null,"cancelled_by"?: string | null,"caption"?: string,"caption_by"?: string,"claim"?: string | null,"company_id"?: string,"created_at"?: string,"created_by"?: string | null,"finished_at"?: string | null,"id"?: string,"locked_until"?: string | null,"networks"?: (string)[],"note"?: string | null,"review_id"?: string | null,"review_key"?: string | null,"scheduled_for"?: string | null,"source"?: string,"started_at"?: string | null,"status"?: string,"stop_kind"?: string | null,"updated_at"?: string,"updated_by"?: string | null
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "social_posts_company_id_fkey"
+      columns: ["company_id"]
+isOneToOne: false
+      referencedRelation: "companies"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "social_posts_company_id_review_id_fkey"
+      columns: ["company_id","review_id"]
+isOneToOne: false
+      referencedRelation: "reviews"
+      referencedColumns: ["company_id","id"]
+    }
+                  ]
                 },"sop_acknowledgements": {
                   Row: {
                     "acknowledged_at": string,"company_id": string,"page_id": string,"revision": number,"user_id": string
@@ -2793,6 +2859,9 @@ isOneToOne: false
 "begin_review_request":
 { Args: { "p_channel"?: string,"p_client": string,"p_company": string,"p_created_by"?: string,"p_gap_days"?: number,"p_job"?: string }; Returns: string
                            },
+"begin_social_network":
+{ Args: { "p_claim": string,"p_network": string,"p_post": string }; Returns: boolean
+                           },
 "campaign_audience":
 { Args: { "p_audience": Json,"p_company_id": string }; Returns: {
               "client_id": string,"display_name": string,"email": string
@@ -2806,6 +2875,9 @@ isOneToOne: false
                            },
 "campaign_results":
 { Args: { "p_campaign"?: string,"p_company": string }; Returns: Json
+                           },
+"cancel_social_post":
+{ Args: { "p_by": string,"p_company": string,"p_post": string }; Returns: string
                            },
 "careers_set_enabled":
 { Args: { "p_company": string,"p_enabled": boolean }; Returns: boolean
@@ -3002,6 +3074,11 @@ isOneToOne: false
 "claim_review_sync":
 { Args: { "p_company": string,"p_hold_seconds"?: number }; Returns: string
                            },
+"claim_social_posts":
+{ Args: { "p_hold_seconds"?: number,"p_limit"?: number,"p_post"?: string }; Returns: {
+              "claim": string,"company_id": string,"id": string
+            }[]
+                           },
 "clock_upkeep":
 { Args: Record<PropertyKey, never>; Returns: Json
                            },
@@ -3082,6 +3159,9 @@ isOneToOne: false
                            },
 "end_sessions":
 { Args: { "p_user": string }; Returns: number
+                           },
+"end_social_network":
+{ Args: { "p_claim": string,"p_error"?: string,"p_external_id"?: string,"p_kind"?: string,"p_network": string,"p_permalink"?: string,"p_post": string,"p_retry_at"?: string,"p_status": string,"p_steps"?: Json }; Returns: string
                            },
 "ensure_automated_campaign":
 { Args: { "p_company": string,"p_key": string }; Returns: string
@@ -3366,6 +3446,9 @@ isOneToOne: false
               "counted": number,"owed": number,"owed_jobs": number,"paid": number,"payments": number,"year": number
             }[]
                            },
+"note_meta_access":
+{ Args: { "p_body"?: string,"p_company": string,"p_kind": string,"p_title"?: string }; Returns: boolean
+                           },
 "note_review_access":
 { Args: { "p_body"?: string,"p_claim": string,"p_company": string,"p_kind": string,"p_title"?: string }; Returns: boolean
                            },
@@ -3382,6 +3465,11 @@ isOneToOne: false
                            },
 "rate_limit_hit":
 { Args: { "p_key": string,"p_max": number,"p_window_seconds": number }; Returns: boolean
+                           },
+"record_photos":
+{ Args: { "p_client"?: string,"p_company": string,"p_job"?: string }; Returns: {
+              "can_share": boolean,"cant_share": string,"content_type": string,"created_at": string,"created_by": string,"file_name": string,"id": string,"job_id": string,"job_number": number,"job_title": string,"owner_type": string,"path": string,"shareable": boolean,"shareable_at": string,"visit_id": string,"visit_on": string
+            }[]
                            },
 "record_referral":
 { Args: { "p_address"?: Json,"p_company": string,"p_details"?: string,"p_email"?: string,"p_name": string,"p_phone"?: string,"p_referrer": string }; Returns: Json
@@ -3418,6 +3506,9 @@ isOneToOne: false
 "release_inactive_backlog":
 { Args: { "p_rule": string }; Returns: number
                            },
+"release_social_post":
+{ Args: { "p_claim": string,"p_post": string }; Returns: boolean
+                           },
 "remove_promo_code":
 { Args: { "p_id": string,"p_kind": string }; Returns: undefined
                            },
@@ -3433,11 +3524,20 @@ isOneToOne: false
 "renew_campaign_recipient":
 { Args: { "p_id": number,"p_links"?: (string)[],"p_token": string }; Returns: boolean
                            },
+"resolve_social_network":
+{ Args: { "p_by": string,"p_company": string,"p_network": string,"p_permalink": string,"p_post": string,"p_posted": boolean }; Returns: string
+                           },
+"retry_social_post":
+{ Args: { "p_by": string,"p_company": string,"p_post": string }; Returns: number
+                           },
 "review_stats":
 { Args: { "p_company": string }; Returns: Json
                            },
 "review_syncs_due":
 { Args: { "p_limit"?: number }; Returns: string[]
+                           },
+"save_social_steps":
+{ Args: { "p_claim": string,"p_network": string,"p_post": string,"p_steps": Json }; Returns: boolean
                            },
 "search_sops":
 { Args: { "p_any"?: boolean,"p_company": string,"p_limit"?: number,"p_query": string }; Returns: {
@@ -3481,6 +3581,9 @@ isOneToOne: false
         isOneToOne: true
         isSetofReturn: false
       } },
+"set_photo_shareable":
+{ Args: { "p_attachment": string,"p_shareable": boolean }; Returns: Json
+                           },
 "set_review_client":
 { Args: { "p_by": string,"p_client": string,"p_company": string,"p_review": string }; Returns: Json
                            },
@@ -3512,6 +3615,19 @@ isOneToOne: false
                            },
 "skip_inactive_backlog":
 { Args: { "p_rule": string }; Returns: number
+                           },
+"social_photo_facts":
+{ Args: { "p_company": string,"p_ids": (string)[] }; Returns: {
+              "client_id": string,"content_type": string,"id": string,"job_id": string,"path": string,"problem": string,"shareable": boolean
+            }[]
+                           },
+"social_photos":
+{ Args: { "p_before_at"?: string,"p_before_id"?: string,"p_company": string,"p_job"?: string,"p_limit"?: number }; Returns: {
+              "client_ref": string,"created_at": string,"id": string,"job_id": string,"job_number": number,"job_title": string,"path": string,"visit_on": string
+            }[]
+                           },
+"social_set_auto":
+{ Args: { "p_company": string,"p_enabled": boolean,"p_networks": (string)[] }; Returns: Json
                            },
 "spare_key_use":
 { Args: { "p_hash": string,"p_user": string }; Returns: boolean

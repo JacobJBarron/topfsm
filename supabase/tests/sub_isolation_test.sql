@@ -274,6 +274,13 @@ insert into public.review_syncs (company_id, account, location_id) values (:'co'
 insert into public.reviews (company_id, location_id, review_id, external_name, reviewer_name, rating, posted_at, google_updated_at, client_id, match)
 values (:'co', 'locations/1070', 'r1070', 'accounts/1070/locations/1070/reviews/r1070', 'Ann C.', 5, now(), now(), :'c1', 'hand');
 insert into public.review_match_choices (company_id, location_id, review_id, client_id) values (:'co', 'locations/1070', 'r1070', :'c1');
+-- A photo of Ann's marked OK to share, and a social post of it, how it went on Facebook and its picture's link.
+insert into public.attachments (company_id, owner_type, owner_id, path, file_name, content_type, shareable, shareable_at)
+values (:'co', 'client', :'c1', :'co' || '/client/' || :'c1' || '/porch.jpg', 'porch.jpg', 'image/jpeg', true, now()) returning id as porch \gset
+insert into public.social_posts (company_id, source, attachment_ids, caption, networks, status) values (:'co', 'photos', array[:'porch']::uuid[], 'New porch steps', '{facebook}', 'posting') returning id as social_post \gset
+insert into public.social_post_networks (post_id, company_id, network, status) values (:'social_post', :'co', 'facebook', 'posted');
+insert into public.social_post_images (company_id, post_id, n, variant, attachment_id, path, token, width, height, bytes, expires_at)
+values (:'co', :'social_post', 0, 'feed', :'porch', :'co' || '/social/' || :'social_post' || '/0-feed.jpg', repeat('b', 32), 10, 10, 100, now() + interval '7 days');
 insert into public.roof_packages (company_id, name) values (:'co', 'Good') returning id as roof_package \gset
 insert into public.roof_package_items (company_id, package_id, service_id, kind) values (:'co', :'roof_package', :'shingles_service', 'included');
 insert into public.service_materials (company_id, service_id, item_number, name, uom, per_unit) values (:'co', :'shingles_service', 'ABC-1', 'Shingle bundle', 'BD', 3);
@@ -504,12 +511,12 @@ select t1070.check(array(
   'job_material_costs(uuid)', 'job_pay_accept(uuid, uuid[])', 'job_pay_cancel(uuid)', 'job_pay_costs(uuid[])', 'job_pay_covers(uuid, uuid, uuid)', 'job_pay_mark_done(uuid, date)',
   'job_pay_mark_paid(uuid[], text, date, text, numeric)', 'job_pay_start(uuid, uuid, uuid, uuid[])', 'job_pay_suggest(uuid, uuid, uuid, uuid[])',
   'job_pay_unmark_paid(uuid[])', 'job_scope(uuid)', 'last_referral_ask(uuid, uuid)', 'last_review_ask(uuid, uuid)', 'marketing_set_enabled(uuid, boolean)', 'marketing_summary(uuid)', 'material_choices(uuid)', 'my_crew_ids(uuid)', 'my_sub_offers(boolean, uuid)', 'my_sub_pay_totals(uuid)',
-  'promo_code_usage(uuid)', 'put_quote_package(uuid, uuid, jsonb, boolean)',
+  'promo_code_usage(uuid)', 'put_quote_package(uuid, uuid, jsonb, boolean)', 'record_photos(uuid, uuid, uuid)',
   'referral_auto_apply(uuid, boolean)', 'referral_credits_for(uuid, uuid)', 'referral_give_credit(uuid)', 'referral_no_reward(uuid)', 'referral_set_given(uuid)',
   'referral_stats(uuid, timestamp with time zone, timestamp with time zone)',
   'remove_promo_code(text, uuid)', 'remove_quote_option(uuid, uuid)', 'remove_referral_credit(uuid)', 'review_stats(uuid)',
-  'search_sops(uuid, text, integer, boolean)', 'send_sub_offer(uuid, timestamp with time zone)', 'set_sub_reminders(uuid, boolean)',
-  'set_sub_sign_in_countries(uuid, text[])', 'sign_quote(uuid, jsonb, uuid, numeric)',
+  'search_sops(uuid, text, integer, boolean)', 'send_sub_offer(uuid, timestamp with time zone)', 'set_photo_shareable(uuid, boolean)', 'set_sub_reminders(uuid, boolean)',
+  'set_sub_sign_in_countries(uuid, text[])', 'sign_quote(uuid, jsonb, uuid, numeric)', 'social_photos(uuid, timestamp with time zone, uuid, integer, uuid)',
   'storage_overview(uuid)', 'storage_set_allowance(uuid, uuid, text, bigint)', 'storage_set_limit(uuid, text, bigint)', 'sub_1099_totals(uuid, integer)', 'sub_wc_audit(uuid, date, date)', 'time_entry_places(uuid, uuid[])',
   'trash_delete_forever(uuid, jsonb)', 'visit_contact(uuid)', 'web_analytics_save(uuid, jsonb)', 'web_stats(uuid, date, date)',
   'website_forms_set_enabled(uuid, boolean)', 'withdraw_sub_offer(uuid)']::text[],
@@ -623,6 +630,10 @@ select t1070.check((select (public.marketing_summary(:'co') ->> 'opted_out')::in
   'the dashboard, marketing summary and when a client was last asked count nothing (they run as the person, who can''t read the company)');
 select t1070.check((select (s ->> 'count')::int = 0 and (s ->> 'asks_12m')::int = 0 and s -> 'average' = 'null'::jsonb from (select public.review_stats(:'co') as s) x),
   'Google reviews'' numbers count nothing either');
+-- Social posts are the office's: a sub marks no photo OK to share and gets none to post.
+select t1070.expect_error(format('select public.set_photo_shareable(%L, true)', :'porch'), 'set_photo_shareable refuses');
+select t1070.expect_error(format('select * from public.social_photos(%L)', :'co'), 'social_photos refuses');
+select t1070.check(not exists (select 1 from public.record_photos(:'co', null, :'c1')), 'record_photos finds none of the client''s photos');
 select t1070.check((select array_agg(visit_id) from public.equipment_conflicts(:'co', array[:'e1', :'e2']::uuid[], private.company_today(:'co') + 1, null, null)) is null
   and (select array_agg(visit_id) from public.equipment_conflicts(:'co', array[:'e1']::uuid[], private.company_today(:'co'), null, null)) = array[:'v1']::uuid[],
   'equipment_conflicts only sees their own visits');
@@ -994,8 +1005,8 @@ select set_config('request.jwt.claims', '{"sub": "d1070000-0000-0000-0000-000000
 select t1070.check((select array_agg(title order by title) from public.visits) = '{"Clean up","Tear off and shingle"}'
   and (select array_agg(display_name) from public.clients) = '{"Ann Client"}' and (select count(*) from public.client_contacts) = 1
   and (select count(*) from public.crews) = 1 and (select count(*) from public.visit_assignees) = 6 and (select count(*) from public.equipment) = 2
-  and (select count(*) from public.checklist_templates) = 3 and (select count(*) from public.attachments) = 3 and (select count(*) from public.time_entries) = 2,
-  'field crew read what they always did (their own two time entries)');
+  and (select count(*) from public.checklist_templates) = 3 and (select count(*) from public.attachments) = 4 and (select count(*) from public.time_entries) = 2,
+  'field crew read what they always did (their own two time entries, and Ann''s porch photo OK to share)');
 select t1070.check((select count(*) from public.memberships where company_id = :'co') = 7 and (select count(*) from public.profiles where full_name in ('Al Apex', 'Bo Birch')) = 2,
   'and see the subs on the team''s visits: their sign-ins and profiles');
 select t1070.check(not exists (select 1 from public.subcontractors) and not exists (select 1 from public.sub_documents) and not exists (select 1 from public.sub_paperwork)

@@ -345,7 +345,7 @@ function LocationPicker({ current, kept, reviewCount, marketingOn, onDone, onCan
           {account.locations.map((l) => {
             const on = chosen?.location === l.name || (!chosen && current?.id === l.name);
             return (
-              <label key={l.name} className="card-row" style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-control)", cursor: "pointer", borderColor: on ? "var(--green)" : undefined }}>
+              <label key={l.name} className={`card-row choice-row${on ? " picked" : ""}`} style={{ cursor: "pointer" }}>
                 <input type="radio" name="google-location" checked={on} onChange={() => setChosen({ account: account.name, location: l.name, title: l.title })} />
                 <span className="grow" style={{ minWidth: 0 }}>
                   <strong style={{ display: "block" }}>{l.title}</strong>

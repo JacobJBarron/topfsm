@@ -19,11 +19,13 @@ import { describeAccount } from "../integrations/accounting";
 import { deleteVisitsCalendar, describeGoogleAccount, pushUpcomingVisits } from "../integrations/calendars";
 import { checkFalKey } from "../integrations/fal";
 import { describeGoogleBusiness, findLocation, GoogleBusinessError } from "../integrations/googleBusiness";
+import { badKeys, MetaError, metaAuthorizeUrl, type MetaKeys } from "../integrations/meta";
 import { CATALOG, catalogEntry, isCalendarApp, OAUTH, UntrustedServerError, zohoAccountsServer, type Provider } from "../integrations/registry";
 import { beginStripeImport, canImportStripe, connectStripe, disconnectStripe, IMPORT_STALE_MS, importFromStripe, SHARED_STRIPE_IMPORT, stripeAccess, type ImportState } from "../integrations/stripe";
 import { appKeysOf, exchangeCode, loadSecret, oauthClient, revoke, saveSecret, SignInRefused } from "../integrations/tokens";
 import { checkSite, saveWebsite, WebsiteError } from "../integrations/website";
 import { checkAccess, chooseLocation, endReviewSync, firstSyncProgress, problemMessage, reviewLinkOffer, syncCompany, type BusinessSettings } from "../services/googleReviews";
+import { checkMeta, chooseMetaPage, confirmMetaLive, connectMeta, metaAppState, metaKeptSettings, metaPages, signOutMeta } from "../services/metaConnect";
 
 export const apps = new Hono<AppEnv>();
 
@@ -61,6 +63,8 @@ apps.get("/apps", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
   const abc = abcSettingsOf(integrations.find((r) => r.provider === "abc_supply" && r.status !== "disconnected")?.settings);
   // Google Business Profile: the location reviews come from, what's in the way, and Google's review link.
   const business = await googleBusinessState(c.env, c.var.companyId, integrations.find((r) => r.provider === "google_business"), company.data?.settings, appKeys.get("google_business"));
+  // Facebook & Instagram: the Page and Instagram account posts go to, and what's in the way.
+  const meta = await metaAppState(adminClient(c.env), c.var.companyId, integrations.find((r) => r.provider === "meta"), builtinOn.marketing);
   // The deployment's own Stripe account, for companies that haven't added theirs.
   const serverStripe = !ownKey && Boolean(c.env.STRIPE_SECRET_KEY);
   if (serverStripe) byProvider.set("stripe", { provider: "stripe", status: "connected", account_label: "Set up for this server", connected_at: null, last_sync_at: null, last_error: null });
@@ -80,7 +84,7 @@ apps.get("/apps", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
       const row = byProvider.get(entry.id);
       // The Client ID shows up in sign-in links anyway; the secret never leaves the server.
       const keys = appKeys.get(entry.id);
-      const ownKeys = keys?.client_id ? { client_id: keys.client_id, sandbox: keys.environment === "sandbox", accounts_server: keys.accounts_server ?? null } : null;
+      const ownKeys = keys?.client_id ? { client_id: keys.client_id, sandbox: keys.environment === "sandbox", accounts_server: keys.accounts_server ?? null, config_id: keys.config_id ?? null } : null;
       return {
         ...entry,
         available: available(c.env) || Boolean(ownKeys),
@@ -91,6 +95,7 @@ apps.get("/apps", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
         ...(entry.id === "stripe" && stripe ? { stripe } : {}),
         ...(entry.id === "abc_supply" && abc ? { supplier: abc } : {}),
         ...(entry.id === "google_business" ? { google_business: business } : {}),
+        ...(entry.id === "meta" ? { meta } : {}),
         ...(takesKeys ? { takes_app_keys: true, app_keys: ownKeys } : {}),
       };
     }),
@@ -179,6 +184,7 @@ apps.post("/apps/:provider/connect", requireUser, requireCompany(ADMINS, "apps")
   const client = config ? oauthClient(c.env, provider, keys) : null;
   if (!entry || !config || entry.auth !== "oauth" || !client) throw new HttpError(400, "That app isn't available yet.");
 
+  if (provider === "meta" && !keys.client_id) throw new HttpError(400, "Add your Meta app's App ID and secret first.");
   const nonce = randomId();
   const state = await signToken(c.env, {
     company: c.var.companyId,
@@ -188,6 +194,12 @@ apps.post("/apps/:provider/connect", requireUser, requireCompany(ADMINS, "apps")
     exp: Math.floor(Date.now() / 1000) + 600,
   });
   setCookie(c, STATE_COOKIE, nonce, { httpOnly: true, secure: true, sameSite: "Lax", path: "/api/apps", maxAge: 600 });
+  // Meta: its own sign-in page (a Facebook Login for Business configuration, or the permissions), with
+  // the two a Page in a business portfolio needs for Instagram when asked (?ads=1).
+  if (provider === "meta") {
+    const options = { ads: c.req.query("ads") === "1", again: c.req.query("again") === "1" };
+    return c.json({ authorization_url: metaAuthorizeUrl(keys as unknown as MetaKeys, state, callbackUrl(appUrl(c), provider), options) });
+  }
 
   const params = new URLSearchParams({
     client_id: client.id,
@@ -217,6 +229,11 @@ apps.get("/apps/:provider/callback", async (c) => {
   const admin = adminClient(c.env);
   const entry = catalogEntry(provider);
   try {
+    // Facebook & Instagram signs in its own way (services/metaConnect.ts): the Page comes next.
+    if (provider === "meta") {
+      const pending = await connectMeta(c.env, admin, state.company, state.user, query.code, callbackUrl(appUrl(c), provider));
+      return done("connected", undefined, pending ? { pending } : {});
+    }
     // Signing in with the company's own app: its keys get the tokens, and stay with them.
     const saved = entry?.appKeys ? await loadSecret(c.env, admin, state.company, provider).catch(() => null) : null;
     const secret = await exchangeCode(c.env, provider, query.code, callbackUrl(appUrl(c), provider), { query }, saved?.extra);
@@ -257,6 +274,8 @@ apps.get("/apps/:provider/callback", async (c) => {
     // Refusing a server that isn't the provider's says so, and so do keys the provider turned down
     // (a secret pasted wrong, most likely). Other failures stay general.
     if (error instanceof UntrustedServerError) return done("error", error.message);
+    if (provider === "meta" && badKeys(error)) return done("error", "Meta didn't accept the App ID and secret. Check them on this page, then connect again.");
+    if (provider === "meta" && error instanceof MetaError) return done("error", `Meta said: ${error.message}`);
     if (error instanceof SignInRefused && /invalid_client|unauthorized_client/.test(error.message)) {
       return done("error", `${entry?.name ?? "The app"} didn't accept the Client ID and secret. Check them on this page, then connect again.`);
     }
@@ -284,14 +303,17 @@ apps.post("/apps/:provider/disconnect", requireUser, requireCompany(ADMINS, "app
   const secret = await loadSecret(c.env, admin, c.var.companyId, provider).catch(() => null);
   // Stripe's open invoices are voided with the old key, which can finish after the response.
   if (secret && provider === "stripe") runInBackground(c, (await disconnectStripe(c.env, admin, c.var.companyId, secret)).settled);
+  else if (secret && provider === "meta") await signOutMeta(c.env, secret);
   else if (secret && !shared) await revoke(c.env, provider, secret);
   // The company's own app keys stay, so connecting again is one click.
   const keys = catalogEntry(provider)?.appKeys ? appKeysOf(secret?.extra) : {};
   if (keys.client_id) await saveSecret(c.env, admin, c.var.companyId, provider, { extra: keys });
   else await admin.from("integration_secrets").delete().match({ company_id: c.var.companyId, provider });
+  // Facebook & Instagram keeps whether its Meta app is Live, since the app (its keys) stays too.
+  const kept = provider === "meta" ? await metaKeptSettings(admin, c.var.companyId) : {};
   const { error } = await admin
     .from("integrations")
-    .update({ status: "disconnected", account_label: null, last_error: null, ...(provider === "google_calendar" || provider === "google_business" ? { settings: {} } : {}) })
+    .update({ status: "disconnected", account_label: null, last_error: null, ...(provider === "google_calendar" || provider === "google_business" ? { settings: {} } : provider === "meta" ? { settings: kept as never } : {}) })
     .match({ company_id: c.var.companyId, provider });
   if (error) throw dbError(error);
   return c.json({ provider, status: "disconnected", ...(provider === "google_business" ? { removed } : {}), ...(shared ? { revoked: false } : {}) });
@@ -368,7 +390,14 @@ const appKey = z.string().trim().min(8, "That looks too short. Copy the whole th
 apps.put("/apps/:provider/app-keys", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
   const provider = c.req.param("provider") as Provider;
   if (!catalogEntry(provider)?.appKeys) throw new HttpError(400, "That app doesn't take its own keys.");
-  const body = await readJson(c, z.object({ client_id: appKey, client_secret: appKey, sandbox: z.boolean().default(false), accounts_server: z.string().max(100).optional() }));
+  const body = await readJson(c, z.object({
+    client_id: appKey,
+    client_secret: appKey,
+    sandbox: z.boolean().default(false),
+    accounts_server: z.string().max(100).optional(),
+    // Meta: a Facebook Login for Business configuration, if the business made one.
+    config_id: z.string().trim().regex(/^\d{5,30}$/, "A Configuration ID is all digits.").optional().or(z.literal("").transform(() => undefined)),
+  }));
   // Zoho: the data center the app was made in, where sign-in starts. Only Zoho's own servers.
   let accountsServer: string | undefined;
   if (provider === "zoho_books") {
@@ -380,9 +409,13 @@ apps.put("/apps/:provider/app-keys", requireUser, requireCompany(ADMINS, "apps")
   }
   const admin = adminClient(c.env);
   const previous = await loadSecret(c.env, admin, c.var.companyId, provider).catch(() => null);
-  if (previous && !(await sharesGoogleSignIn(c.env, c.var.companyId, provider))) await revoke(c.env, provider, previous);
-  // The integrations row must exist before its secret (foreign key).
-  const { error } = await admin.from("integrations").upsert({ company_id: c.var.companyId, provider, status: "disconnected", account_label: null, last_error: null });
+  // The same Meta app with its secret pasted again is still Live, if it was.
+  const kept = provider === "meta" && appKeysOf(previous?.extra).client_id === body.client_id ? await metaKeptSettings(admin, c.var.companyId) : {};
+  if (previous && provider === "meta") await signOutMeta(c.env, previous);
+  else if (previous && !(await sharesGoogleSignIn(c.env, c.var.companyId, provider))) await revoke(c.env, provider, previous);
+  // The integrations row must exist before its secret (foreign key). A new Meta app starts again from
+  // nothing: its Page, and whether it's Live, are the new app's to say.
+  const { error } = await admin.from("integrations").upsert({ company_id: c.var.companyId, provider, status: "disconnected", account_label: null, last_error: null, ...(provider === "meta" ? { settings: kept as never } : {}) });
   if (error) throw dbError(error);
   await saveSecret(c.env, admin, c.var.companyId, provider, {
     extra: {
@@ -390,6 +423,7 @@ apps.put("/apps/:provider/app-keys", requireUser, requireCompany(ADMINS, "apps")
       client_secret: body.client_secret,
       ...(provider === "quickbooks" && body.sandbox ? { environment: "sandbox" } : {}),
       ...(accountsServer ? { accounts_server: accountsServer } : {}),
+      ...(provider === "meta" && body.config_id ? { config_id: body.config_id } : {}),
     },
   });
   return c.json({ provider, status: "disconnected" });
@@ -401,11 +435,34 @@ apps.delete("/apps/:provider/app-keys", requireUser, requireCompany(ADMINS, "app
   if (!catalogEntry(provider)?.appKeys) throw new HttpError(400, "That app doesn't take its own keys.");
   const admin = adminClient(c.env);
   const secret = await loadSecret(c.env, admin, c.var.companyId, provider).catch(() => null);
-  if (secret && !(await sharesGoogleSignIn(c.env, c.var.companyId, provider))) await revoke(c.env, provider, secret);
+  if (secret && provider === "meta") await signOutMeta(c.env, secret);
+  else if (secret && !(await sharesGoogleSignIn(c.env, c.var.companyId, provider))) await revoke(c.env, provider, secret);
   await admin.from("integration_secrets").delete().match({ company_id: c.var.companyId, provider });
-  const { error } = await admin.from("integrations").update({ status: "disconnected", account_label: null, last_error: null }).match({ company_id: c.var.companyId, provider });
+  const { error } = await admin.from("integrations").update({ status: "disconnected", account_label: null, last_error: null, ...(provider === "meta" ? { settings: {} } : {}) }).match({ company_id: c.var.companyId, provider });
   if (error) throw dbError(error);
   return c.json({ provider, status: "disconnected" });
+});
+
+/** Facebook & Instagram: the Pages the sign-in manages, read from Meta again, to pick the one posts go to. */
+apps.get("/apps/meta/pages", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
+  return c.json({ pages: await metaPages(c.env, adminClient(c.env), c.var.companyId) });
+});
+
+/** Facebook & Instagram: the Page posts go to, and whether its Instagram account is used too. */
+apps.put("/apps/meta/page", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
+  const body = await readJson(c, z.object({ page_id: z.string().regex(/^\d{1,30}$/), instagram: z.boolean() }));
+  return c.json(await chooseMetaPage(c.env, adminClient(c.env), c.var.companyId, body.page_id, body.instagram));
+});
+
+/** Facebook & Instagram: I switched my app to Live (Meta's API can't say). */
+apps.post("/apps/meta/live", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
+  const body = await readJson(c, z.object({ confirmed: z.boolean() }));
+  return c.json({ live_confirmed_at: await confirmMetaLive(adminClient(c.env), c.var.companyId, body.confirmed) });
+});
+
+/** Facebook & Instagram: Check again, the Page's token, the permissions and the Instagram link. */
+apps.post("/apps/meta/check", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
+  return c.json(await checkMeta(c.env, adminClient(c.env), c.var.companyId));
 });
 
 /** An ABC Supply problem as the answer: the keys or the account turned down say why. */

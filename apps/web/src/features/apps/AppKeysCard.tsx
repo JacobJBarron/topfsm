@@ -1,18 +1,19 @@
 /**
- * QuickBooks, Zoho Books and Google Business Profile with the business's own app at Intuit, Zoho or
- * Google: step by step to make one (every address it asks for, ready to copy), then its Client ID and
- * secret pasted here. Nobody has to set up the server, and the keys stay on this business's own
- * server, encrypted.
+ * QuickBooks, Zoho Books, Google Business Profile and Facebook & Instagram with the business's own app
+ * at Intuit, Zoho, Google or Meta: step by step to make one (every address it asks for, ready to
+ * copy), then its Client ID and secret (Meta's App ID and secret) pasted here. Nobody has to set up
+ * the server, and the keys stay on this business's own server, encrypted.
  */
 import { GOOGLE_ACCESS_FORM } from "@crewtavo/core/reviews";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/Button";
 import { confirm } from "@/components/ui/Confirm";
 import { Field, FormError } from "@/components/ui/Field";
 import { Icon } from "@/components/ui/Icon";
-import { api } from "@/lib/api";
+import { api, supabase, unwrap } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
+import { useSession } from "@/lib/session";
 import type { AppRow } from "./catalog";
 
 const INTUIT_DEVELOPER = "https://developer.intuit.com/";
@@ -24,6 +25,9 @@ const GOOGLE_APIS = [
   { name: "Google My Business API", href: "https://console.cloud.google.com/apis/library/mybusiness.googleapis.com" },
 ];
 export const BUSINESS_SCOPE = "https://www.googleapis.com/auth/business.manage";
+const META_DEVELOPERS = "https://developers.facebook.com/apps/";
+/** The permissions to add for Facebook & Instagram, by the names Meta's dashboard gives them. */
+export const META_PERMISSIONS = ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "business_management", "instagram_basic", "instagram_content_publish"];
 
 /** Zoho's data centers: an app made in one only signs in accounts there (registry.ts keeps the same list). */
 const ZOHO_REGIONS = [
@@ -61,7 +65,8 @@ export function AppKeysCard({ app, onChanged, onConnect, connecting, anchor = tr
   const [editing, setEditing] = useState(false);
   const qbo = app.id === "quickbooks";
   const google = app.id === "google_business";
-  const provider = qbo ? "Intuit" : google ? "Google" : "Zoho";
+  const meta = app.id === "meta";
+  const provider = qbo ? "Intuit" : google ? "Google" : meta ? "Meta" : "Zoho";
   const remove = useMutation({
     meta: { success: `${provider} app keys removed` },
     mutationFn: () => api.delete(`/apps/${app.id}/app-keys`),
@@ -70,7 +75,9 @@ export function AppKeysCard({ app, onChanged, onConnect, connecting, anchor = tr
   const askRemove = async () => {
     const body = google
       ? `${app.name} is uninstalled, and installing it again uses this server's Google app, if it has one. The reviews already here stay.`
-      : `${app.name} is uninstalled, and installing it again needs your ${provider} app's keys. Nothing already synced is deleted.`;
+      : meta
+        ? `${app.name} is uninstalled and signed out of your Page, and installing it again needs your Meta app's keys. Posts already made stay.`
+        : `${app.name} is uninstalled, and installing it again needs your ${provider} app's keys. Nothing already synced is deleted.`;
     if (await confirm({ title: `Remove your ${provider} app keys?`, body, confirmLabel: "Remove keys", danger: true })) remove.mutate();
   };
 
@@ -80,16 +87,16 @@ export function AppKeysCard({ app, onChanged, onConnect, connecting, anchor = tr
       <section id={setupId} className="card card-pad stack-sm" aria-labelledby="app-keys-title" style={{ gap: 8 }}>
         <h2 id="app-keys-title" className="section-title" style={{ fontSize: 16 }}>Your {provider} app</h2>
         <span className="muted small">
-          Client ID ending in <strong>{end}</strong>
-          {qbo ? (keys.sandbox ? " · Development keys, for a sandbox company" : " · Production keys") : google ? null : ` · ${regionOf(keys.accounts_server).label}`}
+          {meta ? "App ID" : "Client ID"} ending in <strong>{end}</strong>
+          {qbo ? (keys.sandbox ? " · Development keys, for a sandbox company" : " · Production keys") : google ? null : meta ? (keys.config_id ? " · With a Facebook Login for Business configuration" : null) : ` · ${regionOf(keys.accounts_server).label}`}
           . The secret is stored encrypted on your server and never shown again.
         </span>
         {app.status === "disconnected" && (
           <div className="callout" style={{ marginTop: 4 }}>
             <Icon name="info" size={20} />
             <div className="grow stack-sm" style={{ gap: 8 }}>
-              <span>Last step: {google ? "sign in with Google and pick your location." : `sign in to ${app.name} and pick your company.`}</span>
-              <Button variant="primary" style={{ justifySelf: "start" }} loading={connecting} onClick={onConnect}>{google ? "Sign in with Google" : `Sign in to ${app.name}`}</Button>
+              <span>Last step: {google ? "sign in with Google and pick your location." : meta ? "sign in with Facebook as your Page's admin and pick your Page." : `sign in to ${app.name} and pick your company.`}</span>
+              <Button variant="primary" style={{ justifySelf: "start" }} loading={connecting} onClick={onConnect}>{google ? "Sign in with Google" : meta ? "Sign in with Facebook" : `Sign in to ${app.name}`}</Button>
             </div>
           </div>
         )}
@@ -110,10 +117,12 @@ export function AppKeysCard({ app, onChanged, onConnect, connecting, anchor = tr
             ? "QuickBooks connects through an app you make at Intuit, for your business only. It's free, and these steps give you everything Intuit asks for."
             : google
               ? googleIntro(app)
-              : "Zoho Books connects through an app you make in Zoho's API Console, for your business only. It's free and takes about five minutes."}
+              : meta
+                ? "Facebook & Instagram connects through a Meta app you make for your business only. It's free, takes about ten minutes, and Meta doesn't need to review an app that only posts to your own Page."
+                : "Zoho Books connects through an app you make in Zoho's API Console, for your business only. It's free and takes about five minutes."}
         </span>
       </div>
-      {qbo ? <IntuitSteps app={app} /> : google ? <GoogleSteps app={app} /> : null}
+      {qbo ? <IntuitSteps app={app} /> : google ? <GoogleSteps app={app} /> : meta ? <MetaSteps app={app} /> : null}
       <KeysForm app={app} initial={keys} onSaved={() => { setEditing(false); onChanged(); }} onCancel={keys ? () => setEditing(false) : undefined} />
     </section>
   );
@@ -191,10 +200,73 @@ export function GoogleSteps({ app }: { app: AppRow }) {
   );
 }
 
+/** The privacy page Meta asks for before an app goes Live: the business's own, on its website. */
+export function usePrivacyUrl(): string | null {
+  const session = useSession();
+  const company = useQuery({
+    queryKey: ["company-website", session.company.id],
+    staleTime: 5 * 60_000,
+    queryFn: async () => unwrap(await supabase().from("companies").select("website").eq("id", session.company.id).maybeSingle()),
+  });
+  const site = company.data?.website?.trim();
+  if (!site) return null;
+  const base = /^https?:\/\//i.test(site) ? site : `https://${site}`;
+  return `${base.replace(/\/+$/, "")}/privacy`;
+}
+
+/** The privacy page line: the website's /privacy with Copy, or what to do with no website on file. */
+export function PrivacyLine() {
+  const url = usePrivacyUrl();
+  return url ? (
+    <div className="stack-sm" style={{ gap: 6 }}>
+      <CopyRow label="Privacy policy URL" value={url} />
+      <span className="small">Use your own privacy page if it's somewhere else. It has to load, and say how to ask for data to be deleted.</span>
+    </div>
+  ) : (
+    <span className="small">Add a privacy page to your website first, saying how to ask for data to be deleted. Meta checks that it loads.</span>
+  );
+}
+
+/**
+ * A Meta app for the business's own Page, in about ten minutes: made with the use case for managing
+ * a Page, Facebook Login for Business added, this server's redirect address pasted, the permissions
+ * added, its keys pasted below, then signed in and switched to Live (until it's Live, only people
+ * with a role on the app see its posts). Meta's dashboard changes its wording now and then: the steps
+ * name its fields as it shows them in October 2026.
+ */
+export function MetaSteps({ app }: { app: AppRow }) {
+  return (
+    <ol className="app-steps" style={{ gap: 14 }}>
+      <li><div className="stack-sm" style={{ gap: 8 }}>
+        <span><strong>Before you start:</strong> Meta asks for a privacy page before your app can go Live.</span>
+        <PrivacyLine />
+      </div></li>
+      <li><div className="stack-sm" style={{ gap: 8 }}>
+        <span>At Meta for Developers, signed in as your Page's admin, click <strong>Create app</strong>. Name it after your business, pick the use case for managing everything on your Page, and choose your business portfolio, or none.</span>
+        <a className="btn btn-sm" style={{ justifySelf: "start" }} href={META_DEVELOPERS} target="_blank" rel="noreferrer">Open Meta for Developers <Icon name="external" size={12} /></a>
+      </div></li>
+      <li>Add the <strong>Facebook Login for Business</strong> product, if the app doesn't have it.</li>
+      <li><div className="stack-sm" style={{ gap: 8 }}>
+        <span>Under <strong>Facebook Login for Business → Settings</strong>, paste this under <strong>Valid OAuth Redirect URIs</strong> and save. Leave <strong>Strict mode</strong> on.</span>
+        {app.redirect_uri && <CopyRow label="Valid OAuth Redirect URI" value={app.redirect_uri} />}
+      </div></li>
+      <li><div className="stack-sm" style={{ gap: 8 }}>
+        <span>In the use case's <strong>Permissions</strong>, click <strong>Add</strong> for each of these. If Instagram's two aren't offered there, add the Instagram use case too, and add them from it.</span>
+        <ul className="app-access">{META_PERMISSIONS.map((p) => <li key={p}><strong>{p}</strong></li>)}</ul>
+      </div></li>
+      <li>Under <strong>App settings → Basic</strong>, copy the <strong>App ID</strong> and the <strong>App secret</strong> (click <strong>Show</strong>), and paste them below. Fill in the <strong>Privacy policy URL</strong> and the <strong>User data deletion</strong> instructions URL there too, with the same privacy page.</li>
+      <li>Save the keys, then sign in with Facebook and pick your Page and its Instagram account.</li>
+      <li>Switch the app to <strong>Live</strong> with the <strong>App mode</strong> switch at the top of the dashboard. Until it's Live, only you can see the posts. Meta's API can't tell Crewtavo when it's Live, so tick the box once you've switched it.</li>
+    </ol>
+  );
+}
+
 function KeysForm({ app, initial, onSaved, onCancel }: { app: AppRow; initial: NonNullable<AppRow["app_keys"]> | null; onSaved: () => void; onCancel?: () => void }) {
   const qbo = app.id === "quickbooks";
   const zohoBooks = app.id === "zoho_books";
+  const meta = app.id === "meta";
   const [clientId, setClientId] = useState(initial?.client_id ?? "");
+  const [configId, setConfigId] = useState(initial?.config_id ?? "");
   const [secret, setSecret] = useState("");
   const [show, setShow] = useState(false);
   const [sandbox, setSandbox] = useState(initial?.sandbox ?? false);
@@ -202,8 +274,8 @@ function KeysForm({ app, initial, onSaved, onCancel }: { app: AppRow; initial: N
   const zoho = ZOHO_REGIONS.find((r) => r.tld === region)!;
   const origin = app.redirect_uri ? new URL(app.redirect_uri).origin : window.location.origin;
   const save = useMutation({
-    meta: { inline: true, success: `${qbo ? "Intuit" : zohoBooks ? "Zoho" : "Google"} app keys saved` },
-    mutationFn: () => api.put(`/apps/${app.id}/app-keys`, { client_id: clientId.trim(), client_secret: secret.trim(), ...(qbo ? { sandbox } : zohoBooks ? { accounts_server: accountsOf(region) } : {}) }),
+    meta: { inline: true, success: `${qbo ? "Intuit" : zohoBooks ? "Zoho" : meta ? "Meta" : "Google"} app keys saved` },
+    mutationFn: () => api.put(`/apps/${app.id}/app-keys`, { client_id: clientId.trim(), client_secret: secret.trim(), ...(qbo ? { sandbox } : zohoBooks ? { accounts_server: accountsOf(region) } : meta ? { config_id: configId.trim() } : {}) }),
     onSuccess: () => {
       setSecret("");
       onSaved();
@@ -214,7 +286,7 @@ function KeysForm({ app, initial, onSaved, onCancel }: { app: AppRow; initial: N
     e.preventDefault();
     if (!ready) return;
     // Tokens belong to the app that issued them, so new keys sign out of the old app.
-    if (app.status !== "disconnected" && !(await confirm({ title: `Use these keys instead?`, body: `${app.name} signs out, and you sign in again with the new app. Nothing already synced is deleted.`, confirmLabel: "Use new keys" }))) return;
+    if (app.status !== "disconnected" && !(await confirm({ title: `Use these keys instead?`, body: meta ? `${app.name} signs out, and you sign in again with the new app, pick your Page and switch the new app to Live. Posts already made stay.` : `${app.name} signs out, and you sign in again with the new app. Nothing already synced is deleted.`, confirmLabel: "Use new keys" }))) return;
     save.mutate();
   };
 
@@ -241,10 +313,10 @@ function KeysForm({ app, initial, onSaved, onCancel }: { app: AppRow; initial: N
           <li>Copy the <strong>Client ID</strong> and <strong>Client Secret</strong> Zoho shows, and paste them below.</li>
         </ol>
       )}
-      <Field label="Client ID">
-        <input className="input" autoComplete="off" spellCheck={false} value={clientId} onChange={(e) => { setClientId(e.target.value); save.reset(); }} />
+      <Field label={meta ? "App ID" : "Client ID"}>
+        <input className="input" autoComplete="off" spellCheck={false} inputMode={meta ? "numeric" : undefined} value={clientId} onChange={(e) => { setClientId(e.target.value); save.reset(); }} />
       </Field>
-      <Field label="Client Secret" hint={initial ? "Paste the secret again, even if only the Client ID changed." : undefined}>
+      <Field label={meta ? "App secret" : "Client Secret"} hint={initial ? `Paste the secret again, even if only the ${meta ? "App ID" : "Client ID"} changed.` : undefined}>
         <div className="input-group">
           <input className="input" type={show ? "text" : "password"} autoComplete="off" spellCheck={false} value={secret} onChange={(e) => { setSecret(e.target.value); save.reset(); }} style={{ paddingLeft: 12, paddingRight: 36 }} />
           <button type="button" className="icon-btn addon-right" style={{ position: "absolute", right: 2, pointerEvents: "auto" }} aria-label={show ? "Hide secret" : "Show secret"} onClick={() => setShow(!show)}><Icon name={show ? "eye" : "lock"} size={14} /></button>
@@ -258,6 +330,16 @@ function KeysForm({ app, initial, onSaved, onCancel }: { app: AppRow; initial: N
             <span className="muted small" style={{ display: "block", fontWeight: 400 }}>They work right away, but only with a QuickBooks sandbox company, so they're for trying it out. Add the Redirect URI to the development settings too.</span>
           </span>
         </label>
+      )}
+      {meta && (
+        <details className="app-details" open={Boolean(initial?.config_id) || undefined}>
+          <summary className="small">More options</summary>
+          <div style={{ marginTop: 10 }}>
+            <Field label="Configuration ID" optional hint="Only if you made a Facebook Login for Business configuration. Leave it empty and Crewtavo asks for the permissions itself.">
+              <input className="input" autoComplete="off" spellCheck={false} inputMode="numeric" value={configId} onChange={(e) => { setConfigId(e.target.value); save.reset(); }} />
+            </Field>
+          </div>
+        </details>
       )}
       <FormError error={save.error} />
       <div className="row wrap" style={{ gap: 8 }}>

@@ -2,7 +2,7 @@
 -- (20261030000200_marketing_app.sql, 20261030000300_review_reminders.sql,
 -- 20261030000500_marketing_stops.sql, 20261030000600_review_ask_followups.sql): every business has it installed, new ones too; only owners
 -- and admins who connect apps install and uninstall it, and a page saving other settings can't;
--- uninstalling stops reminders for good, puts scheduled campaigns back to drafts and stops ones
+-- uninstalling stops reminders for good, puts scheduled campaigns and social posts back to drafts and stops ones
 -- sending; the client's review and text opt-outs (only the server sets texts off, and old STOP texts
 -- count, read as the webhook reads them whatever the locale); asks by text and email; the reminder
 -- columns stay the server's; one ask per client within the gap, even at the same moment; reminders
@@ -128,6 +128,9 @@ insert into public.campaign_recipients (company_id, campaign_id, client_id, emai
   (:'co', :'fall', null, 'cal@example.test', 'Cal', 'sending'),
   (:'other', :'promo', :'olga', 'olga@example.test', 'Olga Other', 'pending');
 
+-- A social post scheduled to go (Marketing → Social).
+insert into public.social_posts (company_id, source, caption, networks, status, scheduled_for) values (:'co', 'text', 'Spring cleanups', '{facebook}', 'scheduled', now() + interval '1 day') returning id as social_post \gset
+
 begin;
 set local role authenticated;
 select tmk.as_user(:'oli');
@@ -152,6 +155,8 @@ select tmk.check((select status = 'draft' and scheduled_at is null and recipient
   'uninstalling puts a scheduled campaign back to a draft, its audience to be taken again when it''s scheduled');
 select tmk.check((select status = 'cancelled' and finished_at is not null from public.campaigns where id = :'fall'),
   'and stops one that''s sending where it is');
+select tmk.check((select status = 'draft' and scheduled_for is null and note = 'Marketing was uninstalled' from public.social_posts where id = :'social_post'),
+  'and puts a scheduled social post back to a draft');
 select tmk.check((select array_agg(status || ': ' || coalesce(error, '') order by email) = '{"sent: ","skipped: Marketing was uninstalled","skipped: Marketing was uninstalled"}'
                     from public.campaign_recipients where campaign_id = :'fall'),
   'its recipients still to go are skipped, saying why, and the ones it sent stay sent');

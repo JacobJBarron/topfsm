@@ -494,6 +494,12 @@ describe("validation messages", () => {
       .toBe("The second reminder comes after the first.");
     expect(issue(z.object({ kind: z.string().refine((k) => k === "a") }), { kind: "b" })).toBe("Check the kind and try again.");
   });
+  it("uses a check's own words when they're a sentence, and the field's name otherwise", () => {
+    expect(issue(z.object({ config_id: z.string().regex(/^\d+$/, "A Configuration ID is all digits.") }), { config_id: "abc-config" })).toBe("A Configuration ID is all digits.");
+    expect(issue(z.object({ secret: z.string().min(8, "That looks too short. Copy the whole thing.") }), { secret: "abc" })).toBe("That looks too short. Copy the whole thing.");
+    expect(issue(z.object({ config_id: z.string().regex(/^\d+$/) }), { config_id: "abc" })).toBe("Configuration ID doesn't look right.");
+    expect(issue(z.object({ due_on: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "use YYYY-MM-DD") }), { due_on: "soon" })).toBe("Due date doesn't look right.");
+  });
 });
 
 describe("built-in scheduler", () => {

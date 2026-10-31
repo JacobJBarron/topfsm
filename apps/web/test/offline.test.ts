@@ -1072,7 +1072,7 @@ describe("screens", () => {
         expect(options, relative(SRC, file)).not.toMatch(/\bmutationFn\b/);
       }
     }
-    expect(found.sort()).toEqual(["features/field/FieldTodayPage.tsx visit-status", "features/field/FieldVisitPage.tsx checklist-save", "features/field/FieldVisitPage.tsx visit-notes", "features/field/FieldVisitPage.tsx visit-status"]);
+    expect(found.sort()).toEqual(["features/field/FieldTodayPage.tsx visit-status", "features/field/FieldVisitPage.tsx checklist-save", "features/field/FieldVisitPage.tsx visit-notes", "features/field/FieldVisitPage.tsx visit-status", "features/marketing/ShareToggle.tsx photo-share"]);
   });
 });
 

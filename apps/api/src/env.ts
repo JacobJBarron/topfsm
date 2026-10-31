@@ -47,6 +47,12 @@ export interface Env {
    */
   CREWTAVO_VISITOR_IP?: string;
 
+  /**
+   * Where Graph API calls go instead of https://graph.facebook.com: a local stub, for checking the
+   * app without reaching Meta. Never set in production.
+   */
+  META_GRAPH_URL?: string;
+
   ANTHROPIC_API_KEY?: string;
   AI_MODEL?: string;
 

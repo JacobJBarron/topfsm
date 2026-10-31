@@ -212,3 +212,34 @@ describe("a business's own QuickBooks and Zoho apps", () => {
     expect(await db.secret("quickbooks")).toBeNull();
   });
 });
+
+describe("a business's own Meta app", () => {
+  it("is never available on the server, only with the business's own keys, and keeps a Configuration ID", async () => {
+    const db = fakeDb();
+    const before = (await (await app.request("/api/apps", { headers }, env)).json()) as AppsBody;
+    expect(before.apps.find((a) => a.id === "meta")).toMatchObject({ available: false, takes_app_keys: true, app_keys: null });
+    expect((await saveKeys("meta", { client_id: "1234567890123", client_secret: "meta-secret-value-0123456789", config_id: "not digits" })).status).toBe(400);
+    expect((await saveKeys("meta", { client_id: "1234567890123", client_secret: "meta-secret-value-0123456789", config_id: "987654321" })).status).toBe(200);
+    expect(await db.secret("meta")).toEqual({ extra: { client_id: "1234567890123", client_secret: "meta-secret-value-0123456789", config_id: "987654321" } });
+    const after = (await (await app.request("/api/apps", { headers }, env)).json()) as AppsBody;
+    expect(after.apps.find((a) => a.id === "meta")).toMatchObject({ available: true, app_keys: { client_id: "1234567890123", config_id: "987654321" } });
+  });
+
+  it("signs in at Meta with its Configuration ID", async () => {
+    fakeDb();
+    await saveKeys("meta", { client_id: "1234567890123", client_secret: "meta-secret-value-0123456789", config_id: "987654321" });
+    const res = await app.request("/api/apps/meta/connect", { method: "POST", headers }, env);
+    const url = new URL(((await res.json()) as { authorization_url: string }).authorization_url);
+    expect(url.hostname).toBe("www.facebook.com");
+    expect(url.searchParams.get("config_id")).toBe("987654321");
+    expect(url.searchParams.get("redirect_uri")).toBe("https://crew.example.com/api/apps/meta/callback");
+  });
+
+  it("keeps its keys, Configuration ID too, when disconnecting", async () => {
+    const db = fakeDb();
+    await db.keep("meta", { access_token: "long", expires_at: Date.now() + 86_400_000, extra: { client_id: "1234567890123", client_secret: "meta-secret", config_id: "987654321", user_id: "u1", page_id: "1", page_token: "pt" } });
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ success: true })));
+    expect((await app.request("/api/apps/meta/disconnect", { method: "POST", headers }, env)).status).toBe(200);
+    expect(await db.secret("meta")).toEqual({ extra: { client_id: "1234567890123", client_secret: "meta-secret", config_id: "987654321" } });
+  });
+});

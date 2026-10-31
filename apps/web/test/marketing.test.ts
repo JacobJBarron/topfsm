@@ -51,6 +51,11 @@ import {
   type AutomatedRuleRow,
 } from "../src/features/marketing/automatedForm";
 import { previewParagraphs } from "../src/features/marketing/EmailEditor";
+import { shareToggleState } from "../src/features/marketing/ShareToggle";
+import { canShareFiles } from "../src/features/marketing/socialShare";
+import { CHECK_WORDS, networkChoices, networkLine, photoDay, pickedNote, postsPage, postSummary, sourceWords, startingNetworks, whenWords, type SocialState } from "../src/features/marketing/socialData";
+import { groupPhotos, markedWords } from "../src/features/files/PhotosCard";
+import { checkedWords, signInBy } from "../src/features/apps/MetaPanel";
 import { messageError, referralForm, referralPatch, rewardChanged, rewardError, rewardValue } from "../src/features/marketing/referralForm";
 
 const MARKETING = NAV_GROUPS.flat().find((item) => item.to === "/marketing")!;
@@ -81,7 +86,7 @@ describe("Crewtavo - Marketing in Apps", () => {
     const info = APP_INFO.marketing!;
     expect(info.open).toBe("/marketing");
     expect(info.developer).toBe("Crewtavo");
-    expect(info.highlights.map((h) => h.title)).toEqual(["Reviews", "Referrals", "Campaigns"]);
+    expect(info.highlights.map((h) => h.title)).toEqual(["Reviews", "Referrals", "Campaigns", "Social"]);
     expect(info.access).toContain("Uninstalling hides Marketing and stops every automatic message it sends to clients, and keeps everything");
     expect(info.website).toBe("https://crewtavo.com/docs/connections/marketing/");
   });
@@ -617,7 +622,7 @@ describe("Google Business Profile in Apps", () => {
   it("has one setup anchor, says the wait one way, and doesn't repeat the callout when back from signing in", () => {
     const page = source("../src/features/apps/AppDetailPage.tsx");
     expect(page).toContain("connecting={connect.isPending} anchor={false} />");
-    expect(page).toContain('anchor={app.id !== "google_business"}');
+    expect(page).toContain('anchor={app.id !== "google_business" && app.id !== "meta"}');
     expect(source("../src/features/apps/AppKeysCard.tsx")).toContain('const setupId = anchor ? "app-setup" : undefined;');
     for (const file of ["../src/features/apps/GoogleBusinessPanel.tsx", "../src/features/apps/AppKeysCard.tsx", "../src/features/apps/catalog.ts", "../src/features/marketing/GoogleReviews.tsx", "../src/features/marketing/googleReviewData.ts"]) {
       expect(source(file), file).not.toMatch(/about (two weeks|14 days)/);
@@ -849,5 +854,314 @@ describe("Google reviews on the Reviews tab", () => {
 
   it("names a review's reply status in the glossary's words", () => {
     expect(source("../src/components/ui/StatusPill.tsx")).toContain('review: { needs_reply: "Needs a reply", replied: "Replied" }');
+  });
+});
+
+describe("Marketing → Social", () => {
+  const state = (over: Partial<SocialState["networks"]> = {}): SocialState => ({
+    marketing_on: true, can_connect: true, ai: true, images_public: true, auto: { enabled: false, networks: [] },
+    networks: {
+      facebook: { connected: true, page_name: "Radford Lawn Care", problem: null, live_confirmed: true, missing: [] },
+      instagram: { connected: true, username: "radfordlawn", problem: null, missing: [], needs_business_permissions: false },
+      google: { ready: false, reason: "approval", message: "Google Business Profile isn't approved by Google yet." },
+      ...over,
+    },
+  });
+
+  it("sits between Campaigns and Promo codes, and goes with Marketing", () => {
+    const page = source("../src/features/marketing/MarketingPage.tsx");
+    const tabs = ["Campaigns</button>", "Social</button>", "Promo codes</button>"].map((label) => page.indexOf(label));
+    expect(tabs.every((i) => i > 0)).toBe(true);
+    expect([...tabs].sort((a, b) => a - b)).toEqual(tabs);
+    expect(page.indexOf("return <MarketingOff />")).toBeLessThan(page.indexOf("<Social />"));
+    expect(page).toContain("and post to your social pages");
+    expect(MARKETING.keywords).toContain("social facebook instagram posts");
+  });
+
+  it("offers each network only when it can post, and says why not", () => {
+    const choices = networkChoices(state(), "photos");
+    expect(choices.map((c) => [c.network, c.enabled, c.reason])).toEqual([
+      ["facebook", true, null], ["instagram", true, null], ["google", false, "Google Business Profile isn't approved by Google yet."],
+    ]);
+    expect(networkChoices(state(), "text").find((c) => c.network === "instagram")).toMatchObject({ enabled: false, reason: "Instagram needs a photo." });
+    expect(networkChoices(state({ instagram: { connected: false, username: null, problem: "not_linked", missing: [], needs_business_permissions: false } }), "photos").find((c) => c.network === "instagram")!.reason)
+      .toBe("Your Instagram account isn't linked to your Page.");
+    expect(networkChoices(state({ facebook: { connected: false, page_name: null, problem: "signin", live_confirmed: false, missing: [] } }), "photos")[0]!.reason).toBe("Reconnect Facebook & Instagram in Apps.");
+    // Connected but missing a permission it posts with: it can't be chosen, and says which.
+    expect(networkChoices(state({ facebook: { connected: true, page_name: "Radford Lawn Care", problem: null, live_confirmed: true, missing: ["pages_manage_posts"] } }), "photos")[0])
+      .toMatchObject({ enabled: false, reason: "Facebook is missing the pages_manage_posts permission. Reconnect Facebook & Instagram in Apps and allow it." });
+    // A new post starts with every network that can post, or the ones last chosen that still can.
+    expect(startingNetworks(choices, null)).toEqual(["facebook", "instagram"]);
+    expect(startingNetworks(choices, ["instagram", "google"])).toEqual(["instagram"]);
+  });
+
+  it("says when a post goes in the company's time zone, in the status words", () => {
+    const now = new Date("2026-11-02T18:00:00Z");
+    const post = { status: "scheduled", scheduled_for: "2026-11-03T15:00:00Z", finished_at: null, cancelled_at: null, created_at: "2026-11-01T00:00:00Z" };
+    expect(whenWords(post, "America/New_York", now)).toBe("Posts tomorrow at 10 AM");
+    expect(whenWords(post, "America/Los_Angeles", now)).toBe("Posts tomorrow at 7 AM");
+    expect(whenWords({ ...post, scheduled_for: "2026-11-06T21:30:00Z" }, "America/New_York", now)).toBe("Posts Nov 6 at 4:30 PM");
+    // The same day words as an automatic post's notification (private.auto_post_when).
+    expect(whenWords({ ...post, scheduled_for: "2026-11-04T15:00:00Z" }, "America/New_York", now)).toBe("Posts Nov 4 at 10 AM");
+    expect(whenWords({ ...post, status: "posted", finished_at: "2026-11-01T15:00:00Z" }, "America/New_York", now)).toBe("Posted Nov 1");
+    expect(postSummary({ status: "partly_posted", networks: ["instagram", "facebook"] })).toEqual({ label: "Partly posted", networks: "Facebook and Instagram" });
+    expect(postSummary({ status: "check", networks: ["facebook"] }).label).toBe("Unconfirmed");
+    expect(networkLine({ network: "facebook", status: "posted", error: null, permalink: "https://www.facebook.com/1" })).toEqual({ label: "Posted", text: "View on Facebook" });
+    expect(networkLine({ network: "instagram", status: "unknown", error: "x", permalink: null })).toEqual({ label: "Unconfirmed", text: "May have posted. Check your Instagram account." });
+    expect(networkLine({ network: "google", status: "retry", error: "Google had a problem.", permalink: null })).toEqual({ label: "Trying again", text: "Google had a problem." });
+    const pill = source("../src/components/ui/StatusPill.tsx");
+    expect(pill).toContain('post: { draft: "Draft", scheduled: "Scheduled", posting: "Posting", posted: "Posted", partly_posted: "Partly posted", check: "Unconfirmed", failed: "Failed", cancelled: "Cancelled" }');
+    expect(pill).toContain('network: { waiting: "Queued", sending: "Posting", posted: "Posted", retry: "Trying again", failed: "Failed", unknown: "Unconfirmed", skipped: "Skipped" }');
+  });
+
+  it("says where to look for a post that may have gone, network by network: Google has no Page", () => {
+    expect(networkLine({ network: "google", status: "unknown", error: null, permalink: null }).text).toBe("May have posted. Check your Business Profile.");
+    expect(networkLine({ network: "facebook", status: "unknown", error: null, permalink: null }).text).toBe("May have posted. Check your Page.");
+    expect([CHECK_WORDS.facebook.there, CHECK_WORDS.instagram.there, CHECK_WORDS.google.there]).toEqual(["It's on the Page", "It's on Instagram", "It's on the profile"]);
+    expect(source("../src/features/marketing/Social.tsx")).toContain("{CHECK_WORDS[r.network].there}</Button>");
+  });
+
+  it("dates a photo by its visit as written, never the day before, and otherwise in the company's time zone", () => {
+    expect(photoDay({ visit_on: "2026-10-30", created_at: "2026-10-30T02:00:00Z" }, "America/Chicago")).toBe("Oct 30");
+    expect(photoDay({ visit_on: null, created_at: "2026-10-30T02:00:00Z" }, "America/Chicago")).toBe("Oct 29");
+    expect(photoDay({ visit_on: null, created_at: "2026-10-30T02:00:00Z" }, "Europe/London")).toBe("Oct 30");
+    expect(source("../src/features/marketing/SocialComposer.tsx")).toContain("{photoDay(p, tz)}");
+  });
+
+  it("takes picked photos that can't be posted anymore off a post, saying why, and lets any be taken off", () => {
+    expect(pickedNote([])).toBeNull();
+    expect(pickedNote(["not_shared"])).toBe("1 photo was taken out: not marked OK to share anymore.");
+    expect(pickedNote(["client_opt_out", "client_opt_out"])).toBe("2 photos were taken out: the client asked us not to post photos of their property.");
+    expect(pickedNote(["gone", "format"])).toBe("2 photos were taken out: they can't be posted anymore.");
+    const composer = source("../src/features/marketing/SocialComposer.tsx");
+    expect(composer).toContain("/social/photos/picked?ids=");
+    expect(composer).toContain("aria-label={`Take photo ${i + 1} off this post`}");
+  });
+
+  it("keeps an automatic post's review, shown but not changeable, and takes off networks that can't post, saying so", () => {
+    const composer = source("../src/features/marketing/SocialComposer.tsx");
+    expect(composer).toContain("An automatic post keeps its review. To share another one, make a new post.");
+    expect(composer).toContain("{!automatic && <input type=\"radio\"");
+    expect(composer).toContain("taken off this post: {dropped[0]!.reason}");
+    expect(composer).not.toContain("editing && post?.networks.includes(n)");
+  });
+
+  it("won't post to Google without a caption, and says so before the confirm", () => {
+    const composer = source("../src/features/marketing/SocialComposer.tsx");
+    expect(composer).toContain("const noCaption = source !== \"text\" && needsCaption(caption, networks);");
+    expect(composer).toContain("&& !noCaption && !unreachable;");
+    expect(composer).toContain("{GOOGLE_NEEDS_CAPTION} Write one, or leave Google off.");
+  });
+
+  it("lists drafts and scheduled posts apart from posts, with the big empty state only when there are none at all", () => {
+    const social = source("../src/features/marketing/Social.tsx");
+    expect(social).toContain('title="Drafts and scheduled"');
+    expect(social).toContain("Nothing scheduled.");
+    expect(social).toContain("if (!noneDone) return");
+  });
+
+  it("brings a notification's post into view once, then lets the address go", () => {
+    const social = source("../src/features/marketing/Social.tsx");
+    expect(social).toContain('next.delete("post");');
+    expect(social).toContain("}, [highlight]);");
+    expect(social).not.toContain("const ref = (el: HTMLDivElement | null)");
+  });
+
+  it("names its confirms' buttons apart, and its switch", () => {
+    const social = source("../src/features/marketing/Social.tsx");
+    expect(social).toContain('confirmLabel: "Cancel post", cancelLabel: "Keep it"');
+    expect(social).toContain('confirmLabel: "Turn off", cancelLabel: "Leave it on"');
+    expect(social).toContain('aria-label="Post 5-star reviews automatically"');
+  });
+
+  it("keeps automatic posts somewhere to go while they're on, and says the same-day rule", () => {
+    const social = source("../src/features/marketing/Social.tsx");
+    expect(social).toContain("const last = state.auto.enabled && live.length === 1;");
+    expect(social).toContain("(last && live.includes(c.network))");
+    expect(social).toContain("if (savedKey) setNetworks(");
+    expect(social).toContain("from the next day (the same day for a review in before 8 AM)");
+    expect(social).not.toContain("starting the next day");
+  });
+
+  it("says Paused, not On, when nowhere automatic posts go can post, and shows a place that can't unticked, with why", () => {
+    const social = source("../src/features/marketing/Social.tsx");
+    expect(social).toContain('{paused ? "Paused" : state.auto.enabled ? "On" : "Off"}');
+    expect(social).toContain("const paused = state.auto.enabled && !live.length;");
+    expect(social).toContain("checked={networks.includes(c.network) && c.enabled}");
+    expect(social).toContain("so new 5-star reviews aren't scheduled");
+  });
+
+  it("lists posts still to go in the order they go, and tells automatic posts apart by their review", () => {
+    expect(postsPage("upcoming", null)).toBe("/social/posts?list=upcoming");
+    expect(postsPage("upcoming", { at: "2026-11-01T10:00:00.123456+00:00", id: "p1", for: "2026-11-02T15:00:00+00:00" }))
+      .toBe("/social/posts?list=upcoming&before_at=2026-11-01T10%3A00%3A00.123456%2B00%3A00&before_id=p1&before_for=2026-11-02T15%3A00%3A00%2B00%3A00");
+    expect(postsPage("done", { at: "2026-11-01T10:00:00+00:00", id: "p1", for: "2026-11-02T15:00:00+00:00" })).not.toContain("before_for");
+    expect(sourceWords({ source: "review", attachment_ids: [], review: { name: "Ana S.", rating: 5, words: "Great crew" } })).toBe("Review from Ana S.");
+    expect(sourceWords({ source: "review", attachment_ids: [], review: { name: null, rating: 5, words: "Great crew" } })).toBe("Review from a Google user");
+    expect(sourceWords({ source: "photos", attachment_ids: ["a", "b"] })).toBe("2 photos");
+    const social = source("../src/features/marketing/Social.tsx");
+    expect(social).toContain('<span className="hide-mobile"><EntityStatus kind="post" status={post.status} /></span>');
+    expect(social).toContain("function PostThumb");
+  });
+
+  it("signs photo links in the browser, as the job's Photos card does, never using links the server made", () => {
+    const data = source("../src/features/marketing/socialData.ts");
+    expect(data).toContain("await signedUrls(paths)");
+    const composer = source("../src/features/marketing/SocialComposer.tsx");
+    expect(composer).toContain("await withLinks(page.photos, (p) => p.path)");
+    expect(composer).toContain("await withLinks(res.photos, (p) => p.path)");
+    expect(source("../../api/src/routes/social.ts")).not.toContain("createSignedUrls");
+  });
+
+  it("says a caption's possible client name as it saves, and doesn't open in the caption", () => {
+    const composer = source("../src/features/marketing/SocialComposer.tsx");
+    expect(composer).toContain("may be a client's name. Captions never name clients.");
+    expect(composer).not.toContain("setWarnings");
+    expect(composer).toContain("focusField={false}");
+    expect(source("../src/components/ui/Dialog.tsx")).toContain("const target = finePointer && focusField");
+    expect(composer).toContain("only you can see it on ${hidden}.");
+  });
+
+  it("counts what Mark all marked, says a client's no once for the card, and names the job only on a client's page", () => {
+    expect(markedWords(3, 0)).toBe("3 photos marked OK to share");
+    expect(markedWords(3, 1)).toBe("3 photos marked OK to share. 1 photo can't be posted, so it was left as it is");
+    expect(markedWords(1, 2)).toBe("1 photo marked OK to share. 2 photos can't be posted, so they were left as they are");
+    const p = { id: "a", path: "x", file_name: "a.jpg", content_type: "image/jpeg", created_at: "2026-10-30T12:00:00Z", shareable: false, owner_type: "visit", job_id: "j1", job_number: 1, job_title: null, visit_id: "v1", visit_on: "2026-10-30", can_share: true, cant_share: null, url: null };
+    expect(groupPhotos([p])[0]!.title).toBe("Visit on Oct 30, 2026 · Job #1");
+    expect(groupPhotos([p], false)[0]!.title).toBe("Visit on Oct 30, 2026");
+    const card = source("../src/features/files/PhotosCard.tsx");
+    expect(card).toContain('p.cant_share !== "client_opt_out"');
+    expect(card).toContain("{optedOut && <span");
+    expect(card).toContain("const todo = [...markable];");
+  });
+
+  it("borders a picked row with a class, never an inline border React can half clear", () => {
+    for (const file of ["../src/features/apps/MetaPanel.tsx", "../src/features/marketing/SocialComposer.tsx", "../src/features/apps/GoogleBusinessPanel.tsx", "../src/features/apps/AssistantAccess.tsx", "../src/features/chat/ChatSettingsPage.tsx"]) {
+      const code = source(file);
+      expect(code, file).toContain("choice-row");
+      expect(code, file).not.toMatch(/border: "1px solid var\(--border\)"[^}]*borderColor: [^}]*undefined/);
+    }
+    expect(source("../src/styles/components.css")).toContain(".card-row.choice-row.picked { border-color: var(--green); }");
+  });
+
+  it("shows OK to share only while Marketing is installed, never to subs, and not on photos that can't be posted", () => {
+    const office = { role: "office", company: { settings: ON } };
+    expect(shareToggleState(office, { content_type: "image/jpeg" })).toBe("ready");
+    expect(shareToggleState(office, { content_type: "image/heic" })).toBe("unsupported");
+    expect(shareToggleState(office, { content_type: "image/png" }, true)).toBe("opted_out");
+    expect(shareToggleState({ role: "subcontractor", company: { settings: ON } }, { content_type: "image/jpeg" })).toBe("hidden");
+    expect(shareToggleState({ role: "field_crew", company: { settings: {} } }, { content_type: "image/jpeg" })).toBe("hidden");
+    const toggle = source("../src/features/marketing/ShareToggle.tsx");
+    expect(toggle).toContain('aria-label="OK to share"');
+    expect(toggle).toContain("aria-pressed={photo.shareable}");
+    expect(source("../src/features/field/FieldVisitPage.tsx")).toContain("Check the photo doesn't show a house number, a car plate or people's faces.");
+  });
+
+  it("says in the field which photos can't be posted, and stores a shrunk photo as the JPEG it is", () => {
+    const field = source("../src/features/field/FieldVisitPage.tsx");
+    expect(field).toContain("can't be marked OK to share: only JPEG and PNG photos can be posted.");
+    // On the photo itself, where its toggle would be.
+    expect(source("../src/features/marketing/ShareToggle.tsx")).toContain('<span className="thumb-noshare" title={SHARE_NOTES.unsupported}>Can\'t share</span>');
+    expect(field).toContain("content_type: storedType(path, file)");
+    expect(source("../src/lib/files.ts")).toContain('export const storedType = (path: string, file: File) => (path.endsWith(".jpg") ? "image/jpeg" : file.type || "image/jpeg");');
+  });
+
+  it("refreshes a client's Photos card when they say no to social photos, and says when Mark all stopped short", () => {
+    const client = source("../src/features/clients/ClientPage.tsx");
+    expect(client).toContain('if (patch.social_photos_opt_out !== undefined) {');
+    expect(client).toContain('queryClient.invalidateQueries({ queryKey: ["record-photos", session.company.id] });');
+    const card = source("../src/features/files/PhotosCard.tsx");
+    expect(card).toContain("<FormError error={markAll.error} />");
+    expect(card).toContain("refused.push(errorMessage(error));");
+  });
+
+  it("shares elsewhere with the share sheet only where it takes files, and downloads otherwise", () => {
+    const files = [new File(["x"], "post.jpg", { type: "image/jpeg" })];
+    expect(canShareFiles(files, undefined)).toBe(false);
+    expect(canShareFiles(files, { share: async () => undefined })).toBe(false);
+    expect(canShareFiles(files, { share: async () => undefined, canShare: () => true })).toBe(true);
+    expect(canShareFiles(files, { share: async () => undefined, canShare: () => { throw new Error("no"); } })).toBe(false);
+    // The pictures are fetched when the dialog opens, so the share sheet opens straight from its own tap.
+    const dialog = source("../src/features/marketing/ShareElsewhere.tsx");
+    expect(dialog).toContain("enabled: open && Boolean(post)");
+    expect(dialog).toContain("onClick={() => downloadFile(file)}");
+  });
+
+  it("uses one button for Suggest a caption and Rewrite, as Suggest a reply does", () => {
+    const composer = source("../src/features/marketing/SocialComposer.tsx");
+    expect(composer).toContain('{caption.trim() ? "Rewrite" : "Suggest a caption"}');
+    expect(composer).toContain('<Link to="/apps/anthropic">Add a Claude key in Apps</Link>');
+    expect(composer).toContain("Posts stay hidden from the public until your Meta app is Live.");
+  });
+});
+
+describe("Facebook & Instagram in Apps", () => {
+  it("is a Marketing app that posts from Marketing → Social, and says what it can't do", () => {
+    const info = APP_INFO.meta!;
+    expect(info.open).toBe("/marketing?tab=social");
+    expect(info.developer).toBe("Meta");
+    expect(info.access).toEqual(expect.arrayContaining([
+      "Post photos and reviews to the Page and Instagram account you pick, when someone posts or schedules one (or automatic posts are on)",
+      "It can't read your messages, comments or ads",
+      "Needs Crewtavo - Marketing",
+    ]));
+    expect(APP_INFO.google_business!.access).toContain("Post to your Business Profile when you post from Marketing → Social");
+    expect(source("../src/features/apps/AppIcon.tsx")).toContain("meta: metaLogo");
+    expect(APPS.keywords).toContain("facebook instagram social posts");
+  });
+
+  it("waits for Marketing, is Paused without it, and is only Live once someone says so", () => {
+    const page = source("../src/features/apps/AppDetailPage.tsx");
+    expect(page).toContain("Install Crewtavo - Marketing first: your posts are made in Marketing → Social.");
+    expect(page).toContain('const metaOpens = !(app.id === "meta" && app.meta?.marketing_on === false);');
+    expect(page).toContain('{ label: "Not Live yet", tone: "warning" }');
+    expect(page).toContain("Use Post again once you've connected again.");
+    const panel = source("../src/features/apps/MetaPanel.tsx");
+    expect(panel).toContain("Last step: switch your Meta app to Live, or only you can see the posts.");
+    expect(panel).toContain("Reconnect with business Page permissions");
+    expect(signInBy(Math.floor(Date.parse("2027-01-29T12:00:00Z") / 1000), Date.parse("2027-01-20T00:00:00Z"))).toBe("Jan 29");
+    expect(signInBy(Math.floor(Date.parse("2027-03-29T12:00:00Z") / 1000), Date.parse("2027-01-20T00:00:00Z"))).toBeNull();
+  });
+
+  it("says after Check again what's still to do: Instagram linked but not used is picked right there", () => {
+    const base = { user_sign_in: true, missing: [], instagram_linked: true, instagram_used: true, instagram_username: "radfordlawn" };
+    expect(checkedWords(base)).toMatchObject({ tone: "success", text: "Checked. Everything's in place.", pickInstagram: false });
+    expect(checkedWords({ ...base, instagram_used: false })).toMatchObject({ tone: "info", text: "Instagram @radfordlawn is linked to your Page now. Tick Post to Instagram too, then Use this Page.", pickInstagram: true });
+    expect(checkedWords({ ...base, instagram_linked: false, instagram_used: false, instagram_username: null }).text).toBe("Checked. Your Page is in place, and no Instagram account is linked to it.");
+    expect(checkedWords({ ...base, missing: ["pages_manage_posts"] }).text).toBe("Checked. Some permissions are still missing.");
+    expect(checkedWords({ ...base, user_sign_in: false }).tone).toBe("info");
+  });
+
+  it("offers another sign-in when the Facebook account manages no Page it can post as", () => {
+    const panel = source("../src/features/apps/MetaPanel.tsx");
+    expect(panel).toContain("Sign in with another Facebook account");
+    expect(panel).toContain("{none && another}");
+    expect(source("../src/features/marketing/Social.tsx")).toContain("Instagram is linked to your Page, but posts don't go to it.");
+  });
+
+  it("doesn't call a sign-in that found no Page installed, shows saved keys to check, and words its copy plainly", () => {
+    const page = source("../src/features/apps/AppDetailPage.tsx");
+    expect(page).toContain('app.id === "meta" ? pending === "no_pages"');
+    expect(page).toContain("Signed in, but that Facebook account doesn't manage a Page.");
+    expect(page).toContain("{!installed && (setup || keysSaved) && !unavailable && (");
+    expect(page).toContain("Crewtavo's access to them is removed at Meta.");
+    expect(source("../src/features/apps/MetaPanel.tsx")).toContain(`if {m.missing.length === 1 ? "it isn't" : "they aren't"} there`);
+    const keys = source("../src/features/apps/AppKeysCard.tsx");
+    const steps = keys.slice(keys.indexOf("export function MetaSteps"));
+    // Said once, by the privacy line under the first step.
+    expect(steps.slice(0, steps.indexOf("<PrivacyLine />"))).not.toContain("loads");
+    const social = source("../src/features/marketing/Social.tsx");
+    expect(social).toContain('{GOOGLE_FIX[google.reason ?? ""] ?? "Open it in Apps"}');
+    expect(social).not.toContain('<Link to="/apps/google_business">Google Business Profile</Link>');
+  });
+
+  it("guides the setup: a privacy page first, the redirect address to copy, the permissions to add, then Live", () => {
+    const keys = source("../src/features/apps/AppKeysCard.tsx");
+    const steps = keys.slice(keys.indexOf("export function MetaSteps"));
+    expect(steps.indexOf("Before you start")).toBeLessThan(steps.indexOf("Create app"));
+    expect(steps.indexOf("Valid OAuth Redirect URI")).toBeLessThan(steps.indexOf("App mode"));
+    expect(steps).toContain("META_PERMISSIONS.map((p) => <li key={p}><strong>{p}</strong></li>)");
+    expect(keys).toContain("Only if you made a Facebook Login for Business configuration.");
+    expect(keys).toContain("More options");
   });
 });

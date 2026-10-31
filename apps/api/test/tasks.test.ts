@@ -181,6 +181,17 @@ describe("Google reviews", () => {
   });
 });
 
+describe("social posts", () => {
+  it("go every minute, one claim at a time (services/social.ts), with a tally", async () => {
+    expect(TASKS).toContain("social");
+    expect(CRON_TASKS["* * * * *"]).toContain("social");
+    const calls = serve(() => []);
+    expect(await runTask("social", env)).toEqual({ claimed: 0, errors: 0 });
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST rpc/claim_social_posts"]);
+    expect(calls[0]!.body).toEqual({ p_limit: 1, p_hold_seconds: 300 });
+  });
+});
+
 describe("clients who haven't had a visit in a while", () => {
   it("are queued hourly, for each company that can email them, at most 100 a day for each rule (services/automatedCampaigns.ts)", async () => {
     expect(TASKS).toContain("inactive");
@@ -221,7 +232,7 @@ describe("clients who haven't had a visit in a while", () => {
 describe("the nightly tidy-up", () => {
   it("also removes guide covers and quote and visit photos nobody recorded", async () => {
     const calls = serve((call) => (call.path === "companies" ? [] : call.path === "rpc/unrecorded_files" ? [{ company_id: "co-1", paths: ["co-1/kb/stray.jpg"] }] : []));
-    expect(await runTask("plans", env)).toEqual({ unrecorded: 0, subs: { unrecorded: 0 }, applicants: { unrecorded: 0 }, photos: { unrecorded: 1, kept: 0 } });
+    expect(await runTask("plans", env)).toEqual({ unrecorded: 0, subs: { unrecorded: 0 }, applicants: { unrecorded: 0 }, photos: { unrecorded: 1, kept: 0 }, social: 0, meta: { checked: 0, signin: 0, expiring: 0 } });
     expect(calls.find((c) => c.path === "rpc/unrecorded_files")?.body).toEqual({ p_limit: 1000 });
     expect(calls.filter((c) => c.method === "DELETE").map((c) => c.body)).toEqual([{ prefixes: ["co-1/kb/stray.jpg"] }]);
   });
