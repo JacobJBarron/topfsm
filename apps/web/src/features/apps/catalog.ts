@@ -112,6 +112,24 @@ export interface AppsData {
   apps: AppRow[];
 }
 
+/**
+ * How often Apps is read again: every 3 seconds while a Stripe import runs, every 5 while Google
+ * reviews are coming in for the first time (the app page's "Bringing in your reviews: 50 of 145",
+ * as the Reviews tab does), and not otherwise.
+ */
+export function appsPollMs(apps: ReadonlyArray<Pick<AppRow, "stripe" | "google_business">> | undefined): number | false {
+  if (apps?.some((a) => importRunning(a.stripe?.import))) return 3000;
+  if (apps?.some((a) => a.google_business?.progress)) return 5000;
+  return false;
+}
+
+/**
+ * Marketing is in this person's menu when it's installed: owners, admins and office staff with the
+ * marketing area. An admin who connects apps without it manages Marketing's apps, but their Open and
+ * Marketing → Reviews links would lead to "no access".
+ */
+export const usesMarketing = (session: Parameters<typeof hasRole>[0] & Parameters<typeof can>[0]) => hasRole(session, "admin", "office") && can(session, "marketing");
+
 /** The Apps list, for owners and admins who can connect apps. */
 export function useApps() {
   const session = useSession();
@@ -120,8 +138,8 @@ export function useApps() {
     queryKey: ["apps", session.company.id],
     enabled: allowed,
     queryFn: () => api.get<AppsData>("/apps"),
-    // Follow a Stripe import while it runs.
-    refetchInterval: (q) => (q.state.data?.apps.some((a) => importRunning(a.stripe?.import)) ? 3000 : false),
+    // Follow a Stripe import while it runs, and a first sync of Google reviews while they come in.
+    refetchInterval: (q) => appsPollMs(q.state.data?.apps),
   });
   return { allowed, ...query };
 }
@@ -291,12 +309,12 @@ export const APP_INFO: Record<string, AppInfo> = {
     developer: "Crewtavo",
     tagline: "Reviews, referrals, campaigns and social posts that bring in work",
     about:
-      "Turn happy clients into more work. Crewtavo asks for a Google review after a job, a visit or a paid invoice, whichever you choose, by text, email or both. Anyone who hasn't opened the link gets up to two reminders, and no client is asked automatically more than once every six months. Every client has a referral link to share, an email can ask for referrals a week after a job, and they get a $ or % credit on their next invoice once the friend pays their first one. Automated campaigns send by themselves: re-engage clients who haven't had a visit in a year, win back lost quotes and follow up on quotes nobody has answered. One-off email campaigns go to the clients you pick, by status, tags, city, the services they've had, their recurring work or time since their last visit, with promo codes and one-click unsubscribe. Every campaign shows who opened it, who clicked and the work it brought in. Post job photos your crew marks OK to share, and 5-star Google reviews as a picture, to your Facebook Page, Instagram and Google Business Profile, now or later, or have new 5-star reviews post by themselves. Clients who opt out aren't asked, and anyone who texts STOP gets no more texts.",
+      "Turn happy clients into more work. Crewtavo asks for a Google review after a job, a visit or a paid invoice, whichever you choose, by text, email or both. Anyone who hasn't opened the link gets up to two reminders, and no client is asked automatically more than once every six months. Every client has a referral link to share, an email can ask for referrals a week after a job, and they get a $ or % credit on their next invoice once the friend pays their first one. Automated campaigns send by themselves: re-engage clients who haven't had a visit in a year, win back lost quotes and follow up on quotes nobody has answered. One-off email campaigns go to the clients you pick, by status, tags, city, the services they've had, their recurring work or time since their last visit, with promo codes and one-click unsubscribe. Every campaign shows who opened it, who clicked and the work it brought in. Post job photos your crew marks OK to share, and 4 and 5-star Google reviews as a picture, to your Facebook Page, Instagram and Google Business Profile, now or later, or have new 5-star reviews post by themselves. Clients who opt out aren't asked, and anyone who texts STOP gets no more texts.",
     highlights: [
       { icon: "star", title: "Reviews", text: "Ask after a job, a visit or a paid invoice, with up to two reminders for anyone who hasn't opened the link." },
       { icon: "gift", title: "Referrals", text: "A link for every client, an email asking for referrals after a job, and a $ or % credit on their next invoice once the friend pays." },
       { icon: "mail", title: "Campaigns", text: "Re-engage past clients, win back lost quotes and close pending quotes by themselves, or email the clients you pick, and see opens, clicks and the work they bring in." },
-      { icon: "share", title: "Social", text: "Post job photos and 5-star reviews to Facebook, Instagram and Google, now or later, with a caption Claude can draft." },
+      { icon: "share", title: "Social", text: "Post job photos and 4 and 5-star reviews to Facebook, Instagram and Google, now or later, with a caption Claude can draft." },
     ],
     access: [
       "Show Marketing in the menu to owners, admins and office staff with the marketing area",
@@ -304,7 +322,7 @@ export const APP_INFO: Record<string, AppInfo> = {
       "Leave out clients who opted out of marketing or reviews, and texts to anyone who texted STOP",
       "Put referral credits clients earn on their next invoices",
       "Count opens and clicks on campaign and quote follow-up emails, with a tracking image and tracked links",
-      "Post photos marked OK to share and 5-star reviews to the pages you connect, never with a client's name or address",
+      "Post photos marked OK to share and 4 and 5-star reviews to the pages you connect, never with a client's name or address",
       "Uninstalling hides Marketing and stops every automatic message it sends to clients, and keeps everything",
     ],
     connectsWith: "Your email and Twilio",
@@ -339,10 +357,10 @@ export const APP_INFO: Record<string, AppInfo> = {
     developer: "Meta",
     tagline: "Post to your Facebook Page and Instagram",
     about:
-      "Post job photos your crew marks OK to share, and 5-star Google reviews as a square picture, to your Facebook Page and its Instagram account from Marketing → Social, now or at a time you pick. Claude can draft the caption, and posts never name a client or show their address: photos go up without their location. New 5-star reviews can post by themselves, a few a day, with time to change or cancel each one. It connects through a Meta app you make for your own business in about ten minutes, so nobody else's app sits between you and your Page.",
+      "Post job photos your crew marks OK to share, and 4 and 5-star Google reviews as a square picture, to your Facebook Page and its Instagram account from Marketing → Social, now or at a time you pick. Claude can draft the caption, and posts never name a client or show their address: photos go up without their location. New 5-star reviews can post by themselves, a few a day, with time to change or cancel each one. It connects through a Meta app you make for your own business in about ten minutes, so nobody else's app sits between you and your Page.",
     highlights: [
       { icon: "camera", title: "Job photos", text: "Pick up to 10 photos marked OK to share. Instagram gets them padded to fit, never cropped." },
-      { icon: "star", title: "Reviews as pictures", text: "A 5-star review becomes a square card in your brand colour, with the reviewer's first name and last initial." },
+      { icon: "star", title: "Reviews as pictures", text: "A 4 or 5-star review becomes a square card in your brand colour, with the reviewer's first name and last initial. Automatic posts are 5-star reviews only." },
       { icon: "calendar", title: "Now or later", text: "Schedule posts, change or cancel them before they go, and see each one's link or what went wrong." },
     ],
     access: [

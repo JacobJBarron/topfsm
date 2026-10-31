@@ -29,7 +29,7 @@ vi.mock("../src/services/ai", async (original) => {
 const ai = await import("../src/services/ai");
 const { app } = await import("../src/app");
 const { adminClient } = await import("../src/lib/supabase");
-const { postDueSocial, tidySocialImages, timing } = await import("../src/services/social");
+const { postDueSocial, reviewGoneWords, tidySocialImages, timing } = await import("../src/services/social");
 const { loadSecret } = await import("../src/integrations/tokens");
 const { metaProblem, GRAPH_VERSION } = await import("../src/integrations/meta");
 const complete = vi.mocked(ai.complete);
@@ -1150,6 +1150,37 @@ describe("what posts is checked when it posts", () => {
     expect(postRow(w, "00000000-0000-4000-8000-0000000000d1").status).toBe("posted");
   });
 
+  it("posts a review whose row was removed and brought in again, found by its location and review ids", async () => {
+    const f = fake();
+    const c = await connected();
+    // Disconnected with the reviews removed, then connected again: the same review, a new row.
+    const review = { id: "rev-2", company_id: CO, location_id: "locations/9", review_id: "r1", rating: 5, comment: "Wonderful crew, very tidy", reviewer_name: "Gail Park", reviewer_anonymous: false, client_id: null, deleted_at: null };
+    const w = serve({ tables: { ...c.tables, reviews: [review], social_posts: [due({ id: "00000000-0000-4000-8000-0000000000d1", source: "review", review_id: null, review_key: "locations/9/r1", attachment_ids: [], networks: ["facebook"], automatic: true, caption: DEFAULT_REVIEW_CAPTION })] }, files: c.files, outside: graph(f) });
+    await run(w);
+    expect(postRow(w, "00000000-0000-4000-8000-0000000000d1")).toMatchObject({ status: "posted", review_id: "rev-2" });
+  });
+
+  it("says a review that isn't in Crewtavo anymore as that, not as removed from Google, and says to connect only when it isn't", async () => {
+    const gone = async (over: Parameters<typeof connected>[0], key = "locations/9/r1") => {
+      const f = fake();
+      const c = await connected(over);
+      const w = serve({ tables: { ...c.tables, reviews: [], social_posts: [due({ id: "00000000-0000-4000-8000-0000000000d1", source: "review", review_id: null, review_key: key, attachment_ids: [], networks: ["facebook"] })] }, files: c.files, outside: graph(f) });
+      await run(w);
+      const row = net(w, "00000000-0000-4000-8000-0000000000d1", "facebook");
+      expect(row).toMatchObject({ status: "failed", error_kind: "removed" });
+      return row.error as string;
+    };
+    // Disconnected with the reviews removed: connecting brings it back.
+    expect(await gone({})).toBe("The review isn't in Crewtavo anymore. Connect Google Business Profile to bring it back.");
+    // Connected, and moved to another location (Change location away): not "Connect".
+    expect(await gone({ google: true }, "locations/7/r1")).toBe("The review isn't in Crewtavo anymore. Google Business Profile is set to another location now.");
+    // Connected to the review's own location: only that it isn't here.
+    expect(await gone({ google: true })).toBe("The review isn't in Crewtavo anymore.");
+    expect(reviewGoneWords({ status: "disconnected", location: "locations/9" }, "locations/9/r1")).toBe("The review isn't in Crewtavo anymore. Connect Google Business Profile to bring it back.");
+    expect(reviewGoneWords(null, null)).toBe("The review isn't in Crewtavo anymore. Connect Google Business Profile to bring it back.");
+    expect(reviewGoneWords({ status: "error", location: "locations/9" }, null)).toBe("The review isn't in Crewtavo anymore.");
+  });
+
   it("skips Facebook and Instagram once disconnected, and still posts to Google", async () => {
     const f = fake();
     const c = await connected({ metaStatus: "disconnected", google: true });
@@ -1218,6 +1249,16 @@ describe("the routes", () => {
     const ok = await request("/social/posts", { method: "POST", body: body({ attachment_ids: [c.ids[0]], caption: "A green lawn, and the Green family's porch" }) });
     expect(ok.status).toBe(201);
     expect(((await ok.json()) as { warnings: string[] }).warnings).toEqual(["Green"]);
+  });
+
+  it("checks a post before Post now's confirm, saving nothing, so a caption naming a client is said first", async () => {
+    const c = await connected();
+    const w = serve({ tables: { ...c.tables, social_posts: [] }, files: c.files, outside: graph(fake()) });
+    const refused = await request("/social/posts/check", { method: "POST", body: body({ attachment_ids: [c.ids[0]], caption: "Thanks Ana Green for having us!", when: "now" }) });
+    expect([refused.status, await refused.json()]).toEqual([400, { error: "Take out the client's name or address before posting." }]);
+    const ok = await request("/social/posts/check", { method: "POST", body: body({ attachment_ids: [c.ids[0]], caption: "A green lawn, and the Green family's porch", when: "now" }) });
+    expect([ok.status, await ok.json()]).toEqual([200, { ok: true, warnings: ["Green"] }]);
+    expect(w.tables.social_posts).toEqual([]);
   });
 
   it("changes a scheduled post, not one that started posting, and cancels it", async () => {

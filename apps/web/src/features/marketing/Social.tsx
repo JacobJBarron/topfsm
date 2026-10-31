@@ -102,7 +102,7 @@ function PostList({ list, state, title, nothing, noneDone, onNew, onEdit, highli
     return (
       <div className="card">
         <EmptyState icon="share" title="No posts yet" action={<Button icon="plus" onClick={onNew}>New post</Button>}>
-          {nothing ? "Connect Facebook & Instagram to post here. You can still download photos and share them anywhere." : "Post job photos, a 5-star review or an update, now or later."}
+          {nothing ? "Connect Facebook & Instagram to post here. You can still download photos and share them anywhere." : "Post job photos, a 4 or 5-star review or an update, now or later."}
         </EmptyState>
       </div>
     );
@@ -215,10 +215,11 @@ function PostThumb({ post }: { post: SocialPost }) {
   if (post.thumb) return <div className="post-thumb"><img src={post.thumb} alt="" /></div>;
   if (post.source === "review") {
     const colors = cardColors(brandColor(session.company.settings));
-    const n = Math.max(0, Math.min(5, post.review?.rating ?? 5));
+    // A review that's gone has no stars to show.
+    const n = Math.max(0, Math.min(5, post.review?.rating ?? 0));
     return (
       <div className="post-thumb post-card" style={{ background: colors.background, color: colors.text }} aria-hidden>
-        <span className="post-card-stars">{"★".repeat(n)}</span>
+        {n > 0 && <span className="post-card-stars">{"★".repeat(n)}</span>}
         {post.review?.name && <span className="post-card-name">{post.review.name}</span>}
       </div>
     );

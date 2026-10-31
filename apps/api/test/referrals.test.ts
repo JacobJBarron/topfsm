@@ -204,6 +204,17 @@ describe("an ask by hand", () => {
     expect(rpcCalls(calls, "begin_referral_ask")).toEqual([{ p_company: CO, p_client: ANA_ID, p_automatic: false, p_created_by: USER }]);
   });
 
+  it("emails the client their own link as a button for them, with the link written out to copy", async () => {
+    asking();
+    await ask({ automatic: false, skipIfRecentDays: undefined });
+    const message = sendEmail.mock.calls[0]![1];
+    const link = /https:\/\/ops\.example\.com\/refer\/\S+/.exec(message.text)![0];
+    expect(message.html).toContain(">Your referral link</a>");
+    expect(message.html).not.toContain("Request a quote");
+    // Under the button, the link itself, so it can be copied and passed on.
+    expect(message.html).toContain(`>${link}</a></p>`);
+  });
+
   it("says why it can't go", async () => {
     asking();
     await expect(ask({ automatic: false, client: { ...ANA, marketing_opt_out: true } as never })).rejects.toThrow("Ana Smith unsubscribed from marketing, so they aren't asked for referrals.");

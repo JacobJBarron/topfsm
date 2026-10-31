@@ -28,6 +28,7 @@ import {
   reminderLines,
   REVIEW_GAP_DAYS,
   reviewSettings,
+  STOP_LINE,
   type AskChannel,
   type AskWhen,
 } from "@crewtavo/core/marketing";
@@ -35,6 +36,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { Button, useJustDone } from "@/components/ui/Button";
+import { confirm } from "@/components/ui/Confirm";
 import { Field, FormError } from "@/components/ui/Field";
 import { Icon } from "@/components/ui/Icon";
 import { CardSkeleton } from "@/components/ui/Skeleton";
@@ -48,7 +50,7 @@ import { toast } from "@/lib/toast";
 import { ClientPicker, type PickedClient } from "../clients/ClientForm";
 import { ConnectEmailHint } from "../settings/ConnectEmailHint";
 import { ReviewLinkOffer } from "../apps/GoogleBusinessPanel";
-import { askBody, askRules, daysInOrder, type AskForm, type AskRuleRow } from "./askForm";
+import { askBody, askRules, askToastKind, daysInOrder, reminderDropWords, remindersDroppedWords, type AskForm, type AskResult, type AskRuleRow } from "./askForm";
 import { GoogleNumbers, GoogleReviewList, GoogleSide, useGoogleState, useReviewStats } from "./GoogleReviews";
 import { hasNumbers, hasReviews, showsList, type GoogleState } from "./googleReviewData";
 import { useSettingsSaver } from "./useSettingsSaver";
@@ -161,16 +163,38 @@ function AskAutomatically({ rules, google }: { rules: AskRuleRow[]; google: Goog
   const set = (patch: Partial<AskForm>) => setForm((f) => ({ ...f, ...patch }));
   const canSave = hasRole(session, "admin") && can(session, "automations");
   const inOrder = daysInOrder(form);
+  const [counted, setCounted] = useState<unknown>(null);
   const save = useMutation({
     meta: { inline: true },
-    mutationFn: () => api.put<{ kept: Array<{ id: string; name: string }> }>("/reviews/asks", askBody(form)),
-    onSuccess: async () => {
+    mutationFn: () => api.put<{ kept: Array<{ id: string; name: string }>; reminders_dropped?: number }>("/reviews/asks", askBody(form)),
+    onSuccess: async (r) => {
       queryClient.invalidateQueries({ queryKey: ["automation-rules", session.company.id] });
       // New reminder days move the reminders still to come.
       queryClient.invalidateQueries({ queryKey: ["review-requests", session.company.id] });
+      const dropped = remindersDroppedWords(r.reminders_dropped ?? 0);
+      if (dropped) toast.success(dropped);
       await session.refresh();
     },
   });
+  // Fewer reminders than now stops the ones still waiting for good: say how many first.
+  const submit = async () => {
+    setCounted(null);
+    const before = reviewSettings(session.company.settings).reminderDays.length;
+    if (form.reminders < before) {
+      const { count, error } = await supabase()
+        .from("review_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("company_id", session.company.id)
+        .eq("status", "sent")
+        .is("clicked_at", null)
+        .not("next_reminder_at", "is", null)
+        .gte("reminders_sent", form.reminders);
+      if (error) return setCounted(error);
+      const words = reminderDropWords(before, form.reminders, count ?? 0);
+      if (words && !(await confirm({ ...words, danger: true }))) return;
+    }
+    save.mutate();
+  };
   const saved = useJustDone(save);
   const whenLabel = ASK_WHEN.find((w) => w.verb === form.when)?.label ?? "";
   const texts = form.channel !== "email";
@@ -187,7 +211,7 @@ function AskAutomatically({ rules, google }: { rules: AskRuleRow[]; google: Goog
     : afterCustom ? "Nothing asks after a recurring job's visits." : "Recurring work isn't asked automatically.";
 
   return (
-    <form className="card card-pad stack" onSubmit={(e: FormEvent) => { e.preventDefault(); if (inOrder) save.mutate(); }}>
+    <form className="card card-pad stack" onSubmit={(e: FormEvent) => { e.preventDefault(); if (inOrder) void submit(); }}>
       <div className="row-between">
         <strong>Ask automatically</strong>
         <label className="switch-row" style={{ fontWeight: 400 }}>
@@ -284,7 +308,7 @@ function AskAutomatically({ rules, google }: { rules: AskRuleRow[]; google: Goog
         {(afterRule || recurringRule) && "."}
       </p>
       {canSave && missing && <p className="muted small" style={{ margin: 0 }}>Saving puts the rules back in Automations.</p>}
-      <FormError error={save.error} />
+      <FormError error={save.error ?? counted} />
       <div className="form-actions" style={{ justifyContent: "flex-start" }}>
         {canSave ? (
           <Button type="submit" loading={save.isPending} done={saved} disabled={!inOrder}>Save</Button>
@@ -338,7 +362,7 @@ function ReviewLink({ google }: { google: GoogleState | undefined }) {
       <Field label="Google review URL" error={url && !validUrl ? "Paste the full link, starting with https://" : null} hint={<a href="https://support.google.com/business/answer/3474122" target="_blank" rel="noreferrer">Where to find it</a>}>
         <input className="input" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://g.page/r/…/review" disabled={!canSave} />
       </Field>
-      <Field label="Message" hint="{{link}} is replaced with your review link.">
+      <Field label="Message" hint={`{{link}} is replaced with your review link. Texts end with “${STOP_LINE}” unless yours says STOP.`}>
         <textarea className="textarea" style={{ minHeight: 110 }} value={message} maxLength={1000} onChange={(e) => setMessage(e.target.value)} disabled={!canSave} />
       </Field>
       <Field label="Reminder message" hint="Sent to anyone who hasn't opened the link, with the same link.">
@@ -437,10 +461,11 @@ function AskNow() {
     },
   });
   const ask = useMutation({
-    mutationFn: () => api.post<{ sent: boolean; link: string; detail: string }>("/reviews/request", { client_id: client!.id, channel }),
+    mutationFn: () => api.post<AskResult>("/reviews/request", { client_id: client!.id, channel }),
     onSuccess: (r) => {
       if (channel === "link") copyText(r.link, "Review link copied");
-      else toast.success(r.detail);
+      // One way went and the other didn't: a warning that says why, so it isn't missed.
+      else toast[askToastKind(r)](r.detail);
       setClient(null);
     },
     // An ask that failed is listed too, saying why.
@@ -493,7 +518,9 @@ function AskNow() {
           {only && <span className="muted small">Goes by {only === "email" ? "email" : "text"} only. {askRefusal(who!, only === "email" ? "sms" : "email", ready)}</span>}
           {channel === "link" && !refusal && <span className="muted small">Automatic asks don't count it until the link is opened.</span>}
           {!refusal && channel !== "link" && remindersOn && <span className="muted small">Reminders follow if they don't open it.</span>}
-          <Button type="submit" variant="primary" icon="star" loading={ask.isPending} disabled={!client || !settings.review_url || Boolean(refusal)}>Ask for a review</Button>
+          <Button type="submit" variant="primary" icon={channel === "link" ? "link" : "star"} loading={ask.isPending} disabled={!client || !settings.review_url || Boolean(refusal)}>
+            {channel === "link" ? "Copy review link" : "Ask for a review"}
+          </Button>
         </>
       )}
     </form>

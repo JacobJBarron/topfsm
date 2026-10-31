@@ -38,3 +38,18 @@ export async function clientLink(env: Env, baseUrl: string, link: Omit<ClientLin
 }
 
 export const readClientLink = (env: Env, token: string) => verifyToken<ClientLink>(env, token);
+
+/** A review ask's short link token (review_requests.link_token): 12 letters and digits. */
+export const REVIEW_TOKEN = /^[0-9A-Za-z]{12}$/;
+
+/** A review ask's short link, in the ask and its reminders: about 50 characters, where a signed one is about 265. */
+export const reviewLink = (baseUrl: string, token: string) => `${baseUrl.replace(/\/$/, "")}${PATHS.review}${token}`;
+
+/**
+ * A request from a link preview or crawler, not a person opening the link: a text's or chat app's
+ * preview (iMessage sends "facebookexternalhit/1.1 Facebot Twitterbot/1.0"), Slack, WhatsApp and
+ * the like. A tracked link still answers it, but doesn't count it as an open.
+ */
+export function linkPreview(userAgent: string | null | undefined): boolean {
+  return /facebookexternalhit|facebot|twitterbot|slackbot|whatsapp|telegrambot|discordbot|linkedinbot|skypeuripreview|bot\b|crawler|spider|preview/i.test(userAgent ?? "");
+}

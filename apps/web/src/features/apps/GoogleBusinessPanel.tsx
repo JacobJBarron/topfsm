@@ -21,9 +21,10 @@ import { copyText } from "@/lib/clipboard";
 import { formatTime, timeAgo } from "@/lib/format";
 import { useSession } from "@/lib/session";
 import { toast } from "@/lib/toast";
-import { locationSavedWords, progressWords, tooSoon } from "../marketing/googleReviewData";
+import { changeLocationWords, locationSavedWords, progressWords, reviewCountWords, tooSoon } from "../marketing/googleReviewData";
 import { BUSINESS_SCOPE, CopyRow } from "./AppKeysCard";
-import type { AppRow } from "./catalog";
+import { NAME_BASIS } from "./MetaPanel";
+import { usesMarketing, type AppRow } from "./catalog";
 
 interface PickedLocation { name: string; title: string; address: string | null; verified: boolean }
 interface Accounts { accounts: Array<{ name: string; title: string; locations: PickedLocation[] }>; problem: string | null }
@@ -259,7 +260,7 @@ export function GoogleBusinessPanel({ app, onChanged, onReconnect, reconnecting 
       ) : g.location ? (
         <div className="row wrap" style={{ gap: 10 }}>
           <Icon name="pin" size={18} />
-          <span className="grow" style={{ minWidth: 0 }}>
+          <span style={{ flex: `1 1 ${NAME_BASIS}`, minWidth: 0 }}>
             <strong style={{ display: "block" }}>{g.location.title}</strong>
             <span className="muted small">{g.location.address ?? "Service area business"}{g.location.maps_uri && <> · <a href={g.location.maps_uri} target="_blank" rel="noreferrer">On Google Maps</a></>}</span>
           </span>
@@ -274,8 +275,8 @@ export function GoogleBusinessPanel({ app, onChanged, onReconnect, reconnecting 
         <div className="row wrap" style={{ gap: 10 }}>
           <span className="muted small grow">
             {progressWords(g.progress ?? null) ?? (g.last_synced_at ? `Last synced ${timeAgo(g.last_synced_at)}` : "Not synced yet")}
-            {/* Marketing → Reviews isn't there while Marketing is off. */}
-            {g.review_count && g.marketing_on ? ` · ${g.review_count.toLocaleString("en-US")} ${g.review_count === 1 ? "review" : "reviews"} in Marketing → Reviews` : ""}
+            {/* Marketing → Reviews isn't there while Marketing is off, nor for someone without the marketing area. */}
+            {g.marketing_on ? reviewCountWords(g.review_count, usesMarketing(session)) : ""}
           </span>
           {!waiting && <Button size="sm" variant="ghost" icon="refresh" disabled={!g.marketing_on} loading={sync.isPending} onClick={() => sync.mutate()}>Sync now</Button>}
         </div>
@@ -315,7 +316,7 @@ function LocationPicker({ current, kept, reviewCount, marketingOn, onDone, onCan
     if (kept && kept !== chosen.location && reviewCount > 0) {
       const ok = await confirm({
         title: `Bring in ${chosen.title}'s reviews instead?`,
-        body: `The ${reviewCount.toLocaleString("en-US")} ${reviewCount === 1 ? "review" : "reviews"} from ${current?.title ?? "the old location"} are removed, and asks start again for the clients they matched.`,
+        body: changeLocationWords(reviewCount, current?.title),
         confirmLabel: "Change location",
         danger: true,
       });

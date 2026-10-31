@@ -556,7 +556,8 @@ describe("referrals", () => {
     expect(referralPill({ status: "won", reward_status: "earned" })).toEqual({ kind: "credit", status: "earned" });
     expect(referralPill({ status: "won", reward_status: "issued" })).toEqual({ kind: "credit", status: "issued" });
     expect(referralPill({ status: "lost", reward_status: "none" })).toEqual({ kind: "referral", status: "lost" });
-    // With no credit (none was set, or they referred themselves), the friend's progress still shows.
+    // With no credit set, the friend's progress still shows (one who referred themselves or was
+    // already a client says No credit: marketingChecks.test.ts).
     expect(referralPill({ status: "new", reward_status: "none" })).toEqual({ kind: "referral", status: "new" });
     expect(referralPill({ status: "quoted", reward_status: "none" })).toEqual({ kind: "referral", status: "quoted" });
     expect(referralPill({ status: "won", reward_status: "none" })).toEqual({ kind: "referral", status: "won" });

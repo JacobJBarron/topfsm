@@ -28,6 +28,7 @@ import { PropertyDialog, type AccessRow, type PropertyRow } from "./PropertyDial
 import { Timeline } from "./Timeline";
 import { PhotosCard } from "../files/PhotosCard";
 import { socialKey } from "../marketing/socialData";
+import { askToastKind, type AskResult } from "../marketing/askForm";
 
 type WorkTab = "requests" | "quotes" | "jobs" | "invoices";
 type ClientPatch = { status?: "lead" | "active" | "archived"; marketing_opt_out?: boolean; review_opt_out?: boolean; social_photos_opt_out?: boolean };
@@ -153,8 +154,8 @@ export function ClientPage() {
     queryFn: async () => unwrap(await supabase().rpc("referral_credits_for", { p_company: session.company.id, p_client: id })),
   });
   const review = useMutation({
-    mutationFn: (channel: AskChannel) => api.post<{ sent: boolean; detail: string }>("/reviews/request", { client_id: id, channel }),
-    onSuccess: (r) => toast.success(r.detail),
+    mutationFn: (channel: AskChannel) => api.post<AskResult>("/reviews/request", { client_id: id, channel }),
+    onSuccess: (r) => toast[askToastKind(r)](r.detail),
     // Marketing → Reviews lists the ask, failed or not, and "Ask a client now" says when they were last asked.
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["review-requests", session.company.id] });

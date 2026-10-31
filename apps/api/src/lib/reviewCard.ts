@@ -1,5 +1,5 @@
 /**
- * A 5-star review as a square picture for the business's social pages (docs/marketing-plan.md,
+ * A 4 or 5-star review as a square picture for the business's social pages (docs/marketing-plan.md,
  * phase E): the stars, the review's words set to fit, the reviewer's first name and last initial, and
  * the business's logo (on a white plate, since logos are made for light backgrounds) or its name, in
  * its brand colour or Crewtavo's. "Google review" is written out, without Google's logo.

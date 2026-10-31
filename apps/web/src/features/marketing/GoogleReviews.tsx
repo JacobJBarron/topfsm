@@ -34,6 +34,7 @@ import { ClientPicker, type PickedClient } from "../clients/ClientForm";
 import {
   canReply,
   canSync,
+  clientDetail,
   countHint,
   filterReviews,
   filtersOn,
@@ -44,10 +45,12 @@ import {
   progressWords,
   rankSuggestions,
   repliedWords,
+  sharedNames,
   tooSoon,
   waitingOnGoogle,
   type GoogleState,
   type ReviewFilters,
+  type SuggestedClient,
 } from "./googleReviewData";
 
 const ReviewTrend = lazy(() => import("./ReviewTrend").then((m) => ({ default: m.ReviewTrend })));
@@ -532,22 +535,41 @@ function MatchDialog({ review, open, onClose, onExited, onPick }: { review: Revi
     queryKey: ["review-suggestions", session.company.id, review?.id],
     enabled: open && Boolean(reviewer) && first.length > 1,
     queryFn: async () => {
-      const rows = unwrap(await supabase().from("clients").select("id, display_name").eq("company_id", session.company.id).ilike("display_name", `${first}%`).order("display_name").limit(20));
+      // What tells two clients of the same name apart, as the client picker shows it.
+      const rows = unwrap(
+        await supabase().from("clients").select("id, display_name, company_name, email, phone, properties(line1)").eq("company_id", session.company.id).ilike("display_name", `${first}%`).order("display_name").limit(20),
+      ) as SuggestedClient[];
       return rankSuggestions({ name: review!.reviewer_name, anonymous: review!.reviewer_anonymous }, rows).slice(0, 5);
     },
   });
+  const twins = sharedNames(suggestions.data ?? []);
   return (
     <Dialog open={open} onClose={onClose} onExited={() => { setPicked(null); onExited(); }} title="Match to a client" description={review ? `Who left ${reviewer ? `${reviewer}'s review` : "this review"}? They won't be asked for reviews again.` : undefined}>
       <form className="dialog-body stack-sm" onSubmit={(e: FormEvent) => { e.preventDefault(); if (picked) onPick({ id: picked.id, display_name: picked.display_name }); }}>
         {(suggestions.data?.length ?? 0) > 0 && (
           <div className="stack-sm" style={{ gap: 6 }}>
             <span className="muted small strong">Names that fit</span>
-            {suggestions.data!.map((c) => (
-              <button key={c.id} type="button" className="card-row" style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-control)" }} onClick={() => onPick(c)}>
-                <Icon name="user" size={16} />
-                <span className="grow">{c.display_name}</span>
-              </button>
-            ))}
+            {suggestions.data!.map((c) => {
+              const detail = clientDetail(c);
+              // Two of the same name: a click picks this one below, and Match matches it.
+              const twin = twins.has(c.id);
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  className={`card-row choice-row${twin && picked?.id === c.id ? " picked" : ""}`}
+                  aria-pressed={twin ? picked?.id === c.id : undefined}
+                  onClick={() => (twin ? setPicked({ id: c.id, display_name: c.display_name }) : onPick(c))}
+                >
+                  <Icon name="user" size={16} />
+                  <span className="grow" style={{ minWidth: 0 }}>
+                    {c.display_name}
+                    {detail && <span className="muted small ellipsis" style={{ display: "block" }}>{detail}</span>}
+                  </span>
+                </button>
+              );
+            })}
+            {twins.size > 0 && <span className="muted small">Two clients have that name: pick the right one, then Match.</span>}
           </div>
         )}
         <ClientPicker value={picked} onChange={setPicked} allowCreate={false} />

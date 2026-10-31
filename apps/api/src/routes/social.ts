@@ -323,6 +323,17 @@ async function checkPost(c: Ctx, body: PostBody) {
   };
 }
 
+/**
+ * Checks a post as Post now would, saving nothing, so a caption that would be refused (it names a
+ * client) is said before the "posts publicly" confirm rather than after it. Says the warnings.
+ */
+social.post("/social/posts/check", requireUser, requireCompany(OFFICE, "marketing"), async (c) => {
+  const body = await readJson(c, postBody);
+  await requireMarketing(c);
+  const { warnings } = await checkPost(c, body);
+  return c.json({ ok: true, warnings });
+});
+
 social.post("/social/posts", requireUser, requireCompany(OFFICE, "marketing"), async (c) => {
   const body = await readJson(c, postBody);
   await requireMarketing(c);

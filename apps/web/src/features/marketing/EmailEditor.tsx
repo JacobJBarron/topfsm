@@ -75,22 +75,33 @@ export function previewParagraphs(body: string, vars: Record<string, string>, li
     });
 }
 
-export function EmailPreview({ companyName, subject, body, vars, unsubscribe, linkLabel }: { companyName: string; subject: string; body: string; vars: Record<string, string>; unsubscribe: boolean; linkLabel: string }) {
+/** The company's address on one line, as the server writes it under every marketing email (lib/email.ts companyAddress). */
+export function companyAddressLine(address: { line1?: string; line2?: string; city?: string; region?: string; postal_code?: string } | null | undefined): string {
+  if (!address) return "";
+  return [address.line1, address.line2, [address.city, address.region].filter(Boolean).join(", "), address.postal_code].filter(Boolean).join(", ");
+}
+
+/** The line under the email, as the server writes it: the company's name and address, then Unsubscribe for marketing. */
+export const previewFooter = (companyName: string, address: string | null | undefined, unsubscribe: boolean) =>
+  [companyName, address || null, unsubscribe ? "Unsubscribe" : null].filter(Boolean).join(" · ");
+
+export function EmailPreview({ companyName, address, subject, body, vars, unsubscribe, linkLabel }: { companyName: string; address?: string | null; subject: string; body: string; vars: Record<string, string>; unsubscribe: boolean; linkLabel: string }) {
   const paragraphs = previewParagraphs(body, vars, linkLabel);
   return (
     <div className="stack-sm">
       <strong>Preview</strong>
       <div className="email-preview">
+        {/* The sheet stays white in dark mode too, as the email does: its words keep their own dark colours (features.css). */}
         <div className="sheet-inner">
-          <div className="muted small" style={{ marginBottom: 6 }}>Subject: <strong style={{ color: "var(--ink)" }}>{renderSample(subject, vars) || "No subject"}</strong></div>
+          <div className="email-subject small" style={{ marginBottom: 6 }}>Subject: <strong>{renderSample(subject, vars) || "No subject"}</strong></div>
           <div style={{ fontWeight: 700, marginBottom: 12 }}>{companyName}</div>
           {paragraphs.length ? (
             paragraphs.map((p, i) => (p.button ? <p key={i} className="email-button-row"><span className="email-button" title={p.text}>{p.button}</span></p> : <p key={i} className="email-paragraph">{p.text}</p>))
           ) : (
-            <span className="muted">Your message appears here.</span>
+            <span className="email-placeholder">Your message appears here.</span>
           )}
         </div>
-        <div className="email-foot">{companyName}{unsubscribe ? " · Unsubscribe" : ""}</div>
+        <div className="email-foot">{previewFooter(companyName, address, unsubscribe)}</div>
       </div>
     </div>
   );

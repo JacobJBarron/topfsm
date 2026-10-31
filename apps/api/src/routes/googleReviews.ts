@@ -7,7 +7,7 @@
  */
 import { ADMINS, OFFICE } from "@crewtavo/core";
 import { marketingOn } from "@crewtavo/core/marketing";
-import { projectNumber, REPLY_MAX, type ReviewProblem } from "@crewtavo/core/reviews";
+import { projectNumber, REPLY_MAX, SIGNIN_MESSAGE, type ReviewProblem } from "@crewtavo/core/reviews";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../env";
@@ -115,6 +115,8 @@ googleReviews.post("/reviews/google/sync", requireUser, requireCompany(OFFICE, "
     admin.from("integrations").select("status").match({ company_id: c.var.companyId, provider: "google_business" }).maybeSingle(),
     admin.from("review_syncs").select("locked_until, problem").eq("company_id", c.var.companyId).maybeSingle(),
   ]);
+  // Signed in, but Google turned the sign-in down since: it needs Reconnect, as replies say.
+  if (row.data?.status === "error") throw new HttpError(409, SIGNIN_MESSAGE);
   if (row.data?.status !== "connected") throw new HttpError(409, "Connect Google Business Profile in Apps first.");
   if (sync.data?.problem === "approval" || sync.data?.problem === "not_enabled") {
     throw new HttpError(409, "Google isn't letting Crewtavo in yet, so there's nothing to bring in. Crewtavo checks again every 6 hours.");

@@ -13,6 +13,7 @@ import {
   automatedRuleUpdate,
   HUB_HOME_BUTTON,
   inactiveDays,
+  withHubLink,
   linkButton,
   readAutomatedRule,
   type AutomatedKey,
@@ -48,6 +49,7 @@ import { renderTemplate } from "@crewtavo/core";
 import { companyAnthropicKey, complete } from "../services/ai";
 import { companyAddress } from "../services/automations";
 import { logoImage } from "../services/logo";
+import { writeCampaignCounts } from "../services/campaigns";
 import { ReferralAskRefused, sendReferralAsk } from "../services/referrals";
 import { rescheduleReminders, sendReviewRequest } from "../services/reviews";
 
@@ -169,6 +171,8 @@ marketing.post("/campaigns/:id/cancel", requireUser, requireCompany(OFFICE, "mar
   // Stopped first: a run partway through its batch checks this before each email.
   await admin.from("campaigns").update({ status: "cancelled", finished_at: new Date().toISOString() }).eq("id", campaign.id);
   await admin.from("campaign_recipients").update({ status: "skipped", error: "Campaign stopped" }).eq("campaign_id", campaign.id).in("status", ["pending", "sending"]);
+  // Its counts say what went before it stopped: "Stopped · 3 of 10 sent".
+  await writeCampaignCounts(admin, campaign.id);
   return c.json({ status: "cancelled" });
 });
 
@@ -322,8 +326,9 @@ marketing.post("/campaigns/draft", requireUser, requireCompany(OFFICE, "marketin
     apiKey: await companyAnthropicKey(c.env, adminClient(c.env), c.var.companyId),
     system:
       "You write short marketing emails for local service businesses (lawn care, paving, roofing and similar). " +
-      "Write plainly, like the owner would, with no hype, no emoji and no placeholders other than {{client.first_name}} and {{company.name}}. " +
-      'Reply with JSON only: {"subject": "...", "body": "..."}. The body is plain text with blank lines between short paragraphs and ends with a clear next step.',
+      "Write plainly, like the owner would, with no hype, no emoji and no placeholders other than {{client.first_name}}, {{company.name}}, {{company.phone}} and {{link}}. " +
+      "{{link}} is the client's own page, where they can ask for work: put it alone on its own line, just before the sign-off, and it becomes a Request work button. " +
+      'Reply with JSON only: {"subject": "...", "body": "..."}. The body is plain text with blank lines between short paragraphs and ends with a clear next step, then the sign-off.',
     prompt: `Business: ${company.name} (${company.trade_preset.replace(/_/g, " ")}).\nTone: ${body.tone}.\nGoal of this email: ${body.goal}`,
     effort: "low",
     maxTokens: 1200,
@@ -332,7 +337,8 @@ marketing.post("/campaigns/draft", requireUser, requireCompany(OFFICE, "marketin
   try {
     const parsed = JSON.parse(match ? match[0] : text) as { subject?: string; body?: string };
     if (!parsed.subject || !parsed.body) throw new Error("incomplete");
-    return c.json({ subject: parsed.subject.slice(0, 200), body: parsed.body.slice(0, 8000) });
+    // With the link its clicks and bookings are counted by: put in when the draft left it out.
+    return c.json({ subject: parsed.subject.slice(0, 200), body: withHubLink(parsed.body.slice(0, 8000)) });
   } catch {
     throw new HttpError(502, "The AI's draft came back in an unexpected shape. Try again.");
   }
@@ -372,7 +378,8 @@ const ASK_RULE_FIELDS = "id, name, description, template_key, trigger, enabled, 
  * reminders. The rules stay where asking is set, so they still show in Automations: one shaped the
  * way the form writes them is changed, one that's gone is put back, and one someone changed into
  * something the form can't show keeps its shape and is named in `kept`, with only the switch
- * turning it on or off. New reminder days move the reminders still to come.
+ * turning it on or off. New reminder days move the reminders still to come; `reminders_dropped` says
+ * how many waiting asks lost theirs for good (fewer reminders, or none).
  */
 marketing.put("/reviews/asks", requireUser, requireCompany(ADMINS, "marketing"), async (c) => {
   if (!c.var.permissions.includes("automations")) throw new HttpError(403, "Changing when reviews are asked needs the Automations area.");
@@ -400,8 +407,10 @@ marketing.put("/reviews/asks", requireUser, requireCompany(ADMINS, "marketing"),
   const saved = await db.from("companies").update({ settings: asJson(next) }).eq("id", companyId);
   if (saved.error) throw dbError(saved.error);
   const days = reviewSettings(next).reminderDays;
+  // How many waiting asks lost their reminders for good, so the save says so.
+  let dropped = 0;
   if (days.join() !== reviewSettings(settings).reminderDays.join()) {
-    await rescheduleReminders(adminClient(c.env), companyId, current.timezone || "UTC", days);
+    dropped = (await rescheduleReminders(adminClient(c.env), companyId, current.timezone || "UTC", days)).dropped;
   }
 
   const kept: Array<{ id: string; name: string }> = [];
@@ -424,7 +433,7 @@ marketing.put("/reviews/asks", requireUser, requireCompany(ADMINS, "marketing"),
       : await db.from("automation_rules").insert({ ...row, company_id: companyId } as TablesInsert<"automation_rules">);
     if (written.error) throw dbError(written.error);
   }
-  return c.json({ kept });
+  return c.json({ kept, reminders_dropped: dropped });
 });
 
 /** Ask for referrals by email: right away, however lately they were asked, unless they opted out of marketing or are archived. */

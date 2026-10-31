@@ -92,7 +92,7 @@ async function ownRun(c: Parameters<typeof appUrl>[0]) {
 automations.post("/automations/runs/:id/retry", requireUser, requireCompany(OFFICE, "automations"), async (c) => {
   const run = await ownRun(c);
   if (run.status !== "failed") throw new HttpError(409, "Only failed runs can be retried.");
-  const { error } = await adminClient(c.env).from("automation_runs").update({ status: "pending", run_after: new Date().toISOString(), attempts: 0, error: null, finished_at: null }).eq("id", run.id);
+  const { error } = await adminClient(c.env).from("automation_runs").update({ status: "pending", run_after: new Date().toISOString(), attempts: 0, busy_tries: 0, error: null, finished_at: null }).eq("id", run.id);
   if (error) throw dbError(error);
   const result = await processAutomations(c.env, { companyId: c.var.companyId, limit: 10, baseUrl: appUrl(c) });
   return c.json(result);

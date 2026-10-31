@@ -30,6 +30,7 @@ import { DocumentSheet } from "../documents/EstimateDocument";
 import { InvoiceDrawings } from "../measure/drawings";
 import { LineItems } from "../quotes/LineItems";
 import { DiscountRows } from "../quotes/PromoRow";
+import { paidWords } from "./creditRules";
 import { ReferralCredits } from "./ReferralCredits";
 import { SendDialog } from "../quotes/SendDialog";
 import { refundable } from "./refunds";
@@ -240,7 +241,7 @@ function InvoicePageScreen() {
           <Button size="sm" icon="undo" disabled={writeOff.isPending} onClick={() => writeOff.mutate(false)}>Undo write-off</Button>
         </div>
       )}
-      {inv.status === "paid" && <div className="callout callout-good"><Icon name="check" size={20} /><div className="grow">Paid in full{lastPayment ? ` on ${formatDate(lastPayment.received_at)}` : ""}.</div></div>}
+      {inv.status === "paid" && <div className="callout callout-good"><Icon name="check" size={20} /><div className="grow">{paidWords(paid, Number(inv.credit_amount), lastPayment?.received_at ? formatDate(lastPayment.received_at) : null)}</div></div>}
       {bankNote && <div className="callout callout-info"><Icon name="clock" size={20} /><div className="grow">{bankNote}</div></div>}
       {/* Up front, rather than refused once someone has filled in a payment. */}
       {paysInStripe && !bank && !isVoid && balance > 0 && <div className="callout callout-info"><Icon name="info" size={20} /><div className="grow">{RECORD_IN_STRIPE}</div></div>}

@@ -301,10 +301,10 @@ describe("an ask by text and email", () => {
     expect(writes(calls, "PATCH", "review_requests")[0]!.body).toMatchObject({ channel: "both", error: null });
   });
 
-  it("records the channel that worked when the other didn't, with why", async () => {
+  it("records the channel that worked when the other didn't, with why, and says so as a warning", async () => {
     sendSms.mockImplementation(async () => ({ sent: false, reason: "The text provider refused it (400)." }));
     const calls = asking();
-    expect(await ask({ channel: "both" })).toMatchObject({ sent: true, detail: "Asked for a review by email" });
+    expect(await ask({ channel: "both" })).toMatchObject({ sent: true, warning: true, detail: "Asked for a review by email. The text didn't go: The text provider refused it (400)." });
     expect(writes(calls, "PATCH", "review_requests")[0]!.body).toMatchObject({ channel: "email", error: "The text provider refused it (400)." });
     expect(writes(calls, "POST", "messages")).toHaveLength(1);
   });
@@ -324,6 +324,46 @@ describe("an ask by text and email", () => {
     expect(marked.params.get("id")).toBe(`eq.${ANA_ID}`);
     expect(marked.params.get("sms_opt_out_at")).toBe("is.null");
     expect(typeof marked.body.sms_opt_out_at).toBe("string");
+  });
+
+  it("says a STOP refusal as the app says texts off, not in Twilio's words, and asks by email by hand", async () => {
+    sendSms.mockImplementation(async () => ({ sent: false, reason: "The text provider refused it (400: Attempt to send to unsubscribed recipient).", code: 21610 }));
+    asking();
+    await expect(ask({ automatic: false, channel: "sms" })).rejects.toThrow("Ana Smith texted STOP, so texts to them are off. Ask by email instead.");
+    asking();
+    expect(await ask({ channel: "both" })).toMatchObject({ warning: true, detail: "Asked for a review by email. The text didn't go: Ana Smith texted STOP, so texts to them are off." });
+  });
+
+  it("says straight away when the email of an ask by both didn't go", async () => {
+    sendEmail.mockImplementation(async () => ({ sent: false, reason: "Resend is having trouble right now. Try again in a few minutes." }));
+    asking();
+    expect(await ask({ automatic: false, channel: "both" })).toMatchObject({
+      sent: true, warning: true, detail: "Asked for a review by text. The email didn't go: Resend is having trouble right now. Try again in a few minutes.",
+    });
+  });
+
+  it("ends a text with how to opt out, unless the business's words say STOP already, and an email without it", async () => {
+    let calls = asking();
+    await ask({ channel: "both" });
+    const text = sendSms.mock.calls[0]![1].body;
+    expect(text.endsWith("\n\nReply STOP to opt out.")).toBe(true);
+    expect(sendEmail.mock.calls[0]![1].text).not.toContain("Reply STOP");
+    // The client's messages keep the text as it went.
+    expect(writes(calls, "POST", "messages").find((c) => c.body.channel === "sms")!.body.body).toBe(text);
+    sendSms.mockClear();
+    calls = asking({ review_message: "Hi {{client.first_name}}! Review us: {{link}} (text STOP to stop)" });
+    await ask({ channel: "sms" });
+    expect(sendSms.mock.calls[0]![1].body).not.toContain("Reply STOP to opt out.");
+  });
+
+  it("sends the short link with the ask's token, so a text fits in two segments", async () => {
+    serve({ tables: { companies: [companyRow()], review_requests: [{ id: "rr-1", company_id: CO, link_token: "AbCdEf123456" }] }, rpc: { begin_review_request: () => "rr-1", last_review_ask: () => null } });
+    const result = await ask({ channel: "sms" });
+    expect(result.link).toBe("https://ops.example.com/api/public/r/AbCdEf123456");
+    const body = sendSms.mock.calls[0]![1].body;
+    expect(body).toContain("https://ops.example.com/api/public/r/AbCdEf123456\n\nReply STOP to opt out.");
+    // GSM-7: 160 characters in one segment, 153 in each of several.
+    expect(body.length).toBeLessThanOrEqual(306);
   });
 
   it("carries one-click unsubscribe and the company's address in the email", async () => {
@@ -464,6 +504,16 @@ describe("the automation engine", () => {
     expect(await executeRun(env, adminClient(env), run({ subject_type: "invoice", subject_id: "inv-1" }), env.APP_URL!)).toBe("done");
     expect(rpcCalls(paid, "begin_review_request")).toHaveLength(1);
   });
+
+  it("knows what an invoice was paid, so the paid notice skips one a referral credit covered whole", async () => {
+    const covered = { id: "inv-2", company_id: CO, number: 1, subject: null, status: "paid", kind: "standard", total: 0, balance_due: 0, amount_paid: 0, client_id: ANA_ID, job_id: null, job: null, lines: [] };
+    const notice = rule({ trigger: "invoice.paid", conditions: [{ field: "amount_paid", op: "gte", value: 0.01 }], actions: [{ type: "notify", roles: ["owner"], title: "Invoice #{{number}} paid", body: "{{client.name}} paid {{total}}." }] });
+    let calls = engine({ rules: [notice], tables: { invoices: [covered] } });
+    expect(await executeRun(env, adminClient(env), run({ subject_type: "invoice", subject_id: "inv-2" }), env.APP_URL!)).toBe("skipped");
+    expect(finished(calls)[0].p_error).toBe("Conditions not met: amount paid is at least $0.01.");
+    calls = engine({ rules: [notice], tables: { invoices: [{ ...covered, total: 15.8, amount_paid: 15.8 }] } });
+    expect((await loadContext(adminClient(env), CO, "invoice", "inv-2"))!.facts.amount_paid).toBe(15.8);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -502,6 +552,15 @@ describe("the reminder task", () => {
     expect(starts(calls)).toEqual([{ p_id: "rr-1", p_token: "claim-9", p_next: "2026-11-01T18:30:00.000Z" }]);
     expect(calls.findIndex((c) => c.path === "rpc/start_review_reminder")).toBeLessThan(calls.findIndex((c) => c.path === "messages"));
     expect(finishes(calls)).toEqual([{ p_id: "rr-1", p_token: "claim-9", p_outcome: "sent" }]);
+  });
+
+  it("sends a reminder with the ask's short link, and a text one says how to opt out", async () => {
+    at("2026-10-30T17:30:00Z");
+    remind([due({ channel: "sms", link_token: "Rem1nderTok3" })]);
+    await runTask("reviews", env);
+    const body = sendSms.mock.calls[0]![1].body;
+    expect(body).toContain("https://ops.example.com/api/public/r/Rem1nderTok3");
+    expect(body.endsWith("Reply STOP to opt out.")).toBe(true);
   });
 
   it("has nothing after the second, and goes by both channels for an ask by both", async () => {
@@ -624,7 +683,7 @@ describe("Marketing's routes", () => {
     const calls = office([starter(), recurring()]);
     const res = await call("/reviews/asks", { method: "PUT", body: asks });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ kept: [] });
+    expect(await res.json()).toEqual({ kept: [], reminders_dropped: 0 });
     const [job, work] = writes(calls, "PATCH", "automation_rules");
     expect(job!.params.get("id")).toBe("eq.rule-job");
     expect(job!.body).toEqual({
@@ -656,7 +715,7 @@ describe("Marketing's routes", () => {
     const custom = (enabled: boolean) => starter({ name: "Reviews for VIPs", enabled, conditions: [{ field: "client.tags", op: "includes", value: ["VIP"] }] });
     let calls = office([custom(false), recurring()]);
     const res = await call("/reviews/asks", { method: "PUT", body: asks });
-    expect(await res.json()).toEqual({ kept: [{ id: "rule-job", name: "Reviews for VIPs" }] });
+    expect(await res.json()).toEqual({ kept: [{ id: "rule-job", name: "Reviews for VIPs" }], reminders_dropped: 0 });
     expect(writes(calls, "PATCH", "automation_rules").map((c) => [c.params.get("id"), c.body.enabled, Object.keys(c.body).length > 1])).toEqual([
       ["eq.rule-job", true, false],
       ["eq.rule-recurring", true, true],
@@ -697,6 +756,12 @@ describe("Marketing's routes", () => {
       ["eq.rr-a", { next_reminder_at: null, reminder_note: "Reminders were turned off" }],
       ["eq.rr-b", { next_reminder_at: null, reminder_note: "Reminders were turned off" }],
     ]);
+
+    // Fewer reminders say how many lost theirs for good.
+    calls = office([starter(), recurring()], owner, [], { review_requests: open() });
+    expect(await (await call("/reviews/asks", { method: "PUT", body: { ...asks, reminder_days: [] } })).json()).toMatchObject({ reminders_dropped: 2 });
+    calls = office([starter(), recurring()], owner, [], { review_requests: open() });
+    expect(await (await call("/reviews/asks", { method: "PUT", body: { ...asks, reminder_days: [3] } })).json()).toMatchObject({ reminders_dropped: 1 });
 
     // The same days as before: nothing to move.
     calls = office([starter(), recurring()], owner, [], { review_requests: open() });
@@ -860,14 +925,50 @@ describe("Marketing's routes", () => {
     }
   });
 
-  it("keeps review links working while Marketing is off, and an opened link has no more reminders", async () => {
-    const calls = serve({ tables: { companies: [companyRow({ marketing: { enabled: false } })] } });
+  it("keeps review links working while Marketing is off, and records the open through the database", async () => {
+    const calls = serve({ tables: { companies: [companyRow({ marketing: { enabled: false } })] }, rpc: { track_review_click: () => CO } });
     const link = await clientLink(env, "https://ops.example.com", { c: CO, t: "review", id: "rr-1" });
     const res = await app.request(link.replace("https://ops.example.com", ""), {}, env);
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("https://g.page/r/acme/review");
-    const click = writes(calls, "PATCH", "review_requests")[0]!;
-    expect(click.body).toMatchObject({ status: "clicked", next_reminder_at: null });
-    expect(click.params.get("clicked_at")).toBe("is.null");
+    // track_review_click stops the reminders, only once 30 seconds have gone by since the ask or a reminder.
+    expect(rpcCalls(calls, "track_review_click")).toEqual([{ p_company: CO, p_id: "rr-1", p_count: true }]);
+    expect(writes(calls, "PATCH", "review_requests")).toEqual([]);
+  });
+
+  it("doesn't count a link checker's HEAD or a link preview as the client opening it, and still sends them on", async () => {
+    const link = (await clientLink(env, "https://ops.example.com", { c: CO, t: "review", id: "rr-1" })).replace("https://ops.example.com", "");
+    for (const [init, counted] of [
+      [{ method: "HEAD" }, false],
+      [{ headers: { "User-Agent": "facebookexternalhit/1.1 Facebot Twitterbot/1.0" } }, false],
+      [{ headers: { "User-Agent": "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)" } }, false],
+      [{ headers: { "User-Agent": "WhatsApp/2.23.20.0" } }, false],
+      [{ headers: { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1" } }, true],
+    ] as const) {
+      const calls = serve({ tables: { companies: [companyRow()] }, rpc: { track_review_click: () => CO } });
+      const res = await app.request(link, init, env);
+      expect(res.status, JSON.stringify(init)).toBe(302);
+      expect(rpcCalls(calls, "track_review_click")[0]?.p_count, JSON.stringify(init)).toBe(counted);
+    }
+  });
+
+  it("opens a short review link by its token, and a signed one whose ask is gone still reaches the review page", async () => {
+    let calls = serve({ tables: { companies: [companyRow()], review_requests: [{ id: "rr-1", company_id: CO, link_token: "AbCdEf123456" }] }, rpc: { track_review_click: () => CO } });
+    let res = await app.request("/api/public/r/AbCdEf123456", {}, env);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://g.page/r/acme/review");
+    expect(rpcCalls(calls, "track_review_click")).toEqual([{ p_token: "AbCdEf123456", p_count: true }]);
+
+    // A short token nobody has is a plain "not valid", and nothing is recorded.
+    calls = serve({ tables: { companies: [companyRow()], review_requests: [] } });
+    res = await app.request("/api/public/r/ZZZZZZZZZZZZ", {}, env);
+    expect(res.status).toBe(404);
+    expect(rpcCalls(calls, "track_review_click")).toEqual([]);
+
+    // Signed links name their business, so they still go where the business's review page is.
+    calls = serve({ tables: { companies: [companyRow()] }, rpc: { track_review_click: () => null } });
+    const signed = await clientLink(env, "https://ops.example.com", { c: CO, t: "review", id: "gone" });
+    res = await app.request(signed.replace("https://ops.example.com", ""), {}, env);
+    expect(res.status).toBe(302);
   });
 });

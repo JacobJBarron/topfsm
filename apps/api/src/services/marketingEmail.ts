@@ -34,6 +34,8 @@ export async function emailClient(
     unsubscribe?: boolean;
     /** Labels for links on their own line (lib/email.ts renderEmail). */
     buttons?: Record<string, string>;
+    /** Links written out under their button too, to copy (lib/email.ts renderEmail). */
+    showUrls?: readonly string[];
   },
 ): Promise<SendResult> {
   const unsubscribe = d.unsubscribe === false ? null : await clientLink(env, d.baseUrl, { c: d.companyId, t: "unsub", id: d.client.id });
@@ -51,6 +53,7 @@ export async function emailClient(
         href: d.track?.href,
         pixel: d.track?.pixel,
         buttons: d.buttons,
+        showUrls: d.showUrls,
       }),
       replyTo: d.company.email ?? undefined,
       fromName: d.company.name,

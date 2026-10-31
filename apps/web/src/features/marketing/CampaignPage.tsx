@@ -27,7 +27,7 @@ import { can, hasRole, useSession } from "@/lib/session";
 import { toast } from "@/lib/toast";
 import { useClientTags } from "../clients/ClientForm";
 import { CampaignRecipients, CampaignResults, CampaignStats } from "./CampaignResults";
-import { EmailPreview, MessageField, SubjectField, TestEmailDialog } from "./EmailEditor";
+import { companyAddressLine, EmailPreview, MessageField, SubjectField, TestEmailDialog } from "./EmailEditor";
 import { MarketingPage } from "./MarketingPage";
 import { ConnectEmailHint } from "../settings/ConnectEmailHint";
 
@@ -99,7 +99,12 @@ function CampaignPageScreen() {
 
   const campaign = useQuery({
     queryKey: ["campaign", id],
-    refetchInterval: (q) => ((q.state.data as { status?: string } | undefined)?.status === "sending" ? 3000 : false),
+    // Also for half a minute after it stops: an email that was going out then still finishes and is counted.
+    refetchInterval: (q) => {
+      const d = q.state.data as { status?: string; finished_at?: string | null } | undefined;
+      const settling = d?.status === "cancelled" && d.finished_at && Date.now() - Date.parse(d.finished_at) < 30_000;
+      return d?.status === "sending" || settling ? 3000 : false;
+    },
     queryFn: async () =>
       unwrapOne(
         await supabase()
@@ -116,6 +121,20 @@ function CampaignPageScreen() {
   }, [c, draft]);
   const editable = c?.status === "draft";
   const audience = useDeferredValue(draft?.audience);
+  // Sending just finished, or an email counted after a stop: the numbers and the list are fetched
+  // once more, so they end where the header does instead of stopping at the last look while it sent.
+  const last = useRef({ status: c?.status, sent: c?.sent_count, failed: c?.failed_count });
+  useEffect(() => {
+    const was = last.current;
+    last.current = { status: c?.status, sent: c?.sent_count, failed: c?.failed_count };
+    const ended = was.status === "sending" && c?.status !== "sending";
+    const late = was.status === "cancelled" && c?.status === "cancelled" && (was.sent !== c.sent_count || was.failed !== c.failed_count);
+    if (ended || late) {
+      for (const key of [["campaign-results", session.company.id, id], ["campaign-recipients", id], ["campaign-results", session.company.id]]) {
+        void queryClient.invalidateQueries({ queryKey: key });
+      }
+    }
+  }, [c?.status, c?.sent_count, c?.failed_count, id, queryClient, session.company.id]);
 
   const recipients = useQuery({
     queryKey: ["campaign-audience", session.company.id, JSON.stringify(audience)],
@@ -143,9 +162,15 @@ function CampaignPageScreen() {
   const saving = useSaveStatus();
   const save = useMutation({
     meta: { inline: true },
-    mutationFn: async (d: Draft) =>
-      unwrap(await supabase().from("campaigns").update({ name: d.name.trim() || "Untitled campaign", subject: d.subject, body: d.body, audience: audienceKeys(d.audience) as never }).eq("id", id)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["campaigns", session.company.id] }),
+    mutationFn: async (d: Draft) => {
+      unwrap(await supabase().from("campaigns").update({ name: d.name.trim() || "Untitled campaign", subject: d.subject, body: d.body, audience: audienceKeys(d.audience) as never }).eq("id", id));
+      return d;
+    },
+    onSuccess: (d) => {
+      // The page's own copy says what was saved too, so a draft built from it again (after Send) isn't the one from when the page opened.
+      queryClient.setQueryData<typeof c>(["campaign", id], (old) => (old ? { ...old, name: d.name.trim() || "Untitled campaign", subject: d.subject, body: d.body, audience: audienceKeys(d.audience) as never } : old));
+      void queryClient.invalidateQueries({ queryKey: ["campaigns", session.company.id] });
+    },
   });
   const savedRef = useRef<string>("");
   useEffect(() => {
@@ -198,6 +223,8 @@ function CampaignPageScreen() {
   if (campaign.error || !c || !draft) return <PageError error={campaign.error} onRetry={() => campaign.refetch()} back={<BackLink to="/marketing">Marketing</BackLink>} />;
 
   const set = (patch: Partial<Draft>) => setDraft((d) => (d ? { ...d, ...patch } : d));
+  // Once it's sent (or sending, or scheduled), what it says is the campaign's own, as saved.
+  const shown: Draft = editable ? draft : { name: c.name, subject: c.subject, body: c.body, audience: (c.audience ?? {}) as CampaignAudience };
   const setAudience = (patch: Partial<CampaignAudience>) => setDraft((d) => (d ? { ...d, audience: { ...d.audience, ...patch } } : d));
   const count = recipients.data?.length ?? 0;
   const sampleName = editable ? recipients.data?.[0]?.display_name : firstRecipient.data;
@@ -205,6 +232,7 @@ function CampaignPageScreen() {
     "client.first_name": sampleName ? greetingName(sampleName) : "Jordan",
     "client.name": sampleName ?? "Jordan Rivera",
     "company.name": session.company.name,
+    // As the email has it: the phone as the business saved it (GET /me sends it).
     "company.phone": session.company.phone ?? "",
     link: window.location.origin,
   };
@@ -270,7 +298,7 @@ function CampaignPageScreen() {
             <CampaignRecipients campaignId={c.id} live={c.status === "sending"} />
           )}
 
-          <EmailPreview companyName={session.company.name} subject={draft.subject} body={draft.body} vars={vars} unsubscribe linkLabel={HUB_HOME_BUTTON} />
+          <EmailPreview companyName={session.company.name} address={companyAddressLine(session.company.address)} subject={shown.subject} body={shown.body} vars={vars} unsubscribe linkLabel={HUB_HOME_BUTTON} />
         </div>
 
         <aside className="narrow stack">
@@ -314,14 +342,26 @@ function CampaignPageScreen() {
                 </div>
               </>
             ) : (
-              <p className="text-sm" style={{ margin: 0 }}>{audienceSummary(draft.audience, choices.data)}</p>
+              <p className="text-sm" style={{ margin: 0 }}>{audienceSummary(shown.audience, choices.data)}</p>
             )}
           </div>
           {editable && problems.length > 0 && <div className="callout callout-warning"><Icon name="alert" size={20} /><div className="grow">{problems.map((p) => <div key={p} style={{ fontWeight: 600 }}>{p}</div>)}</div></div>}
         </aside>
       </div>
 
-      {dialog === "send" && <SendCampaignDialog id={id} count={count} onClose={() => setDialog(null)} onDone={() => { setDraft(null); savedRef.current = ""; campaign.refetch(); }} />}
+      {dialog === "send" && (
+        <SendCampaignDialog
+          id={id}
+          count={count}
+          onClose={() => setDialog(null)}
+          onDone={async () => {
+            // Fresh from the server first, so nothing is drawn from an older copy meanwhile.
+            await campaign.refetch();
+            setDraft(null);
+            savedRef.current = "";
+          }}
+        />
+      )}
       {dialog === "test" && <TestEmailDialog path={`/campaigns/${id}/test`} defaultTo={session.profile.email ?? ""} onClose={() => setDialog(null)} />}
       {dialog === "ai" && <AiDialog onClose={() => setDialog(null)} onDraft={(d) => { set(d); setDialog(null); }} />}
     </>

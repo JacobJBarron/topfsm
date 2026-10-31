@@ -5,6 +5,7 @@
  * Apps), how far the first sync has got, who replied, and the clients to suggest for a review. The
  * app page (apps/GoogleBusinessPanel.tsx) shares some.
  */
+import { phoneDisplay } from "@crewtavo/core/phone";
 import { nameMatch, SIGNIN_MESSAGE, type ReviewProblem } from "@crewtavo/core/reviews";
 import { ApiError } from "@/lib/errors";
 import { formatTime, timeAgo } from "@/lib/format";
@@ -164,11 +165,17 @@ export function problemCopy(g: GoogleState, timeZone: string): ProblemCopy | nul
   }
 }
 
-/** "Bringing in your reviews: 250 of 1,240", or "…: 250 so far" before Google has said how many. */
+/**
+ * "Bringing in your reviews: 250 of 1,240", or "…: 250 so far" if Google hasn't said how many. Before
+ * the first page is in there's nothing to count yet: "Bringing in your reviews", or "Bringing in your
+ * 1,240 reviews" when Google's count is known from before, never "0 so far".
+ */
 export function progressWords(progress: GoogleState["progress"]): string | null {
   if (!progress) return null;
+  const total = progress.total ? progress.total.toLocaleString("en-US") : null;
+  if (!progress.seen) return total ? `Bringing in your ${total} ${progress.total === 1 ? "review" : "reviews"}` : "Bringing in your reviews";
   const seen = progress.seen.toLocaleString("en-US");
-  return progress.total ? `Bringing in your reviews: ${seen} of ${progress.total.toLocaleString("en-US")}` : `Bringing in your reviews: ${seen} so far`;
+  return total ? `Bringing in your reviews: ${seen} of ${total}` : `Bringing in your reviews: ${seen} so far`;
 }
 
 /** "Location saved" on the app page, and that reviews are on their way only when they are: a verified location, with Marketing on. */
@@ -199,3 +206,44 @@ export function rankSuggestions<C extends { display_name: string }>(reviewer: { 
 
 /** The first word of a reviewer's name, to find clients who might be them. */
 export const firstNameOf = (name: string | null | undefined) => (name ?? "").trim().split(/\s+/)[0]?.replace(/[^\p{L}\p{N}'-]/gu, "") ?? "";
+
+/** A client suggested for a review, with what tells them apart from another of the same name. */
+export interface SuggestedClient {
+  id: string;
+  display_name: string;
+  company_name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  properties?: ReadonlyArray<{ line1: string | null }> | null;
+}
+
+/** The line under a suggested client's name, as the client picker has it: their email, else phone, else address, else business. */
+export function clientDetail(c: SuggestedClient): string | null {
+  return c.email?.trim() || (c.phone?.trim() ? phoneDisplay(c.phone.trim()) : null) || c.properties?.find((p) => p.line1?.trim())?.line1?.trim() || c.company_name?.trim() || null;
+}
+
+/** Suggestions that share their name with another: picking one only selects it, so the office presses Match. */
+export function sharedNames(clients: readonly SuggestedClient[]): Set<string> {
+  const seen = new Map<string, number>();
+  for (const c of clients) seen.set(c.display_name.trim().toLowerCase(), (seen.get(c.display_name.trim().toLowerCase()) ?? 0) + 1);
+  return new Set(clients.filter((c) => (seen.get(c.display_name.trim().toLowerCase()) ?? 0) > 1).map((c) => c.id));
+}
+
+/** Change location's confirm: the reviews from the old location are removed, and asks start again for whoever they matched. */
+export function changeLocationWords(count: number, from: string | null | undefined): string {
+  const old = from ?? "the old location";
+  return count === 1
+    ? `The 1 review from ${old} is removed, and asks start again for any client it matched.`
+    : `The ${count.toLocaleString("en-US")} reviews from ${old} are removed, and asks start again for any clients they matched.`;
+}
+
+/**
+ * After "Last synced 2 minutes ago" on the app page: how many reviews are here, and where, for someone
+ * who can open Marketing (`inMarketing`); otherwise only how many, since Marketing → Reviews isn't
+ * theirs to open (or isn't there while Marketing is off).
+ */
+export function reviewCountWords(count: number, inMarketing: boolean): string {
+  if (!count) return "";
+  const n = `${count.toLocaleString("en-US")} ${count === 1 ? "review" : "reviews"}`;
+  return inMarketing ? ` · ${n} in Marketing → Reviews` : ` · ${n} brought in`;
+}

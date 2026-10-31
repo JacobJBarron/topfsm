@@ -444,7 +444,8 @@ select tmk.check(public.last_review_ask(:'co', :'di') is null, 'a copied link no
 select tmk.check(public.begin_review_request(:'co', :'di', null, 'email', 182) is not null, 'so an automatic ask still goes');
 delete from public.review_requests where client_id = :'di' and channel = 'email';
 update public.review_requests set status = 'clicked', clicked_at = now() where id = :'copied';
-select tmk.check(public.last_review_ask(:'co', :'di') between now() - interval '25 hours' and now() - interval '23 hours', 'once it''s opened, it''s when they were last asked');
+-- From when it was opened, not copied (20261031000500_review_ask_fixes.sql).
+select tmk.check(public.last_review_ask(:'co', :'di') between now() - interval '1 minute' and now(), 'once it''s opened, the open is when they were last asked');
 select tmk.check(public.begin_review_request(:'co', :'di', null, 'email', 182) is null, 'and holds automatic asks for 6 months');
 reset role;
 insert into public.review_requests (company_id, client_id, channel) values (:'co', :'di', 'link'), (:'co', :'di', 'sms');

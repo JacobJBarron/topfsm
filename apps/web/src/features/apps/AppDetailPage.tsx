@@ -31,7 +31,7 @@ import { AppKeysCard } from "./AppKeysCard";
 import { AssistantAccess, ConnectedAssistants, useAssistantConnections } from "./AssistantAccess";
 import { assistantAppFor, CONNECTOR_STEPS, disconnect as disconnectAssistant } from "./assistantConnections";
 import { CalendarRow, GoogleCalendarPanel, LinkCalendarsPanel, AddCalendarForm, useCalendars, type CalendarSource } from "./CalendarPanels";
-import { categoryName, infoFor, LINK_ACCESS, MORE_LABELS, useApps, type AppInfo, type AppRow } from "./catalog";
+import { categoryName, infoFor, LINK_ACCESS, MORE_LABELS, useApps, usesMarketing, type AppInfo, type AppRow } from "./catalog";
 import { DrivePanel } from "./DrivePanel";
 import { GoogleBeforeSignIn, GoogleBusinessPanel } from "./GoogleBusinessPanel";
 import { InstallRing, type InstallPhase } from "./InstallRing";
@@ -253,6 +253,9 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
   const opens = !(app.id === "google_business" && app.google_business?.marketing_on === false);
   // Facebook & Instagram opens Marketing → Social, which isn't there while Marketing is off either.
   const metaOpens = !(app.id === "meta" && app.meta?.marketing_on === false);
+  // These three open Marketing, which an admin who connects apps without the marketing area can't
+  // open: no Open, rather than one that leads to "no access".
+  const marketingOpens = !OPENS_MARKETING.has(app.id) || usesMarketing(session);
 
   // The buttons next to the name: Install, which turns into its progress ring and then Uninstall,
   // like an app store's; and once it's installed, Open (or Reconnect when it needs it).
@@ -267,7 +270,7 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
         )}
         {needsReconnect ? (
           <Button className="app-get" variant="primary" icon="refresh" loading={connect.isPending} onClick={() => connect.mutate()}>Reconnect</Button>
-        ) : !opens || !metaOpens ? null : open.startsWith("/") ? (
+        ) : !opens || !metaOpens || !marketingOpens ? null : open.startsWith("/") ? (
           <Link className="btn app-get" to={open}>Open</Link>
         ) : (
           <a className="btn app-get" href={open} target="_blank" rel="noreferrer">Open <Icon name="external" size={14} /></a>
@@ -474,16 +477,23 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
   );
 }
 
+/** The apps whose Open goes to Marketing. */
+const OPENS_MARKETING = new Set(["marketing", "google_business", "meta"]);
+
 /**
  * Back from signing in to Google Business Profile: a location to pick next, reviews on their way, or
  * (installed, and waiting on Google's approval) when they start. The callout below says what to do
  * about the wait, so this doesn't say it again.
  */
-function googleBusinessNext(pending: string | null, app: AppRow): string {
-  if (pending === "pick") return "Now pick your business's location.";
-  if (pending === "approval") return "Reviews start coming in once Google approves access.";
-  if (pending === "not_enabled") return "Reviews start coming in once the Business Profile APIs are turned on.";
-  return app.google_business?.marketing_on === false ? "Your reviews come in once Marketing is installed again." : "Your reviews are on their way to Marketing → Reviews.";
+export function googleBusinessNext(pending: string | null, app: Pick<AppRow, "google_business">): string {
+  // What the sign-in came back with, while it's still so: a location picked since, or Google letting
+  // Crewtavo in on Check again, moves on to what's next.
+  const now = app.google_business;
+  const still = (problem: string) => !now || now.problem === problem;
+  if (pending === "pick" && (still("pick") || !now?.location)) return "Now pick your business's location.";
+  if (pending === "approval" && still("approval")) return "Reviews start coming in once Google approves access.";
+  if (pending === "not_enabled" && still("not_enabled")) return "Reviews start coming in once the Business Profile APIs are turned on.";
+  return now?.marketing_on === false ? "Your reviews come in once Marketing is installed again." : "Your reviews are on their way to Marketing → Reviews.";
 }
 
 /** Back from signing in to Facebook & Instagram: the Page to pick next, permissions to allow, or the last step, going Live. */

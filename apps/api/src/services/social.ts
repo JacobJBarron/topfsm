@@ -294,6 +294,37 @@ export async function clientWords(admin: Db, companyId: string, clientIds: Reado
   return { names, addresses: [...(properties.data ?? []).map((p) => p.line1).filter(Boolean), ...billing] };
 }
 
+/**
+ * A review post's review: by its row, or, when that row was removed (disconnected with the reviews
+ * removed, or Change location away and back) and the review came in again, by its location and
+ * review ids (review_key), linking the post to it again. Null when it isn't here.
+ */
+export async function postReview(admin: Db, post: Pick<Post, "id" | "company_id" | "review_id" | "review_key">): Promise<Tables<"reviews"> | null> {
+  if (post.review_id) {
+    const { data } = await admin.from("reviews").select("*").eq("company_id", post.company_id).eq("id", post.review_id).maybeSingle();
+    if (data) return data;
+  }
+  const key = /^(locations\/[^/]+)\/(.+)$/.exec(post.review_key ?? "");
+  if (!key) return null;
+  const { data } = await admin.from("reviews").select("*").eq("company_id", post.company_id).eq("location_id", key[1]!).eq("review_id", key[2]!).maybeSingle();
+  if (data && !post.review_id) await admin.from("social_posts").update({ review_id: data.id }).eq("id", post.id).is("review_id", null);
+  return data ?? null;
+}
+
+/**
+ * Why a review post's review isn't here, by where Google Business Profile is now: disconnected (with
+ * the reviews removed), connecting it brings the review back; set to another location (Change
+ * location away), that's why; still on the review's own location, only that it isn't here, since
+ * telling someone already connected to connect would be wrong.
+ */
+export function reviewGoneWords(google: { status: string | null; location: string | null } | null, reviewKey: string | null): string {
+  const gone = "The review isn't in Crewtavo anymore.";
+  if (!google?.status || google.status === "disconnected") return `${gone} Connect Google Business Profile to bring it back.`;
+  const from = /^(locations\/[^/]+)\//.exec(reviewKey ?? "")?.[1];
+  if (from && google.location && google.location !== from) return `${gone} Google Business Profile is set to another location now.`;
+  return gone;
+}
+
 /** The post's photos or review as they are now, or why it can't post anymore. */
 async function loadContent(admin: Db, post: Post): Promise<Content> {
   const out: Content = { photos: [], review: null };
@@ -308,8 +339,13 @@ async function loadContent(admin: Db, post: Post): Promise<Content> {
     if (left) await admin.from("social_posts").update({ note: `${left === 1 ? "1 photo was" : `${left} photos were`} left out: not OK to share anymore.` }).eq("id", post.id);
   }
   if (post.source === "review") {
-    const { data } = post.review_id ? await admin.from("reviews").select("*").eq("company_id", post.company_id).eq("id", post.review_id).maybeSingle() : { data: null };
-    if (!data || data.deleted_at) return { ...out, failure: { error: "The review was removed from Google.", kind: "removed" } };
+    const data = await postReview(admin, post);
+    if (!data) {
+      const { data: google } = await admin.from("integrations").select("status, settings").match({ company_id: post.company_id, provider: "google_business" }).maybeSingle();
+      const location = (google?.settings as { location?: string } | null)?.location ?? null;
+      return { ...out, failure: { error: reviewGoneWords(google && { status: google.status, location }, post.review_key), kind: "removed" } };
+    }
+    if (data.deleted_at) return { ...out, failure: { error: "The review was removed from Google.", kind: "removed" } };
     if ((data.rating ?? 0) < (post.automatic ? 5 : 4)) return { ...out, failure: { error: `The review isn't ${post.automatic ? "5" : "4 or 5"} stars anymore.`, kind: "removed" } };
     if (!hasWords(data.comment) || !cardSupported(data.comment)) return { ...out, failure: { error: "This review has characters the card can't show yet.", kind: "image" } };
     out.review = data;

@@ -241,6 +241,8 @@ export function resendProblem(status: number, message: string): string {
   if (/monthly .*quota/i.test(message)) {
     return "This Resend account has reached its monthly sending limit (3,000 emails on the free plan). Upgrade the Resend plan to keep sending this month.";
   }
+  // A bounced address, not Resend's: said so, not in Resend's own words (an ask to a client's typo).
+  if (status === 422 && /`to`|\bto\b field/i.test(message)) return "That email address isn't valid, so Resend didn't send it.";
   if (status === 429) return "Resend got too many emails at once. Try again in a minute.";
   if (status >= 500) return "Resend is having trouble right now. Try again in a few minutes.";
   return `Resend refused it (${status}${message ? `: ${message}` : ""}).`;

@@ -73,3 +73,42 @@ export const askBody = (form: AskForm) => ({
   recurring_after_visits: form.visits,
   reminder_days: form.days.slice(0, form.reminders),
 });
+
+/**
+ * Saving fewer reminders than now (`before`, `after`) with `waiting` asks that would lose one: what
+ * the confirm says, since turning reminders back on later doesn't send them. Null when nothing is lost.
+ */
+export function reminderDropWords(before: number, after: number, waiting: number): { title: string; body: string; confirmLabel: string; cancelLabel: string } | null {
+  if (after >= before || waiting <= 0) return null;
+  const who = waiting === 1 ? "1 client is" : `${waiting.toLocaleString("en-US")} clients are`;
+  const them = waiting === 1 ? "it" : "them";
+  return after === 0
+    ? {
+        title: "Turn reminders off?",
+        body: `${who} waiting on a reminder. Turning reminders off stops ${them} for good: turning them back on later won't send ${them}.`,
+        confirmLabel: "Turn off",
+        cancelLabel: "Keep them",
+      }
+    : {
+        title: "Send one reminder only?",
+        body: `${who} waiting on a second reminder. Saving stops ${them} for good: going back to two later won't send ${them}.`,
+        confirmLabel: "Send one only",
+        cancelLabel: "Keep them",
+      };
+}
+
+/** What the save's toast says once reminders were dropped (PUT /api/reviews/asks' reminders_dropped). */
+export const remindersDroppedWords = (dropped: number) =>
+  dropped > 0 ? `Saved. ${dropped === 1 ? "1 waiting reminder was" : `${dropped.toLocaleString("en-US")} waiting reminders were`} stopped.` : null;
+
+/** What asking by hand answers (POST /api/reviews/request). */
+export interface AskResult {
+  sent: boolean;
+  link: string;
+  detail: string;
+  /** It went one way but not the other: the detail says which didn't, and why. */
+  warning?: true;
+}
+
+/** The toast for an ask that went: a warning when it went one way but not the other, so that isn't missed. */
+export const askToastKind = (r: Pick<AskResult, "warning">): "warning" | "success" => (r.warning ? "warning" : "success");

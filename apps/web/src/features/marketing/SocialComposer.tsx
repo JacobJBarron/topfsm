@@ -9,10 +9,10 @@
  * id, so they show and can be taken off even when they aren't among the newest; any that can't be
  * posted anymore are taken off, saying why. A network that can't post anymore is taken off the same way.
  */
-import { captionLimit, captionProblems, captionProblemWords, GOOGLE_NEEDS_CAPTION, INSTAGRAM_RATIO, MAX_PHOTOS, NETWORK_NAMES, needsCaption, networkWords, PAD_GREY, timeZoneWords, type Network } from "@crewtavo/core/social";
+import { captionLimit, captionProblems, captionProblemWords, GOOGLE_NEEDS_CAPTION, INSTAGRAM_RATIO, MAX_PHOTOS, needsCaption, networkWords, PAD_GREY, timeZoneWords, type Network } from "@crewtavo/core/social";
 import { parseZonedTime } from "@crewtavo/core/time";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/Button";
 import { confirm } from "@/components/ui/Confirm";
@@ -26,7 +26,24 @@ import { formatDate } from "@/lib/format";
 import { can, hasRole, useSession } from "@/lib/session";
 import { toast } from "@/lib/toast";
 import { ShareElsewhere } from "./ShareElsewhere";
-import { networkChoices, photoDay, pickedNote, rememberedNetworks, rememberNetworks, socialKey, startingNetworks, withLinks, type PickedPhoto, type SharePhoto, type ShareReview, type SocialPost, type SocialState, type Source } from "./socialData";
+import {
+  effectiveNetworks,
+  networkChoices,
+  photoDay,
+  pickedNote,
+  postNowWords,
+  rememberedNetworks,
+  rememberNetworks,
+  socialKey,
+  startingNetworks,
+  withLinks,
+  type PickedPhoto,
+  type SharePhoto,
+  type ShareReview,
+  type SocialPost,
+  type SocialState,
+  type Source,
+} from "./socialData";
 
 export interface ComposerStart {
   source?: Source;
@@ -63,19 +80,21 @@ export function SocialComposer({ open, onClose, state, post, start }: { open: bo
   const choices = networkChoices(state, source);
   // A post being changed keeps its networks that can still post; the rest are taken off, saying why.
   const [dropped] = useState(() => (post ? networkChoices(state, post.source).filter((c) => post.networks.includes(c.network) && !c.enabled) : []));
-  const [networks, setNetworks] = useState<Network[]>(() =>
-    post ? post.networks.filter((n) => !dropped.some((d) => d.network === n)) : startingNetworks(networkChoices(state, start?.source ?? "photos"), rememberedNetworks()));
+  // What the person ticked (and what's remembered for next time), not only what this kind of post
+  // can have: Instagram stays wanted while Just text leaves it off, and comes back with photos.
+  const [wanted, setWanted] = useState<Network[]>(() =>
+    post ? post.networks.filter((n) => !dropped.some((d) => d.network === n)) : startingNetworks(networkChoices(state, "photos"), rememberedNetworks()));
+  const networks = effectiveNetworks(wanted, choices);
   const later = post?.scheduled_for ? new Date(post.scheduled_for) : new Date(Date.now() + 86_400_000);
   const [when, setWhen] = useState<"now" | "schedule">(post?.status === "scheduled" ? "schedule" : "now");
   const [day, setDay] = useState(zonedParts(later, tz).date);
   const [time, setTime] = useState(post?.scheduled_for ? zonedParts(later, tz).time : "10:00");
   const [sharing, setSharing] = useState(false);
-
-  // Instagram can't take words alone; a network that can't be chosen isn't kept.
-  useEffect(() => {
-    setNetworks((now) => now.filter((n) => choices.find((c) => c.network === n)?.enabled));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source]);
+  // A refusal is said where the person is: the error is scrolled into view (it sits above the footer).
+  const errorRef = useRef<HTMLDivElement>(null);
+  // The review picked before it opened (Post on social on a review) is scrolled to in the list.
+  const pickedReviewRef = useRef<HTMLLabelElement>(null);
+  const scrolledToReview = useRef(false);
 
   // The photos picked before it opened, as they are now.
   const pickedNow = useQuery({
@@ -153,7 +172,7 @@ export function SocialComposer({ open, onClose, state, post, start }: { open: bo
     meta: { inline: true },
     mutationFn: (how: "draft" | "now" | { at: string }) => (post ? api.patch<{ warnings: string[] }>(`/social/posts/${post.id}`, body(how)) : api.post<{ warnings: string[] }>("/social/posts", body(how))),
     onSuccess: (res, how) => {
-      rememberNetworks(networks);
+      rememberNetworks(wanted);
       // A last name on its own may be an everyday word, so it's saved, and said here as the composer closes.
       const warnings = res.warnings ?? [];
       const check = warnings.length ? { description: `Check the caption: "${warnings.join('", "')}" may be a client's name. Captions never name clients.`, duration: 10_000 } : undefined;
@@ -172,12 +191,28 @@ export function SocialComposer({ open, onClose, state, post, start }: { open: bo
     },
   });
 
+  // Checked as it would post, saving nothing, before "This posts publicly": a caption that names a
+  // client is said first, not after the confirm.
+  const dryRun = useMutation({
+    meta: { inline: true },
+    mutationFn: () => api.post<{ ok: true; warnings: string[] }>("/social/posts/check", body("now")),
+  });
+  const shownError = save.error ?? dryRun.error ?? suggest.error;
+  useEffect(() => {
+    if (shownError) errorRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [shownError]);
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!ready) return;
     if (when === "now") {
-      const hidden = networkWords(networks.filter((n) => n !== "google"));
-      const ok = await confirm({ title: "Post this now?", body: `This posts publicly on ${networkWords(networks)}.${notLive ? ` Until your Meta app is Live, only you can see it on ${hidden}.` : ""}`, confirmLabel: "Post now" });
+      save.reset();
+      try {
+        await dryRun.mutateAsync();
+      } catch {
+        return;
+      }
+      const ok = await confirm({ title: "Post this now?", body: postNowWords(networks, notLive), confirmLabel: "Post now" });
       if (ok) save.mutate("now");
       return;
     }
@@ -191,11 +226,20 @@ export function SocialComposer({ open, onClose, state, post, start }: { open: bo
     .map((id): Pick<SharePhoto, "id" | "url"> | undefined => allPhotos.find((p) => p.id === id) ?? pickedNow.data?.photos.find((p) => p.id === id && !p.problem))
     .filter((p): p is Pick<SharePhoto, "id" | "url"> => Boolean(p));
   const shownReviews = automatic ? allReviews.filter((r) => r.id === review) : allReviews;
+  // Once the reviews are in, the one it opened with is brought into view inside the list.
+  useEffect(() => {
+    if (scrolledToReview.current || !start?.review || !pickedReviewRef.current) return;
+    scrolledToReview.current = true;
+    pickedReviewRef.current.scrollIntoView({ block: "nearest" });
+  }, [shownReviews.length, start?.review]);
+  // A review picked before it opened that isn't among the reviews loaded yet: said, so the list doesn't look like nothing is chosen.
+  const pickedOutOfList = Boolean(review) && reviews.isSuccess && !shownReviews.some((r) => r.id === review);
 
   return (
     <>
       {/* Photos come first, so it doesn't open in the caption. */}
-      <Dialog open={open && !sharing} onClose={onClose} size="lg" focusField={false} title={editing ? "Edit post" : "New post"} description={automatic ? "An automatic post of a 5-star review. Change its caption, where it goes or when." : undefined}>
+      {/* Share elsewhere opens over it and comes back to it: the composer stays open, with what's written. */}
+      <Dialog open={open} onClose={() => { if (!sharing) onClose(); }} size="lg" focusField={false} title={editing ? "Edit post" : "New post"} description={automatic ? "An automatic post of a 5-star review. Change its caption, where it goes or when." : undefined}>
         <form className="dialog-body stack" onSubmit={submit}>
           {!automatic && (
             <div className="segmented" role="group" aria-label="What to post" style={{ justifySelf: "start" }}>
@@ -259,10 +303,11 @@ export function SocialComposer({ open, onClose, state, post, start }: { open: bo
               ) : (
                 <div className="stack-sm" style={{ maxHeight: 280, overflow: "auto" }}>
                   {automatic && <span className="muted small">An automatic post keeps its review. To share another one, make a new post.</span>}
+                  {pickedOutOfList && <span className="muted small">The review you picked is chosen: its card is in the preview below.</span>}
                   {shownReviews.map((r) => {
                     const blocked = !r.card_ok || r.mentions_client || automatic;
                     return (
-                      <label key={r.id} className={`card-row choice-row${review === r.id ? " picked" : ""}`} style={{ cursor: automatic ? "default" : blocked ? "not-allowed" : "pointer", alignItems: "flex-start" }}>
+                      <label key={r.id} ref={review === r.id ? pickedReviewRef : undefined} className={`card-row choice-row${review === r.id ? " picked" : ""}`} style={{ cursor: automatic ? "default" : blocked ? "not-allowed" : "pointer", alignItems: "flex-start" }}>
                         {!automatic && <input type="radio" name="social-review" checked={review === r.id} disabled={blocked} onChange={() => setReview(r.id)} />}
                         <span className="grow stack-sm" style={{ gap: 2, minWidth: 0 }}>
                           <span className="row wrap" style={{ gap: 8 }}><Stars n={r.rating} /><strong>{r.name ?? "A Google user"}</strong><span className="muted small">{formatDate(r.posted_at)}</span>{r.posted_on && <span className="chip">Posted {formatDate(r.posted_on)}</span>}</span>
@@ -289,7 +334,10 @@ export function SocialComposer({ open, onClose, state, post, start }: { open: bo
                   {allReviews.find((r) => r.id === review)?.card_drops_emoji && <span className="muted small">The card leaves out the review's emoji: its font can't draw them.</span>}
                 </>
               ) : (
-                <PhotoPreview photos={pickedPhotos} instagram={networks.includes("instagram")} onRemove={(id) => setPicked((now) => now.filter((x) => x !== id))} />
+                <>
+                  <PhotoPreview photos={pickedPhotos} instagram={networks.includes("instagram")} onRemove={(id) => setPicked((now) => now.filter((x) => x !== id))} />
+                  {networks.includes("google") && pickedPhotos.length > 1 && <span className="muted small">{GOOGLE_FIRST_PHOTO}</span>}
+                </>
               )}
             </section>
           )}
@@ -322,7 +370,7 @@ export function SocialComposer({ open, onClose, state, post, start }: { open: bo
             )}
             {choices.map((c) => (
               <label key={c.network} className="checkbox">
-                <input type="checkbox" checked={networks.includes(c.network)} disabled={!c.enabled} onChange={(e) => setNetworks((now) => (e.target.checked ? [...now, c.network] : now.filter((n) => n !== c.network)))} />
+                <input type="checkbox" checked={networks.includes(c.network)} disabled={!c.enabled} onChange={(e) => setWanted((now) => (e.target.checked ? [...now.filter((n) => n !== c.network), c.network] : now.filter((n) => n !== c.network)))} />
                 <span>
                   {c.label}
                   {c.network === "facebook" && state.networks.facebook.page_name ? <span className="muted"> · {state.networks.facebook.page_name}</span> : null}
@@ -356,12 +404,14 @@ export function SocialComposer({ open, onClose, state, post, start }: { open: bo
               <div className="grow">Crewtavo's address isn't public, so Meta and Google can't fetch the pictures. Save it as a draft, or use Share elsewhere. Words alone can still post.</div>
             </div>
           )}
-          <FormError error={save.error ?? suggest.error} />
+          <div ref={errorRef} style={{ scrollMarginBottom: 96 }}>
+            <FormError error={shownError} />
+          </div>
           <div className="form-actions">
             <Button variant="ghost" icon="share" disabled={source === "photos" ? !picked.length : source === "review" ? !review : !caption.trim()} onClick={() => setSharing(true)}>Share elsewhere</Button>
             <span className="grow" />
             <Button loading={save.isPending && save.variables === "draft"} disabled={source === "photos" ? !picked.length : source === "review" ? !review : !caption.trim()} onClick={() => save.mutate("draft")}>Save draft</Button>
-            <Button type="submit" variant="primary" loading={save.isPending && save.variables !== "draft"} disabled={!ready}>{when === "now" ? "Post now" : "Schedule post"}</Button>
+            <Button type="submit" variant="primary" loading={dryRun.isPending || (save.isPending && save.variables !== "draft")} disabled={!ready}>{when === "now" ? "Post now" : "Schedule post"}</Button>
           </div>
         </form>
       </Dialog>
@@ -386,6 +436,12 @@ function ReviewWords({ text }: { text: string }) {
     </span>
   );
 }
+
+/** Under the preview of a photo Instagram pads, and of a carousel's. */
+export const INSTAGRAM_PHOTO_PADDED = "Instagram gets this photo padded to fit, never cropped.";
+export const INSTAGRAM_CAROUSEL_PADDED = "Instagram shows a carousel's photos square, so they're padded to fit, never cropped.";
+/** Under several photos with Google ticked: a Business Profile post carries one photo. */
+export const GOOGLE_FIRST_PHOTO = "Google Business Profile shows only the first photo.";
 
 /**
  * The photos as they post. With Instagram, as Instagram gets them: one photo outside its shapes (4:5
@@ -416,7 +472,7 @@ function PhotoPreview({ photos, instagram, onRemove }: { photos: Array<Pick<Shar
           </div>
         ))}
       </div>
-      {padded && <span className="muted small">{photos.length > 1 ? "Instagram shows a carousel's photos square, so they're padded to fit." : `Instagram shows this photo padded to fit its shapes, in ${NETWORK_NAMES.instagram}'s feed.`}</span>}
+      {padded && <span className="muted small">{photos.length > 1 ? INSTAGRAM_CAROUSEL_PADDED : INSTAGRAM_PHOTO_PADDED}</span>}
     </div>
   );
 }

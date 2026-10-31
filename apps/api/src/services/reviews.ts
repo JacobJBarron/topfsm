@@ -14,6 +14,10 @@
  * Reminders (sendDueReminders, every five minutes) go at 1:30pm on the chosen days, by the ask's own
  * channels, with the same tracked link. Each one lands in the client's messages like the ask. When
  * the days change, the reminders still to come move to them (rescheduleReminders).
+ *
+ * The tracked link is short (/api/public/r/<the ask's link_token>), so a text fits in fewer
+ * segments, and a text ends with "Reply STOP to opt out." (withStopLine) unless the business's own
+ * words already say STOP. An ask that went one way but not the other says so (`warning`), with why.
  */
 import { renderTemplate } from "@crewtavo/core";
 import {
@@ -32,17 +36,18 @@ import {
   reviewSettings,
   textsOff,
   textsOffReason,
+  withStopLine,
   type AskChannel,
   type SendChannel,
 } from "@crewtavo/core/marketing";
 import type { Env } from "../env";
 import { companyFooter, firstName } from "../lib/email";
-import { clientLink } from "../lib/links";
+import { clientLink, reviewLink } from "../lib/links";
 import { reportError } from "../lib/monitoring";
 import { emailReady, sendSms, smsConfigured, type SendResult } from "../lib/notify";
 import { adminClient, type Db } from "../lib/supabase";
 import { emailClient } from "./marketingEmail";
-import { noteRefusedText } from "./textsOff";
+import { isClientPhone, noteRefusedText, TWILIO_OPTED_OUT } from "./textsOff";
 
 /** An action that can't happen yet: the automation run waits until then, with the message saying why. */
 export class WaitUntil extends Error {
@@ -52,6 +57,17 @@ export class WaitUntil extends Error {
     message: string,
   ) {
     super(message);
+  }
+}
+
+/**
+ * The email service was too busy to take an email (Resend's 429, or its 5xx): the automation run
+ * waits and tries again, longer each time (services/automations.ts), and fails only after a few.
+ */
+export class Busy extends WaitUntil {
+  override name = "Busy";
+  constructor(message: string) {
+    super(new Date(), message);
   }
 }
 
@@ -87,6 +103,8 @@ export interface ReviewResult {
   id: string;
   /** Nothing was sent, and that's as it should be (the detail says why). */
   skipped?: true;
+  /** It went one way but not the other: the detail says which didn't, and why. */
+  warning?: true;
 }
 
 interface Company {
@@ -107,6 +125,27 @@ const skipReason = (client: ReviewClient) =>
   : `${client.display_name} already left a Google review`;
 const recentlyAsked = (days: number) => `Already asked in the last ${days === REVIEW_GAP_DAYS ? "6 months" : `${days} days`}`;
 const channelWords = (channels: SendChannel[]) => (channels.length === 2 ? "text and email" : channels[0] === "sms" ? "text" : "email");
+
+/**
+ * An ask's tracked link: the short one with its link_token, or (for an ask from before those, or
+ * when it can't be read) the signed one, which goes to the same place.
+ */
+async function askLink(env: Env, admin: Db, baseUrl: string, companyId: string, id: string, token?: string | null): Promise<string> {
+  let linkToken = token ?? null;
+  if (!linkToken) {
+    const { data } = await admin.from("review_requests").select("link_token").eq("company_id", companyId).eq("id", id).maybeSingle();
+    linkToken = (data as { link_token?: string | null } | null)?.link_token ?? null;
+  }
+  return linkToken ? reviewLink(baseUrl, linkToken) : clientLink(env, baseUrl, { c: companyId, t: "review", id });
+}
+
+/** A channel that didn't go, and why, in the app's own words. */
+interface Failure {
+  channel: SendChannel;
+  reason: string;
+  /** Twilio said the client's own phone texted STOP: their texts are off now. */
+  textsOff?: true;
+}
 const vars = (company: Company, client: ReviewClient, link: string) => ({
   client: { first_name: firstName(client.display_name), name: client.display_name },
   company: { name: company.name, phone: company.phone ?? "" },
@@ -122,28 +161,47 @@ async function deliver(
   env: Env,
   admin: Db,
   d: { companyId: string; company: Company; client: ReviewClient; channels: SendChannel[]; text: string; subject: string; record: string; requestId: string; sentBy: string | null; baseUrl: string },
-): Promise<{ sent: SendChannel[]; errors: string[] }> {
+): Promise<{ sent: SendChannel[]; errors: string[]; failures: Failure[] }> {
   const sent: SendChannel[] = [];
-  const errors: string[] = [];
+  const failures: Failure[] = [];
   for (const channel of d.channels) {
     let result: SendResult;
+    // A text says how to stop them; the email has one-click unsubscribe.
+    const body = channel === "sms" ? withStopLine(d.text) : d.text;
     if (channel === "email") {
-      result = await emailClient(env, { companyId: d.companyId, company: d.company, client: d.client, subject: d.subject, text: d.text, baseUrl: d.baseUrl, footer: companyFooter(d.company) });
+      result = await emailClient(env, { companyId: d.companyId, company: d.company, client: d.client, subject: d.subject, text: body, baseUrl: d.baseUrl, footer: companyFooter(d.company) });
     } else {
-      result = await sendSms(env, { to: d.client.phone!, body: d.text });
+      result = await sendSms(env, { to: d.client.phone!, body });
       await noteRefusedText(admin, d.client, d.client.phone!, result);
     }
     if (!result.sent) {
-      errors.push(result.reason ?? (channel === "sms" ? "The text wasn't sent." : "The email wasn't sent."));
+      // Twilio refusing a number that texted STOP is said as the app says texts off, not in Twilio's words.
+      const optedOut = channel === "sms" && result.code === TWILIO_OPTED_OUT && isClientPhone(d.client.phone, d.client);
+      failures.push(
+        optedOut
+          ? { channel, reason: textsOffReason(d.client.display_name), textsOff: true }
+          : { channel, reason: result.reason ?? (channel === "sms" ? "The text wasn't sent." : "The email wasn't sent.") },
+      );
       continue;
     }
     sent.push(channel);
     await admin.from("messages").insert({
-      company_id: d.companyId, client_id: d.client.id, channel, direction: "out", subject: channel === "email" ? d.record : null, body: d.text,
+      company_id: d.companyId, client_id: d.client.id, channel, direction: "out", subject: channel === "email" ? d.record : null, body,
       related_type: "review", related_id: d.requestId, external_id: result.id ?? null, sent_by: d.sentBy,
     });
   }
-  return { sent, errors };
+  return { sent, errors: failures.map((f) => f.reason), failures };
+}
+
+/**
+ * What an ask that went says: the ways it went, and the way it didn't with why ("Asked for a review
+ * by text. The email didn't go: …"), so the office knows straight away, not only in Recent requests.
+ */
+export function askOutcome(sent: SendChannel[], failures: Failure[]): { detail: string; warning?: true } {
+  const went = `Asked for a review by ${channelWords(sent)}`;
+  const failed = failures.find((f) => !sent.includes(f.channel));
+  if (!failed) return { detail: went };
+  return { detail: `${went}. The ${failed.channel === "sms" ? "text" : "email"} didn't go: ${failed.reason}`, warning: true };
 }
 
 export async function sendReviewRequest(env: Env, admin: Db, args: ReviewArgs): Promise<ReviewResult> {
@@ -215,7 +273,7 @@ export async function sendReviewRequest(env: Env, admin: Db, args: ReviewArgs): 
     return skipped(recentlyAsked(args.skipIfRecentDays ?? REVIEW_GAP_DAYS));
   }
 
-  const link = await clientLink(env, args.baseUrl, { c: args.companyId, t: "review", id });
+  const link = await askLink(env, admin, args.baseUrl, args.companyId, id);
   if (args.channel === "link") return { sent: false, link, detail: "Link created", id };
 
   const text = renderTemplate(settings.review_message || DEFAULT_REVIEW_MESSAGE, vars(company, client, link));
@@ -225,7 +283,9 @@ export async function sendReviewRequest(env: Env, admin: Db, args: ReviewArgs): 
   });
   if (!outcome.sent.length) {
     await admin.from("review_requests").update({ status: "failed", error: outcome.errors[0] ?? null }).eq("id", id);
-    throw new Error(outcome.errors[0] ?? "The review request wasn't sent.");
+    const first = outcome.failures[0];
+    // Someone asking by text alone, for a client whose texts Twilio says are off: email is the way.
+    throw new Error(first?.textsOff && !automatic && !channels.includes("email") ? `${first.reason} Ask by email instead.` : (first?.reason ?? "The review request wasn't sent."));
   }
   // By the channels that worked (one that didn't says why), with the first reminder's time.
   const next = nextReminder(now, 0, reviewSettings(settings).reminderDays, timeZone, now);
@@ -241,8 +301,9 @@ export async function sendReviewRequest(env: Env, admin: Db, args: ReviewArgs): 
     .eq("client_id", client.id)
     .neq("id", id)
     .not("next_reminder_at", "is", null);
-  const emailForText = quiet && args.channel !== "email" && outcome.sent.length === 1 && outcome.sent[0] === "email";
-  return { sent: true, link, detail: emailForText ? "Asked for a review by email: it's quiet hours (9pm to 9am), so no text" : `Asked for a review by ${channelWords(outcome.sent)}`, id };
+  const emailForText = quiet && args.channel !== "email" && outcome.sent.length === 1 && outcome.sent[0] === "email" && !outcome.failures.length;
+  if (emailForText) return { sent: true, link, detail: "Asked for a review by email: it's quiet hours (9pm to 9am), so no text", id };
+  return { sent: true, link, id, ...askOutcome(outcome.sent, outcome.failures) };
 }
 
 /**
@@ -305,7 +366,7 @@ export async function sendDueReminders(env: Env) {
     });
     if (startError) throw new Error(startError.message);
     if (!held) return "lost";
-    const link = await clientLink(env, baseUrl, { c: row.company_id, t: "review", id: row.id });
+    const link = await askLink(env, admin, baseUrl, row.company_id, row.id, (row as { link_token?: string | null }).link_token);
     const text = renderTemplate(reviewSettings(settings).reminderMessage, vars(company, client!, link));
     const outcome = await deliver(env, admin, {
       companyId: row.company_id, company, client: client!, channels: plan.channels, text, subject: `A quick reminder from ${company.name}`, record: "Review reminder",
@@ -335,9 +396,11 @@ export async function sendDueReminders(env: Env) {
 
 /**
  * After the reminder days change in Marketing → Reviews: asks still waiting on a reminder have it
- * when the new days say, or none when there are no more. Says how many changed.
+ * when the new days say, or none when there are no more. Says how many moved, and how many lost
+ * their reminders for good (`dropped`): turning reminders back on later doesn't bring those back,
+ * which Marketing → Reviews says before saving.
  */
-export async function rescheduleReminders(admin: Db, companyId: string, timeZone: string, reminderDays: readonly number[], now = new Date()) {
+export async function rescheduleReminders(admin: Db, companyId: string, timeZone: string, reminderDays: readonly number[], now = new Date()): Promise<{ moved: number; dropped: number }> {
   const { data: open, error } = await admin
     .from("review_requests")
     .select("id, sent_at, reminders_sent, last_reminder_at, next_reminder_at")
@@ -347,7 +410,8 @@ export async function rescheduleReminders(admin: Db, companyId: string, timeZone
     .not("next_reminder_at", "is", null)
     .limit(5000);
   if (error) throw new Error(error.message);
-  let changed = 0;
+  let moved = 0;
+  let dropped = 0;
   for (const row of open ?? []) {
     const next = rescheduledReminder(new Date(row.sent_at), row.reminders_sent, reminderDays, timeZone, now, new Date(row.last_reminder_at ?? row.sent_at));
     if (next && next.getTime() === Date.parse(row.next_reminder_at!)) continue;
@@ -358,7 +422,8 @@ export async function rescheduleReminders(admin: Db, companyId: string, timeZone
       .eq("id", row.id)
       .not("next_reminder_at", "is", null);
     if (updateError) throw new Error(updateError.message);
-    changed++;
+    if (next) moved++;
+    else dropped++;
   }
-  return changed;
+  return { moved, dropped };
 }

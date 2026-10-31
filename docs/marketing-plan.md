@@ -16,7 +16,10 @@ results, is built (`20261031000200_automated_campaigns.sql`, `20261031000210_cam
 `20261031000430_social_notifications.sql`, `20261031000440_social_post_fixes.sql`, `20261031000450_social_post_words.sql`, `packages/core/src/social.ts`, `apps/api/src/integrations/meta.ts`,
 `apps/api/src/services/social.ts`, `apps/api/src/services/metaConnect.ts`, `apps/api/src/routes/social.ts`,
 `apps/api/src/lib/shareImage.ts`, `apps/api/src/lib/reviewCard.ts`, Apps → Facebook & Instagram, Marketing → Social, OK to share on
-photos). This is the plan.
+photos). Follow-ups from checking all five end to end are built too (`20261031000500_review_ask_fixes.sql`,
+`20261031000510_credit_covered_invoices.sql`, `20261031000520_campaign_fixes.sql`, `20261031000530_social_review_relink.sql`,
+`20261031000540_campaign_stop_counts.sql`).
+This is the plan.
 
 The goal: Crewtavo's own version of Jobber's Marketing Suite (Reviews, Referrals, Campaigns and
 social posting), following how Jobber does each one, shipped as one built-in app in Apps that owns
@@ -144,12 +147,38 @@ counted.
   `next_reminder_at`. A task every few minutes sends the reminders that are due.
   - Reminders go at 1:30pm in the company's time zone.
   - They stop once the link is opened, the client opts out, or Marketing is uninstalled.
+  - **Opens are honest** (`track_review_click`), as campaign links count them: a HEAD request (a mail
+    link checker), a link preview (iMessage's `facebookexternalhit … Facebot Twitterbot`, Slack,
+    WhatsApp and other bots) and anything in the first 30 seconds after the ask or a reminder went (a
+    Safe Links-style scanner, a text's preview) still reach the review page but aren't the client
+    opening it, so they don't stop the reminders or count in "% opened the review link".
+  - **Fewer reminders are said first.** Saving fewer reminders than now (None, or One after Two)
+    with asks waiting on one asks before it saves, naming both buttons (**Turn off** / **Keep them**):
+    the reminders it stops aren't sent if they're turned back on. The save says how many stopped
+    (`reminders_dropped`).
 - **Quiet hours:** an automatic first ask due between 9pm and 9am goes by email only, as Jobber
   does. Asks sent by hand go right away.
+- **Short links, and texts say how to stop them.** Each ask has a short random token
+  (`review_requests.link_token`, 12 letters and digits), so its link is `/api/public/r/<token>`, about
+  50 characters instead of a signed one of about 265; signed links already sent keep working. A text
+  ask or reminder ends with "Reply STOP to opt out." unless the business's own words already say STOP
+  (in capitals), as carriers' A2P rules expect; emails have one-click unsubscribe instead. The default
+  ask fits in two text segments.
+- **An ask that half went says so.** Asked by text and email with one of them failing, the toast is a
+  warning that names the one that didn't go and why ("Asked for a review by text. The email didn't go:
+  …"), on Marketing → Reviews, the client's page and the job's. Twilio refusing a number that texted
+  STOP is said as texts off ("Ben Clicker texted STOP, so texts to them are off."), not in Twilio's
+  words, and an address Resend calls invalid is "That email address isn't valid".
+- **The office sees a client's tracked links as a label.** On a client's timeline and in Messages, a
+  review link, a campaign's tracked link or an unsubscribe link shows as **Review link** (and so on),
+  not the live link: the message is kept as sent, but opening the link there would count as the
+  client opening it. **Ask a client now** with **Copy link** picked says **Copy review link**.
 - **One automatic ask per client every 6 months,** replacing 30 days. **Ask a client now** isn't
   held to it, but says when they were last asked.
 - **A copied link isn't an ask until it's opened.** It may never reach the client, so it doesn't
-  start the 6 months, get reminders or count in the overview until then.
+  start the 6 months, get reminders or count in the overview until then. Once opened, it's an ask
+  from the open, not the copy (`private.review_asked_at`): the 6 months, the overview's 30 days, the
+  Reviews tab's 12 months and the Google review match's 180 days all count from then.
 - **A per-client switch, "Don't ask for reviews",** on the client, as in Jobber. Clients who opted
   out of marketing aren't asked either. A STOP text sets `clients.sms_opt_out_at`, and texts to
   them stop. Twilio blocks those texts anyway, but Crewtavo then knows and shows it.
@@ -214,6 +243,13 @@ counted.
   - **On the invoice:** a credit row after the discount on the invoice page, the paper, the Client
     Hub and Stripe's line items. Payments and the Hub's pay button read the balance, which already
     has it. QuickBooks and Zoho get it with the discount.
+  - **A credit that covers an invoice whole** leaves it at $0.00 with nothing paid: it's paid (the
+    work is done and settled, so invoice.paid still fires and a review ask on it still goes), but
+    said as a credit. Its activity reads "Invoice #3 for Rita Referrer covered by a referral credit"
+    (with `covered_by_credit` and `amount_paid` in its data), the invoice page says "Covered by a
+    referral credit", and the **Tell the office when an invoice is paid** starter rule asks for
+    something paid (a new **Amount paid** condition on invoices, at least $0.01), so nobody hears
+    "Rita Referrer paid $0.00". Rules still in the starter's shape were given it.
   - **Two at once:** every path takes the referrer's lock first, then the referral, then invoices
     nobody else is changing (one being changed gets the credit when its change commits), and the
     database re-checks the sums on every write. A problem placing a credit never fails a payment or
@@ -231,7 +267,9 @@ counted.
   page, and a new starter rule, `referral_after_job`, asks a week after a job is completed (after the
   review ask and its reminders; off by default, not after recurring work). Jobber sends no
   reminders here, and neither do we.
-  - **Email only.** The message is `settings.referrals.message`, with `{{link}}` and `{{rewards}}`
+  - **Email only.** The client's own link on a line of its own is a button named for them, **Your
+    referral link** (not the friend's page's **Request a quote**), with the link written out under it
+    to copy and pass on. The message is `settings.referrals.message`, with `{{link}}` and `{{rewards}}`
     (what the friend gets, then what the client gets, each on its own line). The offer is written
     to the friend ("10% off your first service"), so the email and the Client Hub quote it: "For
     your friends: “10% off your first service”".
@@ -260,7 +298,9 @@ counted.
     in Marketing's overview
   - every referral, newest first, a page at a time, with the friend's progress (**New lead**,
     **Quoted**, **Won**, **Lost**) until there's a credit, then the credit's (**Earned**, **Applied**,
-    **Given**), and where it went
+    **Given**), and where it went; a friend who was the referrer or already a client says **No credit**
+  - **Credits earned** is what isn't on an invoice yet, and says so ("Not on an invoice yet", as
+    Marketing's overview does), with the friends still to pay on a line of their own
 - **The Client Hub** tells a client the credit that goes on their next invoice, not one the office
   keeps off invoices.
 - **Marketing uninstalled:** no referral asks and no "refer a friend" in the Client Hub, but links
@@ -323,6 +363,12 @@ counted.
     at once send once. An email whose result couldn't be recorded (it went, and the database didn't
     answer) is tried three times, then counts as sent for the 6 months anyway, and its first open or
     click records it sent.
+  - **A busy email service isn't a failure:** an email Resend turns away for too many at once (429,
+    though not its daily or monthly limit) or its own trouble (5xx) is recorded failed and its run
+    waits and tries again 1, 2, 4 and then 8 minutes later (`automation_runs.busy_tries`), failing only
+    after that; the client stays queued and counted meanwhile. The batch stops there, its other runs put
+    back for the next pass, and campaign emails go at most about two a second for each company, as
+    one-off campaigns do.
   - **100 a day for each rule,** those who passed N most recently first, so a business turning it on
     with 2,000 past clients emails them over about three weeks. Turning it on with clients who already
     qualify asks first: **Email them too** (with **100 a day** when there are more than 100), or **Only clients who reach it from now on**,
@@ -361,6 +407,10 @@ counted.
   days to 5 holds for quotes already sent. Turning Close pending quotes or Win back off with emails
   waiting says how many first, since turning it back on doesn't send them, and turning one on covers
   quotes from then on.
+- **Emails waiting are the ones that would still send** (`private.campaign_waiting`): a quote's only
+  while it's still there and has the status its rule asks for (awaiting a response, or lost), on the
+  card and in the question before turning one off. A run whose quote was approved since is skipped when
+  it comes due, as before.
 - **More audiences** for one-off campaigns: city (a property's or the billing address, picked from
   the business's own cities), services on past jobs (a line's service or name, on a job that's done or
   has had a visit, recurring work included), recurring work (one choice: any, has an active recurring
@@ -374,8 +424,9 @@ counted.
   - **Clicks:** each http and https link (up to 50) goes through a tracked link that redirects only
     to the link stored for that email, never anywhere the request says. Each email has a random
     token, so a link reveals no ids and can't be used to guess another's. A click counts as an open.
-    A click in the first 30 seconds after sending, or a HEAD request, is a link scanner's and isn't
-    counted; scanners that click later, like Defender Safe Links, still are.
+    A click in the first 30 seconds after sending, a HEAD request, or a link preview (a chat app's or a
+    bot's user agent) is a link scanner's and isn't counted; scanners that click later, like Defender
+    Safe Links, still are.
   - **Bookings:** "opening one of the campaign's links" reads as clicking one. A request or an
     approved quote within 30 days of a click is a booking, attributed to the latest click, across
     campaigns. A request and the quote made from it are one booking.
@@ -389,10 +440,19 @@ counted.
     history imports book nothing. Referral revenue (phase B) still counts `total - tax_amount`, with
     retainage in it; a follow-up.
   - Each campaign and card shows sent, opened %, clicked %, bookings and revenue (with the Invoices
-    area), and the campaign page lists who got it and what each did, a page at a time to the last,
+    area; a one-off campaign's row says its count once, on that line), and the campaign page lists who got it and what each did, a page at a time to the last,
     narrowed to **Opened**, **Clicked** or **Booked** when asked, so the one who booked isn't on page
     three. Their pills grow stronger with each step: **Sent** grey, **Opened** blue, **Clicked** green.
     A sent one-off campaign shows its numbers across the page, and its preview greets someone who got it.
+    Its preview and audience are the campaign's own as saved, and when sending finishes the numbers and
+    the list are read once more. Its sent and failed counts are written whatever its status, so one
+    stopped partway says what went ("Stopped · 3 of 10 sent"), and they move every few emails while it
+    sends. They're taken from its recipients as it's stopped, by **Stop** or by uninstalling Marketing
+    while it sends (`private.campaign_stop_counts`), and campaigns stopped before that were counted
+    again (`private.backfill_stopped_campaign_counts`).
+  - **Previews draw the email as it goes:** the company's phone for `{{company.phone}}` (GET /me sends
+    it), the company's name and address above Unsubscribe, and the subject in fixed dark colours on the
+    always-white sheet, in dark mode too.
   - Each card is short: when it goes, emails waiting, what it brought in, and **Who gets it** folded
     away. A switch that can't be turned on without email says so on the card, and **Send a test** says
     so in Edit email, where a test that went says so too, not in a toast over the dialog's buttons.
@@ -402,7 +462,10 @@ counted.
     from its rule (`automated_campaign_states`), with its results, not its switch.
   - **Tracked links and pixels keep working while Marketing is uninstalled.** One-off and automated
     emails without a link say "Add a link so clicks and bookings can be counted"; one-off campaigns
-    gain a **Client Hub link** token for that.
+    gain a **Client Hub link** token for that. **Write with AI** may use `{{link}}` and
+    `{{company.phone}}` and is asked to put `{{link}}` on its own line before the sign-off; a draft
+    that leaves it out gets it there (`withHubLink`). Close pending quotes' token is **Quote link (View
+    online)**, since its link is the quote's page.
 - **Email only, like Jobber.** Every marketing email has one-click unsubscribe and the company's
   address: campaigns, review asks and their reminders, and referral asks. While Marketing is
   uninstalled, Re-engage and Win back don't send (their waiting emails are called off), and turning
@@ -438,7 +501,12 @@ counted.
     there are reviews here or they're on their way.
   - **Other errors are said plainly** ("Reviews couldn't be brought in from Google just now."), with
     when Crewtavo tries again; Google's own words stay in `problem_detail`. The app's status says
-    **Not syncing** meanwhile. A reply Google doesn't take says so the same way.
+    **Not syncing** meanwhile. A reply Google doesn't take says so the same way. Errors back off from 30
+    minutes over problems of one kind in a row, so the first ordinary error after waiting on approval
+    tries again in 30 minutes, not 6 hours.
+  - **A reply refused on the location** says what's in the way, as a sync would: Google's approval
+    while the location is still listed, or that the account can't manage it anymore. **Sync now** on a
+    sign-in that expired says to Reconnect.
 - **Marketing is a requirement.** While Marketing is off, Install is disabled ("Install Crewtavo -
   Marketing first: your Google reviews show in Marketing → Reviews."). Installed, and Marketing
   uninstalled later, the page shows **Paused**: nothing is brought in, no notifications, replies,
@@ -457,8 +525,8 @@ counted.
   Google account**, which the location picker offers too.
 - **One location per company.** With only one, it's picked by itself; otherwise the office picks it,
   read again from Google (nothing the browser sends about it is kept). **Change location** removes
-  the old location's reviews after a confirm that says how many, and asks start again for their
-  clients, reminders included. Reviews are kept by Google's location and review ids, so the same
+  the old location's reviews after a confirm that says how many ("The 1 review … is removed"), and asks
+  start again for any clients they matched, reminders included. Reviews are kept by Google's location and review ids, so the same
   location reached through another account path keeps its reviews and matches.
 - **Reconnecting after Uninstall kept the reviews** takes their location up again when the new
   sign-in still reaches it. When it doesn't (another Google account, or the profile moved or was made
@@ -472,8 +540,13 @@ counted.
 - **Syncing**, every 30 minutes (`review_sync`, and **Sync now**, at most once every two minutes),
   one worker per company (`claim_review_sync`, renewed each page):
   - **Bringing in your reviews: 250 of 1,240** shows only while they're coming in: the location in
-    use, nothing in the way and Marketing on. The tab checks every 5 seconds while a sync runs, and
-    every 30 between the first sync's runs; never while it's waiting on Google or a person.
+    use, nothing in the way and Marketing on. Google's count is saved with every page, the last one's
+    too, so it reads "of 1,240" from the first page and "30 of 30" for a location whose reviews fit on
+    one, before "Your Google reviews are in". Before the first page there's nothing to count, so it says
+    **Bringing in your reviews**, never "0 so far". The tab checks every 5 seconds while a sync runs, and
+    every 30 between the first sync's runs; never while it's waiting on Google or a person. The app page
+    checks every 5 seconds while it shows, and its banner from signing in moves on once a location is
+    picked or Google lets Crewtavo in.
   - **Sync now** says "Checking Google for new reviews". Pressed again within two minutes, "Google was
     checked a moment ago. Try again in a couple of minutes." comes as a note, not an error.
   - From the top, newest changes first, stopping at the first review already here unchanged.
@@ -501,7 +574,9 @@ counted.
   - The asked client wins; two asked, or two of the same name with none asked, leaves it for the
     office. A client already matched to another review isn't matched again, and anonymous reviewers
     never are. Couples and business names stay unmatched for the office to match by hand.
-  - **Match to a client…** and **Not this client** on each review. An undo sticks: that review is
+  - **Match to a client…** and **Not this client** on each review. Its suggestions show what tells two
+    clients apart (an email, else a phone, an address or a business name), and two of the same name
+    only pick one for **Match**, never match on one click. An undo sticks: that review is
     never matched automatically again. Both are kept apart from the review (`review_match_choices`),
     so they hold when its row is removed (**Change location** away and back, or disconnecting with the
     reviews removed) and the review comes in again: matched by hand to the same client, or left alone.
@@ -599,6 +674,7 @@ counted.
 - **A Share button for X, LinkedIn or anywhere else** (**Share elsewhere**): the pictures as they post
   (without their location) and the caption, through the browser's share sheet where it takes files,
   otherwise a download for each picture and **Copy caption**. Neither Jobber nor Crewtavo posts to them.
+  From the composer it opens over it, and closing it comes back to the post as written.
 
 What was decided building it:
 
@@ -667,7 +743,9 @@ What was decided building it:
   composer's preview is the server's own JPEG. Reviews in other scripts get no card yet.
 - **Never a client's name or address.** A caption that names the chosen photos' clients or the
   review's matched client (their whole name, or a street address's number and street) is refused; a
-  last name on its own ("Green") is only a warning. Checked again when it posts, review words
+  last name on its own ("Green") is only a warning. **Post now** checks first (`POST
+  /social/posts/check`, saving nothing), so a refusal is said before the "posts publicly" confirm, and
+  it's brought into view. Checked again when it posts, review words
   included, since a review is matched after it comes in. Reviewers are "Ana S." or "A Google user".
   The guide and the photo hints remind the crew and office that a house number, a car plate or a face
   shows a home too. A client's **Can be posted on social pages** switch (off: "No social photos")
@@ -729,6 +807,13 @@ What was decided building it:
   set to that can't post now (Facebook & Instagram uninstalled, Instagram not linked to the Page, a
   permission missing) shows unticked with why and stays saved, so posts go there again once it can;
   with nowhere left that can post, the switch says **Paused** with what to do, rather than On.
+- **A review that comes back:** a review post keeps `review_key`, so when its review's row is removed
+  (disconnecting with the reviews removed, or **Change location** away and back) and the same review
+  comes in again, the post is linked to it again (`private.relink_social_posts`) and posts when it's
+  due. One whose review isn't here says "The review isn't in Crewtavo anymore", not that Google removed it,
+  and says what to do only when there's something: "Connect Google Business Profile to bring it back"
+  while it's disconnected, "Google Business Profile is set to another location now" after **Change
+  location** away, and nothing more while it's connected to the review's own location.
 - **Facebook & Instagram disconnected:** posts still scheduled skip them ("Facebook & Instagram was
   disconnected") and still go to Google; Uninstall's confirm says how many won't go, and **Post again**
   sends them once it's connected again. Google's problems are phase D's: not approved isn't offered,
@@ -758,7 +843,13 @@ What was decided building it:
   Facebook & Instagram opens the Page picker with **Post to Instagram too** ticked once Instagram is
   linked.
   **Drafts and scheduled** is in the order posts go (posting, then scheduled by time, then drafts,
-  newest first). A review's post shows its first words and who wrote it ("— Ana S."), with the card in
+  newest first). A post that finishes posting while the tab is open moves to **Posts** without a reload.
+  The networks the person ticked are kept: a words-alone post leaves Instagram off, and photos put it
+  back, here and in what's remembered for the next post. With several photos and Google ticked, the
+  composer says Google Business Profile shows only the first. A review picked with **Post on social** is
+  scrolled to in the list. Until the Meta app is Live, **Post now** says Facebook and Instagram keep the
+  post hidden from the public (only people with a role on the Meta app see it) and only the networks
+  that are public are called public. A review's post shows its first words and who wrote it ("— Ana S."), with the card in
   small (the brand colour and gold stars), so automatic posts with the same caption are told apart; on
   phones the status moves under the caption and the picture gets smaller. A caption whose last name
   may be a client's is said in the save's toast. The composer opens without putting the cursor in the
@@ -783,7 +874,8 @@ What was decided building it:
   reminders: [{ days }], channel }`. `companies.settings.referrals`: `{ reward: { kind: "amount" | "percent", value }, offer, message }`,
   in place of `settings.referral_reward` and `settings.referral_offer` (moved by the migration).
 - `review_requests`: `reminders_sent`, `next_reminder_at`, `reminders_failed`, `reminder_error` (why the
-  last reminder failed) and `reminder_note` (why reminders stopped).
+  last reminder failed), `reminder_note` (why reminders stopped) and `link_token` (the short link's
+  random token). `track_review_click` records an open (the server's alone).
 - `clients`: `review_opt_out boolean`, `sms_opt_out_at timestamptz`.
 - `referrals`: `reward_status` (pending, earned, applied, issued, none), `reward_kind`, `reward_value`,
   `earned_at`, `earned_invoice_id` (the friend's paid invoice), `applied_at`, `given_amount`, `auto_apply`,
@@ -808,8 +900,11 @@ What was decided building it:
   them too**: `release_inactive_backlog`).
 - `automated_campaign_states`: each automated campaign's switch, days and emails waiting, for the
   office with Marketing who can't read its rule.
+- `automation_runs.busy_tries`: waits for a busy email service, counted by `postpone_automation_run`'s
+  `p_busy`.
 - Automations:
   - a trigger `client.inactive`, checked hourly from 10am, and a condition `days_since_visit`
+  - a condition `amount_paid` on invoices (the paid notice's)
   - an action `request_referral`, and a trigger `referral.earned`
   - the recurring-visit count read from settings
   - fourteen starter rules, with `referral_after_job`, `reengage_past_clients` and
@@ -882,6 +977,11 @@ What was decided building it:
   sending them now. Set them to **None** in **Marketing → Reviews** to turn them off.
 - **Automatic asks go to a client at most once every 6 months,** instead of once a month.
 - **Clients who texted STOP have texts off,** shown on their page, including STOPs from before.
+- **Opens are counted honestly:** a mail scanner or a text's link preview opening the link doesn't
+  stop the reminders or count as opened.
+- **Review texts are shorter and say how to stop them:** a short link, and "Reply STOP to opt out." at
+  the end of each text ask and reminder.
+- **Turning reminders off says how many waiting reminders it stops** before it saves.
 
 ## Release notes for phase B
 
@@ -903,6 +1003,10 @@ What was decided building it:
   on the Referrals tab, with **Referrals** on **Metrics → Clients**.
 - **Uninstalling Marketing** stops referral asks too. Credits clients have earned still go on their
   invoices.
+- **An invoice a credit covers whole** says it was covered by a referral credit, and the office isn't
+  told it was paid $0.00.
+- **Referral ask emails** show the client's own link as **Your referral link**, written out under the
+  button to copy.
 
 ## Release notes for phase C
 
@@ -923,6 +1027,11 @@ What was decided building it:
   many clients have each.
 - **A changed wait moves follow-ups still waiting,** on any automation rule.
 - **Uninstalling Marketing** stops automated campaigns too; links and images already sent keep working.
+- **A busy email service doesn't lose emails:** automated campaign emails Resend turns away for now are
+  tried again by themselves.
+- **Write with AI** drafts include the Client Hub link, so their clicks and bookings are counted.
+- **A campaign stopped partway says what went** ("Stopped · 3 of 10 sent"), whether it was stopped on
+  its page or by uninstalling Marketing, campaigns stopped before this included.
 
 ## Release notes for phase D
 
@@ -951,6 +1060,8 @@ What was decided building it:
   you sign in with doesn't have that one.
 - **Sign in with another Google account** from the app page, for a Google account that doesn't manage
   your Business Profile.
+- **Match to a client…** shows each suggestion's email, phone or address, so two clients with the same
+  name are told apart.
 
 ## Release notes for phase E
 
@@ -979,6 +1090,8 @@ What was decided building it:
 - **Posts never go twice.** A post Meta or Google may have made (no answer, or an unclear one) is
   **Unconfirmed** until you check: your Page, your Instagram account or your Business Profile. A post
   you cancel while it's posting never goes later.
+- **Scheduled review posts survive reconnecting:** a review removed and brought in again is the post's
+  again.
 
 ## Decisions on the open questions (30 October 2026)
 

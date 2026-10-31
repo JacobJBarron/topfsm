@@ -116,14 +116,14 @@ isOneToOne: false
                   ]
                 },"automation_runs": {
                   Row: {
-                    "activity_id": number | null,"attempts": number,"claim_token": string | null,"company_id": string,"created_at": string,"error": string | null,"finished_at": string | null,"id": number,"locked_until": string | null,"result": NonNullable<Json>,"rule_id": string,"run_after": string,"status": string,"subject_id": string | null,"subject_type": string | null
+                    "activity_id": number | null,"attempts": number,"busy_tries": number,"claim_token": string | null,"company_id": string,"created_at": string,"error": string | null,"finished_at": string | null,"id": number,"locked_until": string | null,"result": NonNullable<Json>,"rule_id": string,"run_after": string,"status": string,"subject_id": string | null,"subject_type": string | null
                   }
                   ComputedFields: never
                   Insert: {
-                    "activity_id"?: number | null,"attempts"?: number,"claim_token"?: string | null,"company_id": string,"created_at"?: string,"error"?: string | null,"finished_at"?: string | null,"id"?: never,"locked_until"?: string | null,"result"?: NonNullable<Json>,"rule_id": string,"run_after"?: string,"status"?: string,"subject_id"?: string | null,"subject_type"?: string | null
+                    "activity_id"?: number | null,"attempts"?: number,"busy_tries"?: number,"claim_token"?: string | null,"company_id": string,"created_at"?: string,"error"?: string | null,"finished_at"?: string | null,"id"?: never,"locked_until"?: string | null,"result"?: NonNullable<Json>,"rule_id": string,"run_after"?: string,"status"?: string,"subject_id"?: string | null,"subject_type"?: string | null
                   }
                   Update: {
-                    "activity_id"?: number | null,"attempts"?: number,"claim_token"?: string | null,"company_id"?: string,"created_at"?: string,"error"?: string | null,"finished_at"?: string | null,"id"?: never,"locked_until"?: string | null,"result"?: NonNullable<Json>,"rule_id"?: string,"run_after"?: string,"status"?: string,"subject_id"?: string | null,"subject_type"?: string | null
+                    "activity_id"?: number | null,"attempts"?: number,"busy_tries"?: number,"claim_token"?: string | null,"company_id"?: string,"created_at"?: string,"error"?: string | null,"finished_at"?: string | null,"id"?: never,"locked_until"?: string | null,"result"?: NonNullable<Json>,"rule_id"?: string,"run_after"?: string,"status"?: string,"subject_id"?: string | null,"subject_type"?: string | null
                   }
                   Relationships: [
                     {
@@ -2052,14 +2052,14 @@ isOneToOne: false
                   ]
                 },"review_requests": {
                   Row: {
-                    "channel": string,"clicked_at": string | null,"client_id": string,"company_id": string,"created_by": string | null,"error": string | null,"id": string,"job_id": string | null,"last_reminder_at": string | null,"next_reminder_at": string | null,"reminder_claim": string | null,"reminder_error": string | null,"reminder_locked_until": string | null,"reminder_note": string | null,"reminders_failed": number,"reminders_sent": number,"reviewed_at": string | null,"sent_at": string,"status": string
+                    "channel": string,"clicked_at": string | null,"client_id": string,"company_id": string,"created_by": string | null,"error": string | null,"id": string,"job_id": string | null,"last_reminder_at": string | null,"link_token": string,"next_reminder_at": string | null,"reminder_claim": string | null,"reminder_error": string | null,"reminder_locked_until": string | null,"reminder_note": string | null,"reminders_failed": number,"reminders_sent": number,"reviewed_at": string | null,"sent_at": string,"status": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "channel"?: string,"clicked_at"?: string | null,"client_id": string,"company_id": string,"created_by"?: string | null,"error"?: string | null,"id"?: string,"job_id"?: string | null,"last_reminder_at"?: string | null,"next_reminder_at"?: string | null,"reminder_claim"?: string | null,"reminder_error"?: string | null,"reminder_locked_until"?: string | null,"reminder_note"?: string | null,"reminders_failed"?: number,"reminders_sent"?: number,"reviewed_at"?: string | null,"sent_at"?: string,"status"?: string
+                    "channel"?: string,"clicked_at"?: string | null,"client_id": string,"company_id": string,"created_by"?: string | null,"error"?: string | null,"id"?: string,"job_id"?: string | null,"last_reminder_at"?: string | null,"link_token"?: string,"next_reminder_at"?: string | null,"reminder_claim"?: string | null,"reminder_error"?: string | null,"reminder_locked_until"?: string | null,"reminder_note"?: string | null,"reminders_failed"?: number,"reminders_sent"?: number,"reviewed_at"?: string | null,"sent_at"?: string,"status"?: string
                   }
                   Update: {
-                    "channel"?: string,"clicked_at"?: string | null,"client_id"?: string,"company_id"?: string,"created_by"?: string | null,"error"?: string | null,"id"?: string,"job_id"?: string | null,"last_reminder_at"?: string | null,"next_reminder_at"?: string | null,"reminder_claim"?: string | null,"reminder_error"?: string | null,"reminder_locked_until"?: string | null,"reminder_note"?: string | null,"reminders_failed"?: number,"reminders_sent"?: number,"reviewed_at"?: string | null,"sent_at"?: string,"status"?: string
+                    "channel"?: string,"clicked_at"?: string | null,"client_id"?: string,"company_id"?: string,"created_by"?: string | null,"error"?: string | null,"id"?: string,"job_id"?: string | null,"last_reminder_at"?: string | null,"link_token"?: string,"next_reminder_at"?: string | null,"reminder_claim"?: string | null,"reminder_error"?: string | null,"reminder_locked_until"?: string | null,"reminder_note"?: string | null,"reminders_failed"?: number,"reminders_sent"?: number,"reviewed_at"?: string | null,"sent_at"?: string,"status"?: string
                   }
                   Relationships: [
                     {
@@ -2951,6 +2951,7 @@ isOneToOne: false
 { Args: { "p_company"?: string,"p_limit"?: number }; Returns: {
               "activity_id": number | null,
 "attempts": number,
+"busy_tries": number,
 "claim_token": string | null,
 "company_id": string,
 "created_at": string,
@@ -3054,6 +3055,7 @@ isOneToOne: false
 "id": string,
 "job_id": string | null,
 "last_reminder_at": string | null,
+"link_token": string,
 "next_reminder_at": string | null,
 "reminder_claim": string | null,
 "reminder_error": string | null,
@@ -3453,7 +3455,7 @@ isOneToOne: false
 { Args: { "p_body"?: string,"p_claim": string,"p_company": string,"p_kind": string,"p_title"?: string }; Returns: boolean
                            },
 "postpone_automation_run":
-{ Args: { "p_id": number,"p_note"?: string,"p_result": Json,"p_token": string,"p_until": string }; Returns: boolean
+{ Args: { "p_busy"?: boolean,"p_id": number,"p_note"?: string,"p_result": Json,"p_token": string,"p_until": string }; Returns: boolean
                            },
 "promo_code_usage":
 { Args: { "p_company": string }; Returns: {
@@ -3702,6 +3704,9 @@ isOneToOne: false
                            },
 "track_campaign_open":
 { Args: { "p_token": string }; Returns: boolean
+                           },
+"track_review_click":
+{ Args: { "p_company"?: string,"p_count"?: boolean,"p_id"?: string,"p_token"?: string }; Returns: string
                            },
 "trash_copied_to_drive":
 { Args: { "p_company": string,"p_id": string }; Returns: string

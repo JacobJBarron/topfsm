@@ -255,6 +255,9 @@ export async function checkAccess(env: Env, admin: Db, companyId: string, found?
   return { accounts, problem: "pick" };
 }
 
+/** How many problems of this kind in a row, this one included: another kind before it starts the count again. */
+export const consecutiveFailures = (sync: { problem?: string | null; failures?: number | null } | null, kind: string) => (sync?.problem === kind ? (sync.failures ?? 0) + 1 : 1);
+
 /**
  * Writes what went wrong: on the sync (with when to try again) and the app, telling the people who
  * can fix a sign-in or a location once. `claim` keeps it to the sync this worker still holds (null
@@ -292,7 +295,9 @@ async function recordProblem(env: Env, admin: Db, companyId: string, claim: stri
     kind = "error";
     detail = (error instanceof Error ? error.message : String(error)).slice(0, 300);
   }
-  const failures = (sync?.failures ?? 0) + 1;
+  // Counted over problems of the same kind in a row: waiting on Google's approval raises it every 6
+  // hours, and the first ordinary error after that still tries again in 30 minutes.
+  const failures = consecutiveFailures(sync, kind);
   const next = kind === "approval" || kind === "not_enabled"
     ? minutes(SLOW_RETRY_HOURS * 60)
     : kind === "error" ? minutes(Math.min(SYNC_EVERY_MINUTES * 2 ** (failures - 1), SLOW_RETRY_HOURS * 60)) : null;
@@ -375,6 +380,22 @@ async function bringIn(env: Env, admin: Db, companyId: string, claim: string, sy
     google.totalReviewCount = got.totalReviewCount ?? google.totalReviewCount;
     google.heard = true;
   };
+  // Saved with every write of the full pass's place, the last page's too, so the first sync's
+  // progress reads "250 of 1,240" (and "30 of 30" for a location whose reviews fit on one page).
+  const googleCount = () => (google.heard ? { average_rating: google.averageRating, total_reviews: google.totalReviewCount } : {});
+  // The office is told once the first full pass is done; until then its progress shows.
+  const tellIn = async (seen: number) => {
+    const total = google.totalReviewCount ?? seen;
+    const average = google.averageRating;
+    const title = total
+      ? `Your Google reviews are in: ${total.toLocaleString("en-US")} ${total === 1 ? "review" : "reviews"}${average ? `, ${average.toFixed(1)} average` : ""}`
+      : "Your Google reviews are connected";
+    const { error } = await admin.rpc("note_review_access", {
+      p_company: companyId, p_claim: claim, p_kind: "in", p_title: title,
+      p_body: total ? "See them, and reply, in Marketing → Reviews." : "No reviews on Google yet. New ones show in Marketing → Reviews.",
+    });
+    if (error) throw new Error(error.message);
+  };
   const fullDue = !sync.full_started_at && (!sync.full_synced_at || Date.parse(sync.full_synced_at) < Date.now() - FULL_PASS_HOURS * 3_600_000);
 
   // From the top, newest changes first, to the first review that's here unchanged. A full pass
@@ -430,27 +451,21 @@ async function bringIn(env: Env, admin: Db, companyId: string, claim: string, sy
         if (!token) counts.deleted = await confirmDeletions(env, admin, companyId, claim, locationId, started!, counts);
         break;
       }
-      await save({ full_page_token: token, full_seen: seen });
+      await save({ full_page_token: token, full_seen: seen, ...googleCount() });
     }
     if (done) {
-      await save({ full_started_at: null, full_page_token: null, full_seen: seen, full_synced_at: new Date().toISOString() });
-      if (!sync.first_synced_at) {
-        const total = google.totalReviewCount ?? seen;
-        const average = google.averageRating;
-        const title = total
-          ? `Your Google reviews are in: ${total.toLocaleString("en-US")} ${total === 1 ? "review" : "reviews"}${average ? `, ${average.toFixed(1)} average` : ""}`
-          : "Your Google reviews are connected";
-        const { error } = await admin.rpc("note_review_access", {
-          p_company: companyId, p_claim: claim, p_kind: "in", p_title: title,
-          p_body: total ? "See them, and reply, in Marketing → Reviews." : "No reviews on Google yet. New ones show in Marketing → Reviews.",
-        });
-        if (error) throw new Error(error.message);
-      }
+      // With Google's count, before the office is told they're in: the progress shows until then.
+      await save({ full_started_at: null, full_page_token: null, full_seen: seen, full_synced_at: new Date().toISOString(), ...googleCount() });
+      if (!sync.first_synced_at) await tellIn(seen);
     } else {
-      await save({ full_page_token: token, full_seen: seen });
+      await save({ full_page_token: token, full_seen: seen, ...googleCount() });
     }
+  } else {
+    if (google.heard) await save(googleCount());
+    // The first full pass ended but telling the office failed (a database blip): tell them now,
+    // rather than showing its progress until tomorrow's full pass.
+    if (sync.full_synced_at && !sync.first_synced_at) await tellIn(sync.full_seen);
   }
-  if (google.heard) await save({ average_rating: google.averageRating, total_reviews: google.totalReviewCount });
   return counts;
 }
 
@@ -594,9 +609,26 @@ async function replyProblem(env: Env, admin: Db, companyId: string, review: Repl
     if (error.kind === "approval" || error.kind === "not_enabled") throw new HttpError(409, problemMessage(error.kind, null, await ownApp(env, admin, companyId)));
     if (error.kind === "signin") throw new HttpError(409, SIGNIN_MESSAGE);
     if (error.kind === "busy") throw new HttpError(429, "Google is busy right now. Try again in a minute.");
+    // Refused on the location, as a sync reads it (recordProblem): still listed, Google hasn't
+    // approved access; not listed, the account can't manage it anymore. Trying again won't help.
+    if (error.kind === "denied") throw new HttpError(409, await deniedReply(env, admin, companyId));
     throw new HttpError(502, error.message === PROJECT_SUSPENDED ? `Google didn't take the reply: ${PROJECT_SUSPENDED}` : "Google didn't take the reply. Try again in a minute.");
   }
   throw error;
+}
+
+/** What a reply Google refused on the location says: what's in the way, as a sync would find it. */
+async function deniedReply(env: Env, admin: Db, companyId: string): Promise<string> {
+  const { data: sync } = await admin.from("review_syncs").select("account, location_id").eq("company_id", companyId).maybeSingle();
+  try {
+    const still = sync?.account && sync.location_id ? await findLocation(env, admin, companyId, sync.account, sync.location_id) : null;
+    return still ? problemMessage("approval", null, await ownApp(env, admin, companyId)) : LOCATION_PROBLEMS.no_access;
+  } catch (again) {
+    const kind = again instanceof GoogleBusinessError ? again.kind : "error";
+    if (kind === "approval" || kind === "not_enabled") return problemMessage(kind, null, await ownApp(env, admin, companyId));
+    if (kind === "signin") return SIGNIN_MESSAGE;
+    return LOCATION_PROBLEMS.no_access;
+  }
 }
 
 /**

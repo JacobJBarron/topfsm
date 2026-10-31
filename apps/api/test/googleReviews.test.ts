@@ -600,7 +600,8 @@ describe("syncing", () => {
     };
     const w = serve({ tables: await connected({ sync: { first_synced_at: null, full_synced_at: null } }), google: (c) => (isReviews(c) ? pages[c.params.get("pageToken") ?? ""] : undefined) });
     expect(await run(w, { pages: 2 })).toMatchObject({ result: "synced", counts: { new: 4 } });
-    expect(sync(w)).toMatchObject({ full_page_token: "t3", full_seen: 4, first_synced_at: null });
+    // Google's count is kept with the place as soon as it's heard, so the progress reads "4 of 5".
+    expect(sync(w)).toMatchObject({ full_page_token: "t3", full_seen: 4, first_synced_at: null, total_reviews: 5, average_rating: 4.6 });
     expect(rpcs(w, "note_review_access").filter((b) => b.p_kind === "in")).toEqual([]);
 
     expect(await run(w, { pages: 2 })).toMatchObject({ result: "synced", counts: { new: 1 } });
@@ -612,6 +613,58 @@ describe("syncing", () => {
     ]);
     // None of the old reviews told anyone.
     expect(w.tables.notifications).toEqual([]);
+  });
+
+  it("saves Google's count with the last page of the first sync, so a location on one page reads 'of 30' until it's in", async () => {
+    const reviews = Array.from({ length: 30 }, (_, i) => review(`one-${i}`));
+    // What the sync row says at the moment the office is told the reviews are in, and the progress
+    // the Reviews tab would read from it then.
+    let atNotice: Row | null = null;
+    const w = serve({
+      tables: await connected({ sync: { first_synced_at: null, full_synced_at: null, total_reviews: null, average_rating: null } }),
+      rpc: {
+        note_review_access: (b, world) => {
+          if (b.p_kind === "in") atNotice = { ...sync(world) };
+          return functions().note_review_access!(b, world);
+        },
+      },
+      google: (c) => (isReviews(c) ? { reviews, totalReviewCount: 30, averageRating: 4.9 } : undefined),
+    });
+    expect(await run(w)).toMatchObject({ result: "synced", counts: { new: 30 } });
+    expect(atNotice).toMatchObject({ full_seen: 30, total_reviews: 30, average_rating: 4.9, first_synced_at: null });
+    // The one write that ends the pass carries the count, not a write after the notice.
+    const ended = w.calls.filter((c) => c.method === "PATCH" && c.path === "/rest/v1/review_syncs" && c.body?.full_synced_at);
+    expect(ended).toEqual([expect.objectContaining({ body: expect.objectContaining({ full_seen: 30, total_reviews: 30, average_rating: 4.9 }) })]);
+    expect(rpcs(w, "note_review_access").find((b) => b.p_kind === "in")).toMatchObject({ p_title: "Your Google reviews are in: 30 reviews, 4.9 average" });
+  });
+
+  it("tells the office the reviews are in on the next run when telling them failed as the first pass ended", async () => {
+    let fail = true;
+    const w = serve({
+      tables: await connected({ sync: { first_synced_at: null, full_synced_at: null } }),
+      rpc: {
+        note_review_access: (b, world) => {
+          if (b.p_kind === "in" && fail) {
+            fail = false;
+            return Response.json({ code: "57014", message: "canceling statement due to statement timeout" }, { status: 500 });
+          }
+          return functions().note_review_access!(b, world);
+        },
+      },
+      google: (c) => (isReviews(c) ? { reviews: [review("a"), review("b")], totalReviewCount: 2, averageRating: 4.5 } : undefined),
+    });
+    expect(await run(w)).toMatchObject({ result: "problem" });
+    expect(sync(w).first_synced_at).toBeFalsy();
+    expect(sync(w).full_synced_at).toBeTruthy();
+
+    // The next run is the quick pass from the top, not a full one, and it tells them.
+    expect(await run(w)).toMatchObject({ result: "synced" });
+    expect(w.calls.filter(isReviews).map((c) => c.params.get("pageToken"))).toEqual([null, null]);
+    expect(rpcs(w, "note_review_access").filter((b) => b.p_kind === "in")).toEqual([
+      expect.objectContaining({ p_title: "Your Google reviews are in: 2 reviews, 4.5 average" }),
+      expect.objectContaining({ p_title: "Your Google reviews are in: 2 reviews, 4.5 average" }),
+    ]);
+    expect(sync(w).first_synced_at).toBeTruthy();
   });
 
   it("tells the office of a new review once, a low rating as review_low", async () => {
@@ -796,6 +849,18 @@ describe("what's in the way", () => {
     expect(rpcs(w, "note_review_access").filter((b) => b.p_kind === "location")).toEqual([]);
   });
 
+  it("counts failures over problems of one kind in a row: the first ordinary error after waiting on approval tries again in 30 minutes", async () => {
+    const down = () => Response.json({ error: { code: 500, status: "INTERNAL", message: "Internal error encountered." } }, { status: 500 });
+    const { w } = await failing((c) => (isReviews(c) ? down() : undefined), { sync: { problem: "approval", failures: 4 } });
+    expect(sync(w)).toMatchObject({ problem: "error", failures: 1 });
+    const wait = Date.parse(sync(w).next_sync_at) - Date.now();
+    expect(wait).toBeGreaterThan(29 * 60_000);
+    expect(wait).toBeLessThan(31 * 60_000);
+    // The same kind again keeps counting.
+    const again = await failing((c) => (isReviews(c) ? down() : undefined), { sync: { problem: "error", failures: 1 } });
+    expect(sync(again.w).failures).toBe(2);
+  });
+
   it("Google down is tried again, later each time; busy is tried again quietly", async () => {
     const down = () => Response.json({ error: { code: 500, status: "INTERNAL", message: "Internal error encountered." } }, { status: 500 });
     const { w, outcome } = await failing((c) => (isReviews(c) ? down() : undefined));
@@ -868,6 +933,20 @@ describe("replies", () => {
     serve({ tables: { ...(await connected()), reviews: [theReview()] }, google: () => Response.json({ error: { code: 500, status: "INTERNAL", message: "Internal error encountered." } }, { status: 500 }) });
     const res = await request(`/reviews/${ID}/reply`, { method: "PUT", body: { comment: "Thanks!" } });
     expect([res.status, await res.json()]).toEqual([502, { error: "Google didn't take the reply. Try again in a minute." }]);
+  });
+
+  it("say what's in the way when Google refuses one on the location, not to try again in a minute", async () => {
+    let listed = true;
+    const answer = (c: Call) => (c.path === `/v4/${PARENT}/reviews/a/reply` ? denied() : c.path === "/v1/accounts/1/locations" ? { locations: listed ? [location("9", "Radford")] : [] } : undefined);
+    serve({ tables: { ...(await connected()), reviews: [theReview()] }, google: answer });
+    let res = await request(`/reviews/${ID}/reply`, { method: "PUT", body: { comment: "Thanks!" } });
+    // Still listed: Google hasn't approved this server's access.
+    expect([res.status, await res.json()]).toEqual([409, { error: APPROVAL_MESSAGE }]);
+    listed = false;
+    serve({ tables: { ...(await connected()), reviews: [theReview()] }, google: answer });
+    res = await request(`/reviews/${ID}/reply`, { method: "PUT", body: { comment: "Thanks!" } });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/can't manage this location anymore/);
   });
 
   const notFound = () => Response.json({ error: { code: 404, status: "NOT_FOUND", message: "Requested entity was not found." } }, { status: 404 });
@@ -980,6 +1059,17 @@ describe("Sync now", () => {
       expect(rpcs(w, "rate_limit_hit")).toEqual([]);
       expect(w.calls.some(isReviews)).toBe(false);
     }
+  });
+
+  it("says a sign-in that expired needs Reconnect, not connecting first", async () => {
+    const tables = await connected();
+    tables.integrations[0]!.status = "error";
+    serve({ tables });
+    const res = await request("/reviews/google/sync", { method: "POST" });
+    expect([res.status, await res.json()]).toEqual([409, { error: SIGNIN_MESSAGE }]);
+    tables.integrations[0]!.status = "disconnected";
+    serve({ tables });
+    expect(await (await request("/reviews/google/sync", { method: "POST" })).json()).toEqual({ error: "Connect Google Business Profile in Apps first." });
   });
 
   it("waits while Marketing is off, and needs the marketing area", async () => {

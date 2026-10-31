@@ -542,6 +542,18 @@ export function askRuleUpdate(rule: AskRule | null | undefined, kind: AskRuleKin
 export const STOP_WORDS = ["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT", "OPTOUT", "OPT OUT", "REVOKE"];
 export const START_WORDS = ["START", "UNSTOP", "YES"];
 
+/** How a text review ask or reminder ends, so the client knows how to stop them (carriers' A2P rules expect it). */
+export const STOP_LINE = "Reply STOP to opt out.";
+
+/**
+ * A review ask's or reminder's text as it goes by text: with STOP_LINE after it, unless the
+ * business's own words already say STOP (in capitals, as opt-out wording does: "stop by" isn't it).
+ * Emails carry one-click unsubscribe instead.
+ */
+export function withStopLine(text: string): string {
+  return /\bSTOP\b/.test(text) ? text : `${text.trimEnd()}\n\n${STOP_LINE}`;
+}
+
 /**
  * What a text from a client means: "stop" (texts off), "start" (back on) or null (an ordinary text).
  * Read as Twilio reads it: the whole message is the word, in any case, with spaces before it and
@@ -580,6 +592,12 @@ export interface ReferralSettings {
   /** The referral ask's email, with {{link}} and {{rewards}}. */
   message: string;
 }
+
+/**
+ * The button a referral ask's {{link}} becomes (on a line of its own): the client's own link to pass
+ * on, written out under it too, not "Request a quote", which is what the friend's page is for.
+ */
+export const REFERRAL_LINK_BUTTON = "Your referral link";
 
 /** The referral ask's email until the business writes its own (settings.referrals.message). */
 export const DEFAULT_REFERRAL_MESSAGE =
@@ -762,11 +780,13 @@ export const creditText = (parts: readonly CreditPart[]) => parts.map((p) => (ty
 /**
  * The status a referral's pill shows: its credit's once there is one (Earned, Applied, Given), and
  * the referral's own otherwise (New lead, Quoted, Won, Lost), so a referral with no credit still
- * shows how the friend's work is going. creditLine says why there's no credit. StatusPill has the
- * words.
+ * shows how the friend's work is going. A friend who was the referrer or already a client isn't a
+ * lead, so theirs says No credit, as the line under it does. creditLine says why there's no
+ * credit. StatusPill has the words.
  */
-export function referralPill(referral: Pick<CreditReferral, "status" | "reward_status">): { kind: "referral" | "credit"; status: string } {
+export function referralPill(referral: Pick<CreditReferral, "status" | "reward_status"> & Partial<Pick<CreditReferral, "no_reward_reason">>): { kind: "referral" | "credit"; status: string } {
   if (["earned", "applied", "issued"].includes(referral.reward_status)) return { kind: "credit", status: referral.reward_status };
+  if (referral.reward_status === "none" && (referral.no_reward_reason === "self" || referral.no_reward_reason === "already_client")) return { kind: "credit", status: "none" };
   return { kind: "referral", status: referral.status };
 }
 

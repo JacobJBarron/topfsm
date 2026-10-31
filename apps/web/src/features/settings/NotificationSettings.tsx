@@ -5,7 +5,7 @@
  */
 import { isPlaceholderEmail } from "@crewtavo/core/email";
 import { marketingOn } from "@crewtavo/core/marketing";
-import { DEFAULT_NOTIFICATION_PREFS, NOTIFICATION_TOPICS, REVIEW_ACCESS_HINT, reviewNoticesFor, type NotificationChannel, type NotificationTopic } from "@crewtavo/core/notifications";
+import { DEFAULT_NOTIFICATION_PREFS, NOTIFICATION_TOPICS, REVIEW_ACCESS_HINT, reviewNoticesFor, SOCIAL_ACCESS_HINT, type NotificationChannel, type NotificationTopic } from "@crewtavo/core/notifications";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/Button";
 import { FormError } from "@/components/ui/Field";
@@ -50,7 +50,7 @@ function topicsFor(session: Session) {
   }
   const reviews = reviewNotices(session);
   return NOTIFICATION_TOPICS.filter((t) => t.key !== "jobs" && (t.key !== "chat" || chatOn(session)) && (t.key !== "hosting" || hostingWarnings(session)) && (t.key !== "subs" || managesSubs(session)) && (t.key !== "reviews" || reviews) && (t.key !== "social" || reviews)).map((t) =>
-    t.key === "hosting" && session.config.platform !== "railway" ? { ...t, ...OFF_RAILWAY_HOSTING } : t.key === "reviews" && reviews === "access" ? { ...t, hint: REVIEW_ACCESS_HINT } : t,
+    t.key === "hosting" && session.config.platform !== "railway" ? { ...t, ...OFF_RAILWAY_HOSTING } : t.key === "reviews" && reviews === "access" ? { ...t, hint: REVIEW_ACCESS_HINT } : t.key === "social" && reviews === "access" ? { ...t, hint: SOCIAL_ACCESS_HINT } : t,
   );
 }
 

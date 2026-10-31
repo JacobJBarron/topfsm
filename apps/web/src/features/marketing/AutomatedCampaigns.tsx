@@ -36,9 +36,9 @@ import { StatusPill } from "@/components/ui/StatusPill";
 import { api, supabase, unwrap } from "@/lib/api";
 import { can, hasRole, useSession } from "@/lib/session";
 import { ConnectEmailHint } from "../settings/ConnectEmailHint";
-import { automatedBody, automatedRules, dayChoices, daysError, daysWords, lowerWords, sampleVars, timingLine, turnOffWords, waitingLine, type AutomatedCard, type AutomatedRuleRow } from "./automatedForm";
+import { automatedBody, automatedRules, campaignTokens, dayChoices, daysError, daysWords, lowerWords, sampleVars, timingLine, turnOffWords, waitingLine, type AutomatedCard, type AutomatedRuleRow } from "./automatedForm";
 import { resultsSummary } from "./CampaignResults";
-import { EmailPreview, MessageField, SubjectField, TestEmailDialog } from "./EmailEditor";
+import { companyAddressLine, EmailPreview, MessageField, SubjectField, TestEmailDialog } from "./EmailEditor";
 
 const TEMPLATE_KEYS = ["reengage_past_clients", "win_back_lost_quotes", "quote_followup"];
 
@@ -200,9 +200,12 @@ function CampaignCard({ card, state, results }: { card: AutomatedCard; state: Au
     // A long list of past clients: email them too, or only those who reach it from now on.
     if (next && key === "reengage" && waiting > 0) return setChoosing(true);
     // Turning off calls off the emails still waiting, and turning it on again doesn't bring them back.
+    // Counted fresh, as the card counts them: only those that would still send (the quote still
+    // awaiting a response, or still lost), not runs whose quote was approved or lost since.
     if (!next && key !== "reengage" && rule) {
-      const { count, error } = await supabase().from("automation_runs").select("id", { count: "exact", head: true }).eq("rule_id", rule.id).eq("status", "pending");
-      if ((error || count) && !(await confirm({ title: `Turn off ${campaign.name}?`, body: turnOffWords(key, error ? null : (count ?? 0)), confirmLabel: "Turn off", danger: true }))) return;
+      const { data, error } = await supabase().rpc("automated_campaign_states", { p_company: session.company.id });
+      const count = error ? null : ((data as unknown as AutomatedState[] | null)?.find((x) => x.template_key === campaign.templateKey)?.waiting ?? 0);
+      if ((count === null || count > 0) && !(await confirm({ title: `Turn off ${campaign.name}?`, body: turnOffWords(key, count), confirmLabel: "Turn off", cancelLabel: "Leave it on", danger: true }))) return;
     }
     save.mutate({ enabled: next });
   };
@@ -296,7 +299,7 @@ function EditEmailDialog({ card, backlog, onClose }: { card: AutomatedCard; back
   const [counted, setCounted] = useState<unknown>(null);
   const set = (patch: Partial<typeof draft>) => setDraft((d) => ({ ...d, ...patch }));
   const emailReady = session.config.features.email;
-  const tokens = variablesForTrigger(campaign.trigger).map(({ token, label }) => ({ token, label }));
+  const tokens = campaignTokens(key, variablesForTrigger(campaign.trigger));
   const vars = sampleVars(key, { name: session.profile.full_name, email: session.profile.email, company: session.company.name, phone: session.company.phone }, draft.days, window.location.origin);
   const problem = daysError(key, draft.days) ?? (!draft.subject.trim() ? "Add a subject line." : draft.body.trim().length < 10 ? "Write the email." : null);
   const save = useMutation({
@@ -340,7 +343,7 @@ function EditEmailDialog({ card, backlog, onClose }: { card: AutomatedCard; back
           hint={campaign.marketing ? "Your address and an unsubscribe link are added at the bottom. Client Hub link is theirs, where they can ask for work." : "Your address is added at the bottom."}
         />
         {!hasTrackableLink(draft.body) && NO_LINK}
-        <EmailPreview companyName={session.company.name} subject={draft.subject} body={draft.body} vars={vars} unsubscribe={campaign.marketing} linkLabel={linkButton(key)} />
+        <EmailPreview companyName={session.company.name} address={companyAddressLine(session.company.address)} subject={draft.subject} body={draft.body} vars={vars} unsubscribe={campaign.marketing} linkLabel={linkButton(key)} />
         <FormError error={save.error ?? counted} />
         {!emailReady && <p className="muted small" style={{ margin: 0 }}>Email isn't connected yet, so a test can't be sent.<ConnectEmailHint then="to send one" /></p>}
         {testedTo && <p className="small" role="status" style={{ margin: 0 }}><Icon name="check" size={14} /> Test sent to {testedTo}.</p>}

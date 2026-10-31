@@ -2,7 +2,7 @@
  * Toast notifications: brief feedback after an action ("Quote sent", "Couldn't save").
  * A tiny external store so any module (React Query handlers included) can raise one.
  */
-export type ToastKind = "success" | "error" | "info";
+export type ToastKind = "success" | "error" | "info" | "warning";
 /** Why a toast left: its action was pressed, its time ran out (or newer toasts pushed it out), or it was closed. */
 export type ToastCloseReason = "action" | "timeout" | "dismiss";
 /** A workflow color for the icon, so a toast about a quote looks like quotes do. */
@@ -75,7 +75,7 @@ function push(kind: ToastKind, title: string, options: ToastOptions = {}): numbe
   recent.set(key, Date.now());
 
   const id = nextId++;
-  const duration = options.duration ?? (options.action ? 6000 : kind === "error" ? 6000 : 3500);
+  const duration = options.duration ?? (options.action ? 6000 : kind === "error" || kind === "warning" ? 6000 : 3500);
   const showing = items.filter((t) => !t.leaving);
   const kept = showing.slice(-3);
   items = [...kept, { id, kind, title, ...options, duration }];
@@ -89,5 +89,7 @@ export const toast = {
   success: (title: string, options?: ToastOptions) => push("success", title, options),
   error: (title: string, options?: ToastOptions) => push("error", title, options),
   info: (title: string, options?: ToastOptions) => push("info", title, options),
+  /** It worked, but not all of it: says what didn't, and stays as long as an error. */
+  warning: (title: string, options?: ToastOptions) => push("warning", title, options),
   dismiss: (id: number) => dismissToast(id),
 };

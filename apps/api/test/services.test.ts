@@ -153,6 +153,22 @@ describe("campaign sending", () => {
     expect(settled()).toContainEqual({ fn: "finish_campaign_recipients", p_token: "claim-1", p_ids: [2, 3], p_status: "skipped", p_error: "Campaign stopped" });
   });
 
+  it("keeps a stopped campaign's counts of what went, and only finishes one still sending", async () => {
+    const { calls, done } = run({
+      onEmail: (count, s) => {
+        if (count === 1) s.status = "cancelled";
+      },
+    });
+    await done;
+    const updates = calls.filter((c) => c.method === "PATCH" && c.path === "campaigns");
+    // The counts go on whatever its status: no status filter on that write.
+    const counts = updates.find((c) => "sent_count" in c.body)!;
+    expect(counts.url.searchParams.get("status")).toBeNull();
+    expect(Object.keys(counts.body).sort()).toEqual(["failed_count", "sent_count"]);
+    // Finishing it is apart, and only for one still sending.
+    for (const u of updates.filter((c) => c.body.status === "sent")) expect(u.url.searchParams.get("status")).toBe("eq.sending");
+  });
+
   it("leaves companies with Marketing uninstalled out, starting and sending", async () => {
     const calls = serve((call) => (call.method === "GET" && call.path === "campaigns" ? [] : []));
     expect(await processCampaigns(env)).toMatchObject({ campaigns: 0, sent: 0 });

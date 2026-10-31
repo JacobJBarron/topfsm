@@ -76,13 +76,19 @@ export function dayChoices(key: AutomatedKey, current: number): Array<{ days: nu
   return choices.sort((a, b) => a.days - b.days);
 }
 
+/** Edit email's tokens for a campaign: Close pending quotes' {{link}} is the quote's own page (its button reads View online). */
+export function campaignTokens(key: AutomatedKey, tokens: ReadonlyArray<{ token: string; label: string }>) {
+  return tokens.map(({ token, label }) => ({ token, label: key === "close_quotes" && token === "link" ? "Quote link (View online)" : label }));
+}
+
 /** "1 year", "3 days": how long N is, as the card says it. */
 export const daysWords = (key: AutomatedKey, days: number) => (key === "reengage" ? inactiveLabel(days) : plural(days, "day"));
 
 /** The sentence under a card's name: when it goes. */
 export function timingLine(key: AutomatedKey, days: number): string {
   const n = daysWords(key, days);
-  if (key === "reengage") return `Emails clients who haven't had a visit in ${n}, on the day they reach it.`;
+  // "in a year", as the rule's own description says it, not "in 1 year".
+  if (key === "reengage") return `Emails clients who haven't had a visit in ${n.replace(/^1 /, "a ")}, on the day they reach it.`;
   if (key === "win_back") return `Emails the client ${n} after a quote is marked lost.`;
   return `Emails the client ${n} after you send a quote they haven't answered.`;
 }

@@ -33,6 +33,19 @@ async function refreshCounts(admin: Db, campaignId: string) {
   return { sent, failed, unsent };
 }
 
+/** How often, in emails, a batch writes its campaign's counts while it sends, so the page's header and progress move. */
+const COUNTS_EVERY = 5;
+
+/**
+ * Writes a campaign's sent and failed counts from its recipients, whatever its status: a campaign
+ * stopped partway keeps the counts of what went (the cancel route calls this too). Says the counts.
+ */
+export async function writeCampaignCounts(admin: Db, campaignId: string) {
+  const counts = await refreshCounts(admin, campaignId);
+  await admin.from("campaigns").update({ sent_count: counts.sent, failed_count: counts.failed }).eq("id", campaignId);
+  return counts;
+}
+
 // These change only recipients this run still holds (its claim's token): one another run has
 // claimed since is that run's to email and record.
 
@@ -161,6 +174,7 @@ export async function processCampaigns(env: Env, options: { campaignId?: string;
         await record(admin, token, [r.id], result.sent ? "sent" : "failed", result.sent ? undefined : (result.reason ?? "Not sent"));
         if (result.sent) sent++;
         else failed++;
+        if ((index + 1) % COUNTS_EVERY === 0 && index + 1 < claimed.length) await writeCampaignCounts(admin, campaign.id);
       }
       next = claimed.length;
     } finally {
@@ -169,12 +183,11 @@ export async function processCampaigns(env: Env, options: { campaignId?: string;
       await release(admin, token, rest(next));
     }
 
-    const counts = await refreshCounts(admin, campaign.id);
-    await admin
-      .from("campaigns")
-      .update({ sent_count: counts.sent, failed_count: counts.failed, ...(counts.unsent === 0 ? { status: "sent", finished_at: new Date().toISOString() } : {}) })
-      .eq("id", campaign.id)
-      .eq("status", "sending");
+    // The counts whatever its status (stopped meanwhile, it keeps what went); only one still sending is finished.
+    const counts = await writeCampaignCounts(admin, campaign.id);
+    if (counts.unsent === 0) {
+      await admin.from("campaigns").update({ status: "sent", finished_at: new Date().toISOString() }).eq("id", campaign.id).eq("status", "sending");
+    }
   }
   return { campaigns: campaigns?.length ?? 0, sent, failed, skipped, lost };
 }

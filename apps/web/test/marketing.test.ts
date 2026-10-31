@@ -242,7 +242,10 @@ describe("the automated campaign cards", () => {
     expect(cards.reengage).toMatchObject({ custom: false, missing: false, form: { enabled: false, days: 365, subject: "It's been a while, {{client.first_name}}" } });
     expect(cards.win_back.form).toMatchObject({ enabled: false, days: 30 });
     expect(cards.close_quotes.form).toMatchObject({ enabled: true, days: 3, subject: "Following up on your quote from {{company.name}}" });
-    expect(timingLine("reengage", 365)).toBe("Emails clients who haven't had a visit in 1 year, on the day they reach it.");
+    // "in a year", as the rule's own description says it.
+    expect(timingLine("reengage", 365)).toBe("Emails clients who haven't had a visit in a year, on the day they reach it.");
+    expect(timingLine("reengage", 30)).toBe("Emails clients who haven't had a visit in a month, on the day they reach it.");
+    expect(timingLine("reengage", 182)).toBe("Emails clients who haven't had a visit in 6 months, on the day they reach it.");
     expect(timingLine("close_quotes", 3)).toBe("Emails the client 3 days after you send a quote they haven't answered.");
   });
 
@@ -292,8 +295,11 @@ describe("the automated campaign cards", () => {
     expect(cards).toContain("<FormError error={save.error ?? counted} />");
     // Turning Win back or Close pending quotes off still warns when the waiting count fails.
     expect(turnOffWords("win_back", null)).toBe("Any quotes waiting for a win-back email are cancelled, and turning it back on won't send them.");
-    expect(cards).toContain("if ((error || count) && !(await confirm(");
-    expect(cards).toContain("turnOffWords(key, error ? null : (count ?? 0))");
+    expect(cards).toContain("if ((count === null || count > 0) && !(await confirm(");
+    expect(cards).toContain("turnOffWords(key, count)");
+    // Counted as the card counts them (automated_campaign_states), not every run still pending.
+    expect(cards).toContain('supabase().rpc("automated_campaign_states", { p_company: session.company.id })');
+    expect(cards).not.toContain('from("automation_runs").select("id", { count: "exact", head: true })');
   });
 
   it("show their results loading and failing, not \"Nothing sent yet\"", () => {
@@ -428,7 +434,9 @@ describe("the Campaigns tab and a campaign's page", () => {
 
   it("shows a sent campaign's cities and services as the business writes them", () => {
     const page = source("../src/features/marketing/CampaignPage.tsx");
-    expect(page).toContain("audienceSummary(draft.audience, choices.data)");
+    // A sent campaign's audience and preview are its own as saved, not the draft from when the page opened.
+    expect(page).toContain("audienceSummary(shown.audience, choices.data)");
+    expect(page).toContain("subject={shown.subject} body={shown.body}");
     // Their labels load for a sent campaign too, not only while it's a draft.
     expect(page).toContain('enabled: Boolean(c) && c?.kind !== "automated",');
   });
@@ -600,7 +608,7 @@ describe("Google Business Profile in Apps", () => {
     expect(before.indexOf("GOOGLE_ACCESS_FORM")).toBeLessThan(before.indexOf("Sign in with Google"));
     expect(panel).toContain("Marketing is off, so reviews aren't brought in and replies can't be posted. Reviews already here are kept.");
     expect(panel).toContain("Crewtavo brings in one location's reviews.");
-    expect(panel).toContain("asks start again for the clients they matched");
+    expect(panel).toContain("body: changeLocationWords(reviewCount, current?.title),");
     // Signed in with no location in use, the picker shows: also after reconnecting to an account
     // without the location the kept reviews came from, or one with no Business Profile at all.
     expect(panel).toContain('const pick = listable && (picking || problem === "pick" || !g.location);');
@@ -628,7 +636,7 @@ describe("Google Business Profile in Apps", () => {
       expect(source(file), file).not.toMatch(/about (two weeks|14 days)/);
     }
     expect(source("../src/features/apps/GoogleBusinessPanel.tsx")).toContain("You can sign in before Google approves");
-    expect(page).toContain('if (pending === "approval") return "Reviews start coming in once Google approves access.";');
+    expect(page).toContain('if (pending === "approval" && still("approval")) return "Reviews start coming in once Google approves access.";');
     expect(page).not.toContain("Signed in. Google hasn't approved");
   });
 
@@ -639,7 +647,7 @@ describe("Google Business Profile in Apps", () => {
     const panel = source("../src/features/apps/GoogleBusinessPanel.tsx");
     expect(panel).toContain('{listable && <Button size="sm" onClick={() => setPicking(true)}>Change location</Button>}');
     expect(panel).toContain('{g.review_url?.suggested && g.location && app.status === "connected" && <ReviewLinkOffer');
-    expect(panel).toContain("{g.review_count && g.marketing_on ?");
+    expect(panel).toContain("{g.marketing_on ? reviewCountWords(g.review_count, usesMarketing(session)) : \"\"}");
     expect(panel).toContain("{!waiting && <Button");
   });
 
@@ -719,6 +727,13 @@ describe("Google reviews on the Reviews tab", () => {
   it("says how far the first sync has got, who replied, and whose names fit", () => {
     expect(progressWords({ seen: 250, total: 1240 })).toBe("Bringing in your reviews: 250 of 1,240");
     expect(progressWords({ seen: 50, total: null })).toBe("Bringing in your reviews: 50 so far");
+    expect(progressWords({ seen: 30, total: 30 })).toBe("Bringing in your reviews: 30 of 30");
+    // Before the first page is in: nothing to count yet, never "0 so far".
+    expect(progressWords({ seen: 0, total: null })).toBe("Bringing in your reviews");
+    expect(progressWords({ seen: 0, total: 0 })).toBe("Bringing in your reviews");
+    expect(progressWords({ seen: 0, total: 1240 })).toBe("Bringing in your 1,240 reviews");
+    expect(progressWords({ seen: 0, total: 1 })).toBe("Bringing in your 1 review");
+    expect(progressWords(null)).toBeNull();
     expect(repliedWords({ reply_updated_at: new Date().toISOString(), replied_by: null }, new Map())).toBe("Replied on Google just now");
     expect(repliedWords({ reply_updated_at: new Date().toISOString(), replied_by: "u1" }, new Map([["u1", "Mia"]]))).toBe("Replied just now by Mia");
     expect(initials("Ana Smith")).toBe("AS");
@@ -846,7 +861,7 @@ describe("Google reviews on the Reviews tab", () => {
     expect(ask).toContain("See their review</Link> and undo the match.");
     // The last-asked line and the button are in the other branch.
     expect(ask.indexOf("{reviewed ? (")).toBeLessThan(ask.indexOf("Last asked"));
-    expect(ask.indexOf("{reviewed ? (")).toBeLessThan(ask.indexOf("Ask for a review</Button>"));
+    expect(ask.indexOf("{reviewed ? (")).toBeLessThan(ask.indexOf('{channel === "link" ? "Copy review link" : "Ask for a review"}'));
     const client = source("../src/features/clients/ClientPage.tsx");
     expect(client).toContain("checked={!c.review_opt_out && !c.marketing_opt_out && !c.reviewed_at}");
     expect(client).toContain("Left a Google review, so not asked");
@@ -1019,7 +1034,7 @@ describe("Marketing → Social", () => {
     expect(composer).not.toContain("setWarnings");
     expect(composer).toContain("focusField={false}");
     expect(source("../src/components/ui/Dialog.tsx")).toContain("const target = finePointer && focusField");
-    expect(composer).toContain("only you can see it on ${hidden}.");
+    expect(composer).toContain("body: postNowWords(networks, notLive)");
   });
 
   it("counts what Mark all marked, says a client's no once for the card, and names the job only on a client's page", () => {

@@ -10,7 +10,7 @@ const state = vi.hoisted(() => ({
   tables: {} as Record<string, Row[]>,
   hits: [] as Row[],
   rpcs: [] as Array<{ fn: string; args: Record<string, unknown> }>,
-  completions: [] as Array<{ apiKey?: string | null; prompt: string }>,
+  completions: [] as Array<{ apiKey?: string | null; prompt: string; system?: string }>,
 }));
 vi.mock("../src/lib/supabase", () => {
   const client = () => ({
@@ -38,8 +38,8 @@ vi.mock("../src/lib/supabase", () => {
 });
 vi.mock("../src/services/ai", async (original) => ({
   ...(await original<typeof import("../src/services/ai")>()),
-  complete: async (_env: Env, options: { apiKey?: string | null; prompt: string }) => {
-    state.completions.push({ apiKey: options.apiKey, prompt: options.prompt });
+  complete: async (_env: Env, options: { apiKey?: string | null; prompt: string; system?: string }) => {
+    state.completions.push({ apiKey: options.apiKey, prompt: options.prompt, system: options.system });
     return '{"subject": "Spring is here", "body": "Book your aeration."}';
   },
 }));
@@ -100,7 +100,7 @@ describe("a business's own Anthropic key", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ answer: expect.any(String), sources: [{ id: "g1", title: "Sealcoating a driveway" }] });
     expect(state.rpcs).toEqual([{ fn: "search_sops", args: { p_company: UNIFORM, p_query: "How long does sealer need to dry before cars drive on it?", p_limit: 4, p_any: true } }]);
-    expect(state.completions).toEqual([{ apiKey: "sk-ant-uniform-own-key", prompt: expect.stringContaining("[1] Sealcoating a driveway") }]);
+    expect(state.completions).toEqual([{ apiKey: "sk-ant-uniform-own-key", prompt: expect.stringContaining("[1] Sealcoating a driveway"), system: expect.any(String) }]);
   });
 
   it("says so when no guide has any of the words, without asking Claude", async () => {
@@ -115,5 +115,15 @@ describe("a business's own Anthropic key", () => {
     expect((await request("/campaigns/draft", { goal: "Spring aeration special" })).status).toBe(200);
     expect((await request("/ai/rewrite", { text: "we r coming tmrw" })).status).toBe(200);
     expect(state.completions.map((c) => c.apiKey)).toEqual(["sk-ant-uniform-own-key", "sk-ant-uniform-own-key"]);
+  });
+
+  it("drafts campaigns with the Client Hub link their clicks and bookings are counted by", async () => {
+    await addKeys();
+    const res = await request("/campaigns/draft", { goal: "Spring aeration special" });
+    // The draft came back without {{link}}, so it's put in on a line of its own.
+    expect(await res.json()).toEqual({ subject: "Spring is here", body: "Book your aeration.\n\n{{link}}" });
+    const system = state.completions.at(-1)!.system!;
+    expect(system).toContain("no placeholders other than {{client.first_name}}, {{company.name}}, {{company.phone}} and {{link}}");
+    expect(system).toContain("put it alone on its own line, just before the sign-off, and it becomes a Request work button");
   });
 });

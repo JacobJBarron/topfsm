@@ -24,7 +24,7 @@ import { emailReady } from "../lib/notify";
 import { adminClient, type Db } from "../lib/supabase";
 import { companyFooter, Skip, type RunContext } from "./automations";
 import { emailClient } from "./marketingEmail";
-import { WaitUntil } from "./reviews";
+import { Busy, WaitUntil } from "./reviews";
 
 export const CAMPAIGN_EMAIL_NOT_CONNECTED = "Email isn't connected yet, so campaign emails can't be sent. An admin can connect it in Settings → Email.";
 /** How long a campaign email's Client Hub link lasts: a year, as a review link does, since campaign emails are kept. */
@@ -89,6 +89,32 @@ async function letGo(admin: Db, ctx: RunContext) {
 }
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Campaign emails go at most about two a second for each company, as one-off campaigns do
+ * (services/campaigns.ts): Resend takes about 2 requests a second, and turning Re-engage on with a
+ * backlog queues up to 100 at once.
+ */
+export const SEND_SPACING_MS = 550;
+const lastSend = new Map<string, number>();
+const turns = new Map<string, Promise<void>>();
+/** Waits for this company's next turn to send: one at a time, each at least SEND_SPACING_MS after the last. */
+function paced(companyId: string): Promise<void> {
+  const turn = (turns.get(companyId) ?? Promise.resolve()).then(async () => {
+    const wait = (lastSend.get(companyId) ?? 0) + SEND_SPACING_MS - Date.now();
+    if (wait > 0) await pause(Math.min(wait, SEND_SPACING_MS));
+    lastSend.set(companyId, Date.now());
+  });
+  turns.set(companyId, turn.catch(() => undefined));
+  return turn;
+}
+
+/**
+ * Resend turned an email away for now (too many at once, or its own trouble): it's tried again
+ * later, not failed. Its daily or monthly sending limit isn't "for now": that fails, saying so.
+ */
+export const emailBusy = (result: { sent: boolean; status?: number; reason?: string }) =>
+  !result.sent && ((result.status === 429 && !/sending limit/i.test(result.reason ?? "")) || (result.status ?? 0) >= 500);
 
 /**
  * Records how a send went, trying a few times: an email that went has to be recorded sent, or the 6
@@ -203,6 +229,7 @@ export async function sendCampaignEmail(
   if (row.already_sent) return `Emailed ${email}`;
   if (row.in_flight) throw new WaitUntil(new Date(Date.now() + 16 * 60_000), "An email to them was already on its way");
 
+  await paced(ctx.company.id);
   const result = await emailClient(env, {
     companyId: ctx.company.id,
     company: ctx.company,
@@ -218,6 +245,9 @@ export async function sendCampaignEmail(
   });
   const reason = result.sent ? undefined : (result.reason ?? "The email wasn't sent.");
   await recordSend(admin, row.id, result.sent ? "sent" : "failed", reason);
+  // Too many at once, or Resend's own trouble: the run waits and tries again (the send above is
+  // recorded failed, so the next try sends it again), rather than failing for someone to retry.
+  if (emailBusy(result)) throw new Busy(reason!);
   if (!result.sent) throw new Error(reason);
   await admin.from("messages").insert({
     company_id: ctx.company.id, client_id: client.id, channel: "email", direction: "out", subject, body: text,

@@ -115,7 +115,7 @@ export const CATALOG: CatalogEntry[] = [
     id: "meta",
     name: "Facebook & Instagram",
     category: "Marketing",
-    description: "Post job photos and 5-star reviews to your Facebook Page and Instagram, with your own Meta app.",
+    description: "Post job photos and 4 and 5-star reviews to your Facebook Page and Instagram, with your own Meta app.",
     auth: "oauth",
     docs: "https://developers.facebook.com/docs/development/create-an-app/",
     // Each business makes its own Meta app: nothing to set up on the server, and nothing it can offer.

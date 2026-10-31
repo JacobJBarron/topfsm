@@ -158,6 +158,10 @@ set role service_role;
 update public.visits set status = 'completed', completed_at = now() where job_id = :'gutters' and scheduled_on = '2030-07-05';
 reset role;
 select t_recur_review.check(t_recur_review.events(:'gutters') = 1, 'the job asks at its next visit');
+select number as gutters_no from public.jobs where id = :'gutters' \gset
+select t_recur_review.check((select summary = format('Job #%s for Pat Weekly reached its 4th visit', :'gutters_no') and data = jsonb_build_object('number', :'gutters_no'::integer, 'visits', 4)
+                               from public.activity where subject_id = :'gutters' and verb = 'job.recurring_third_visit'),
+  'saying the visit it reached (its 4th), not the 2nd it was lowered to (20261031000500_review_ask_fixes.sql)');
 set role service_role;
 update public.visits set status = 'completed', completed_at = now() where job_id = :'gutters' and scheduled_on = '2030-07-06';
 reset role;

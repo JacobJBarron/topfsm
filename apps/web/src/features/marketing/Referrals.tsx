@@ -93,6 +93,9 @@ export function Referrals() {
   );
 }
 
+/** Under credits earned, as Marketing's overview has it: that figure is credit not on an invoice yet. */
+export const EARNED_HINT = "Not on an invoice yet";
+
 function Numbers({ stats }: { stats: UseQueryResult<Stats> }) {
   if (stats.isPending) return <StatsSkeleton count={4} />;
   if (stats.error || !stats.data) return <div className="card"><ErrorState compact error={stats.error} onRetry={() => stats.refetch()} /></div>;
@@ -111,7 +114,13 @@ function Numbers({ stats }: { stats: UseQueryResult<Stats> }) {
         <div className="value">{revenue === null ? "—" : formatMoneyCents(revenue)}</div>
         <div className="hint">{revenue === null ? "Needs the Invoices area" : "What referred clients have paid, before tax"}</div>
       </div>
-      <div className="card stat"><div className="label">Credits {statusText("credit", "earned").toLowerCase()}</div><div className="value">{formatMoneyCents(credits.earned)}</div><div className="hint">{pending}</div></div>
+      {/* Only what's not on an invoice yet, as Marketing's overview says it; friends still to pay are their own line. */}
+      <div className="card stat">
+        <div className="label">Credits {statusText("credit", "earned").toLowerCase()}</div>
+        <div className="value">{formatMoneyCents(credits.earned)}</div>
+        <div className="hint">{EARNED_HINT}</div>
+        <div className="hint">{pending}</div>
+      </div>
       <div className="card stat"><div className="label">Credits {statusText("credit", "applied").toLowerCase()}</div><div className="value">{formatMoneyCents(credits.applied)}</div><div className="hint">On clients' invoices</div></div>
       <div className="card stat"><div className="label">Credits {statusText("credit", "issued").toLowerCase()}</div><div className="value">{formatMoneyCents(credits.given)}</div><div className="hint">Outside Crewtavo</div></div>
     </div>

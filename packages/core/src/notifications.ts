@@ -65,6 +65,8 @@ export function reviewNoticesFor(who: { role: string; permissions: readonly stri
 
 /** The topic's words for someone who hears only when Google Business Profile needs them. */
 export const REVIEW_ACCESS_HINT = "When Google Business Profile needs signing in again or a location picked";
+/** The Social posts topic's hint for those same owners and admins: they hear only about Facebook & Instagram's sign-in. */
+export const SOCIAL_ACCESS_HINT = "When Facebook & Instagram needs signing in again";
 
 /**
  * Whether a kind goes by email for someone who has its topic on. A review of 3 stars or more is

@@ -16,6 +16,7 @@ import { formatDateTime, timeAgo } from "@/lib/format";
 import { useListAnimation } from "@/lib/motion";
 import { hasRole, useSession } from "@/lib/session";
 import { ClientPicker, type PickedClient } from "../clients/ClientForm";
+import { MessageBody } from "../clients/MessageBody";
 import { ConnectEmailHint } from "../settings/ConnectEmailHint";
 
 const FILTERS = [
@@ -92,7 +93,7 @@ export function MessagesPage() {
                 <span className="grow" style={{ minWidth: 0 }}>
                   <span className="row-between"><strong className="ellipsis">{c.client!.display_name}</strong><span className="muted small nowrap">{timeAgo(c.created_at)}</span></span>
                   <span className="muted small ellipsis" style={{ display: "block" }}>
-                    <Icon name={ICON[c.channel] ?? "messages"} size={12} /> {c.direction === "in" ? "" : c.direction === "internal" ? "Note: " : "You: "}{c.subject ? `${c.subject} · ` : ""}{c.body}
+                    <Icon name={ICON[c.channel] ?? "messages"} size={12} /> {c.direction === "in" ? "" : c.direction === "internal" ? "Note: " : "You: "}{c.subject ? `${c.subject} · ` : ""}<MessageBody body={c.body} />
                   </span>
                 </span>
                 {c.direction === "in" && <span className="unread-dot" title="Latest message is from the client" style={{ marginTop: 6 }} />}
@@ -175,7 +176,7 @@ function Thread({ clientId, onBack }: { clientId: string; onBack: () => void }) 
             <Fragment key={m.id}>
               {showDay && <span className="thread-day">{day}</span>}
               <div className="msg" data-mine={mine || undefined} data-note={note || undefined} data-failed={m.status === "failed" || undefined}>
-                <div className="msg-bubble">{m.subject && <span className="msg-subject">{m.subject}</span>}{m.body}</div>
+                <div className="msg-bubble">{m.subject && <span className="msg-subject">{m.subject}</span>}<MessageBody body={m.body} /></div>
                 <span className="msg-meta">
                   <Icon name={ICON[m.channel] ?? "messages"} size={12} />
                   {note ? "Internal note" : m.channel === "email" ? "Email" : m.channel === "sms" ? "Text" : "Call"} · <span title={formatDateTime(m.created_at)}>{new Date(m.created_at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</span>

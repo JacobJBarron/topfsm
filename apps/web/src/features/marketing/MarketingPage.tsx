@@ -19,6 +19,7 @@ import { EntityStatus, statusText } from "@/components/ui/StatusPill";
 import { supabase, unwrap } from "@/lib/api";
 import { formatDate, formatDateTime, formatMoneyCents, timeAgo } from "@/lib/format";
 import { useListAnimation } from "@/lib/motion";
+import { useTabStrip } from "@/lib/tabStrip";
 import { can, hasRole, useSession } from "@/lib/session";
 import { undoable } from "@/lib/undo";
 import { ConnectEmailHint } from "../settings/ConnectEmailHint";
@@ -26,7 +27,7 @@ import { AutomatedCampaigns, useAutomatedStates } from "./AutomatedCampaigns";
 import { emailsSentHint } from "./automatedForm";
 import { resultsSummary, useCampaignResults } from "./CampaignResults";
 import { PromoCodes } from "./PromoCodes";
-import { Referrals } from "./Referrals";
+import { EARNED_HINT, Referrals } from "./Referrals";
 import { Reviews } from "./Reviews";
 import { Social } from "./Social";
 import { analyticsOn } from "./website";
@@ -42,6 +43,8 @@ export function MarketingPage() {
   const asked = (params.get("tab") as Tab) || "campaigns";
   const tab = asked === "website" && !website ? "campaigns" : asked;
   const setTab = (t: Tab) => setParams({ tab: t }, { replace: true });
+  // Six tabs don't fit a phone: the one picked is scrolled into view, and the strip shows there are more.
+  const tabs = useTabStrip<HTMLDivElement>(tab);
   const summary = useQuery({
     queryKey: ["marketing-summary", session.company.id],
     meta: { silent: true },
@@ -72,10 +75,10 @@ export function MarketingPage() {
             <div className="value">{s.referrals_total}</div>
             <div className="hint">{s.referrals_won} became jobs{s.referral_revenue === null ? "" : ` · ${formatMoneyCents(s.referral_revenue)} paid, before tax`}</div>
           </div>
-          <div className="card stat"><div className="label">Referral credits {statusText("credit", "earned").toLowerCase()}</div><div className="value">{formatMoneyCents(s.credits_owed)}</div><div className="hint">Not on an invoice yet</div></div>
+          <div className="card stat"><div className="label">Referral credits {statusText("credit", "earned").toLowerCase()}</div><div className="value">{formatMoneyCents(s.credits_owed)}</div><div className="hint">{EARNED_HINT}</div></div>
         </div>
       )}
-      <div className="underline-tabs" role="tablist">
+      <div ref={tabs} className="underline-tabs underline-tabs-compact" role="tablist">
         <button type="button" role="tab" aria-selected={tab === "campaigns"} onClick={() => setTab("campaigns")}><Icon name="mail" size={16} />Campaigns</button>
         <button type="button" role="tab" aria-selected={tab === "social"} onClick={() => setTab("social")}><Icon name="share" size={16} />Social</button>
         <button type="button" role="tab" aria-selected={tab === "promos"} onClick={() => setTab("promos")}><Icon name="tag" size={16} />Promo codes</button>
@@ -125,6 +128,22 @@ function MarketingOff() {
       )}
     </>
   );
+}
+
+/**
+ * A one-off campaign row's line under its name, after the subject: when it went or goes. A sent one's
+ * count is on the results line under it ("8 sent · 0% opened · 0% clicked"), so this says only when
+ * (and how many failed), and the count only until its results are in.
+ */
+export function campaignRowWhen(
+  c: { status: string; sent_count: number; failed_count: number; recipients_count: number; finished_at: string | null; scheduled_at: string | null; created_at: string },
+  withResults: boolean,
+): string {
+  const failed = c.failed_count ? `${c.failed_count} failed` : null;
+  if (c.status === "sent") return withResults ? [`Sent ${formatDate(c.finished_at)}`, failed].filter(Boolean).join(" · ") : `${c.sent_count} sent${failed ? `, ${failed}` : ""} · ${formatDate(c.finished_at)}`;
+  if (c.status === "scheduled") return `Sends ${formatDateTime(c.scheduled_at!)}`;
+  if (c.status === "sending") return `${c.sent_count} of ${c.recipients_count} sent…`;
+  return `Edited ${timeAgo(c.created_at)}`;
 }
 
 function Campaigns() {
@@ -196,8 +215,7 @@ function Campaigns() {
                 <Link to={`/marketing/campaigns/${c.id}`} className="grow" style={{ color: "inherit", minWidth: 0 }}>
                   <strong className="ellipsis" style={{ display: "block" }}>{c.name}</strong>
                   <span className="muted small ellipsis" style={{ display: "block" }}>
-                    {c.subject || "No subject yet"} ·{" "}
-                    {c.status === "sent" ? `${c.sent_count} sent${c.failed_count ? `, ${c.failed_count} failed` : ""} · ${formatDate(c.finished_at)}` : c.status === "scheduled" ? `Sends ${formatDateTime(c.scheduled_at!)}` : c.status === "sending" ? `${c.sent_count} of ${c.recipients_count} sent…` : `Edited ${timeAgo(c.created_at)}`}
+                    {c.subject || "No subject yet"} · {campaignRowWhen(c, Boolean(results.data))}
                   </span>
                   {(c.status === "sent" || c.status === "cancelled") && results.data && (
                     <span className="muted small ellipsis" style={{ display: "block" }}>{resultsSummary(results.data.find((r) => r.campaign_id === c.id))}</span>

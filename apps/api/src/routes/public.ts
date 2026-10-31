@@ -50,7 +50,7 @@ import { firstName } from "../lib/email";
 import { fromBase64Url, signToken, verifyToken } from "../lib/crypto";
 import { appUrl, asJson, dbError, HttpError, must, readJson, uuid } from "../lib/http";
 import { allow } from "../lib/limit";
-import { clientLink, readClientLink, type LinkKind } from "../lib/links";
+import { clientLink, linkPreview, readClientLink, REVIEW_TOKEN, type LinkKind } from "../lib/links";
 import { storedFile } from "../lib/storedFile";
 import { adminClient } from "../lib/supabase";
 import { clientIp } from "../lib/visitor";
@@ -1202,22 +1202,36 @@ publicRoutes.post("/public/unsubscribe/:token", async (c) => {
 });
 
 /**
- * Tracked review link: record the click, which stops its reminders, then send the client to the
- * review page. It works with Marketing uninstalled too: the client asked for nothing.
+ * Tracked review link: records the open, which stops its reminders, then sends the client to the
+ * review page. The link is the ask's short token (review_requests.link_token), or the signed token
+ * links sent before had. It works with Marketing uninstalled too: the client asked for nothing.
+ *
+ * Opens are honest: a HEAD request (a link checker) and a link preview (a text's, a chat app's)
+ * aren't counted, nor is anything in the first 30 seconds after the ask or a reminder went (a mail
+ * scanner's: track_review_click). The client still goes to the review page either way.
  */
 publicRoutes.get("/public/r/:token", async (c) => {
-  const payload = await readClientLink(c.env, c.req.param("token") ?? "");
-  if (!payload || payload.t !== "review") return c.text("This link has expired.", 404);
+  const token = c.req.param("token") ?? "";
+  const short = REVIEW_TOKEN.test(token);
+  const payload = short ? null : await readClientLink(c.env, token);
+  if (!short && (!payload || payload.t !== "review")) return c.text("This link has expired.", 404);
   const admin = adminClient(c.env);
-  const { data: company } = await admin.from("companies").select("settings").eq("id", payload.c).maybeSingle();
+  // A signed link names its business, so it still goes to the review page when the ask is gone.
+  let companyId = payload?.c ?? null;
+  if (short) {
+    const { data: ask, error } = await admin.from("review_requests").select("company_id").eq("link_token", token).maybeSingle();
+    if (error) return c.text("This link can't be opened right now. Try again in a minute.", 503);
+    if (!ask) return c.text("This link isn't valid anymore.", 404);
+    companyId = ask.company_id;
+  }
+  const { data: company } = await admin.from("companies").select("settings").eq("id", companyId!).maybeSingle();
   const url = (company?.settings as { review_url?: string } | null)?.review_url;
   if (!url || !/^https:\/\//.test(url)) return c.text("This business hasn't set up reviews yet.", 404);
-  await admin
-    .from("review_requests")
-    .update({ status: "clicked", clicked_at: new Date().toISOString(), next_reminder_at: null })
-    .eq("company_id", payload.c)
-    .eq("id", payload.id)
-    .is("clicked_at", null);
+  const count = c.req.method === "GET" && !linkPreview(c.req.header("User-Agent"));
+  const { error } = await admin.rpc("track_review_click", short ? { p_token: token, p_count: count } : { p_company: payload!.c, p_id: payload!.id, p_count: count });
+  // The client still gets to the review page.
+  if (error) console.error("A review link's open wasn't recorded", error);
+  c.header("Referrer-Policy", "no-referrer");
   return c.redirect(url, 302);
 });
 
@@ -1263,8 +1277,8 @@ function expiredHubLink(url: string): string | null {
 
 /**
  * A campaign email's tracked link: records the click, then goes to the link stored for this
- * recipient and link, never anywhere the request says. A HEAD request (a link checker) isn't
- * counted, nor is a click in the first 30 seconds (a mail scanner's: track_campaign_click). A link
+ * recipient and link, never anywhere the request says. A HEAD request (a link checker) or a link
+ * preview isn't counted, nor is a click in the first 30 seconds (a mail scanner's: track_campaign_click). A link
  * that isn't there, or a Client Hub link that has expired since (they last a year), gets a page saying
  * so, in the business's look when it's known, instead of a bare error.
  */
@@ -1277,7 +1291,7 @@ publicRoutes.get("/public/c/:token/:n", async (c) => {
     });
   const invalid = () => page(404, "This link isn't valid anymore", "It may have been copied only in part. Open the email again, or reply to it and ask for a new link.");
   if (!TOKEN.test(token) || !/^\d{1,2}$/.test(n) || Number(n) > 49) return invalid();
-  const { data: url, error } = await adminClient(c.env).rpc("track_campaign_click", { p_token: token, p_n: Number(n), p_count: c.req.method !== "HEAD" });
+  const { data: url, error } = await adminClient(c.env).rpc("track_campaign_click", { p_token: token, p_n: Number(n), p_count: c.req.method !== "HEAD" && !linkPreview(c.req.header("User-Agent")) });
   if (error) return page(503, "This link can't be opened right now", "Try again in a minute.");
   if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return invalid();
   const expiredFor = expiredHubLink(url);

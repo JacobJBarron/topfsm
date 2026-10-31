@@ -43,7 +43,7 @@ import { adminClient, type Db } from "../lib/supabase";
 import { CAMPAIGN_LINK_DAYS, campaignRuleOf, letStretchGo, sendCampaignEmail } from "./automatedCampaigns";
 import { logoImage } from "./logo";
 import { sendReferralAsk } from "./referrals";
-import { sendReviewRequest, WaitUntil } from "./reviews";
+import { Busy, sendReviewRequest, WaitUntil } from "./reviews";
 import { isRoofWork } from "./roofPackages";
 import { optionsFrom } from "./sales";
 import { noteRefusedText } from "./textsOff";
@@ -264,7 +264,7 @@ export async function loadContext(admin: Db, companyId: string, subjectType: str
     case "invoice": {
       const { data } = await admin
         .from("invoices")
-        .select("number, subject, status, kind, total, balance_due, client_id, job_id, job:jobs(kind), lines:invoice_line_items(name)")
+        .select("number, subject, status, kind, total, balance_due, amount_paid, client_id, job_id, job:jobs(kind), lines:invoice_line_items(name)")
         .eq("company_id", companyId)
         .eq("id", subjectId)
         .maybeSingle();
@@ -272,7 +272,7 @@ export async function loadContext(admin: Db, companyId: string, subjectType: str
       clientId = data.client_id;
       jobId = data.job_id;
       facts = {
-        status: data.status, invoice_kind: data.kind, job_kind: (data.job as unknown as { kind: string } | null)?.kind ?? null, amount: Number(data.total),
+        status: data.status, invoice_kind: data.kind, job_kind: (data.job as unknown as { kind: string } | null)?.kind ?? null, amount: Number(data.total), amount_paid: Number(data.amount_paid ?? 0),
         line_items: (data.lines as Array<{ name: string }>).map((l) => l.name),
       };
       vars = { number: data.number, title: data.subject || `Invoice #${data.number}`, total: fmt(data.total), balance: fmt(data.balance_due) };
@@ -526,7 +526,14 @@ interface RunRow {
   result: unknown;
   /** The batch's claim (claim_automation_runs): this worker holds the run while it still matches. */
   claim_token: string | null;
+  /** Times it waited for a busy email service (Busy). */
+  busy_tries?: number | null;
 }
+
+/** A run waits this many times for a busy email service, then fails. */
+export const BUSY_TRIES = 4;
+/** How long a run waits for a busy email service after `tries` waits already: 1, 2, 4, then 8 minutes. */
+export const busyWait = (tries: number) => 60_000 * 2 ** Math.max(0, Math.min(tries, BUSY_TRIES - 1));
 
 /** The claim couldn't be checked, so the run is left as it is; it's retried once the claim runs out. */
 class ClaimUnchecked extends Error {}
@@ -557,7 +564,12 @@ async function calledOff(admin: Db, run: RunRow, inactive: boolean, why: string)
   return outcome;
 }
 
-export async function executeRun(env: Env, admin: Db, run: RunRow, baseUrl: string | null): Promise<"done" | "skipped" | "failed" | "waiting" | "lost"> {
+/** What a run said along the way: it's waiting because the email service was busy, so its batch stops there. */
+interface RunNotes {
+  busy: boolean;
+}
+
+export async function executeRun(env: Env, admin: Db, run: RunRow, baseUrl: string | null, notes: RunNotes = { busy: false }): Promise<"done" | "skipped" | "failed" | "waiting" | "lost"> {
   try {
     const { data: rule } = await admin.from("automation_rules").select("id, name, trigger, enabled, conditions, actions, run_count, template_key").eq("id", run.rule_id).maybeSingle();
     if (!rule || !rule.enabled) return calledOff(admin, run, rule?.trigger === "client.inactive", "The rule was turned off or deleted.");
@@ -613,9 +625,18 @@ export async function executeRun(env: Env, admin: Db, run: RunRow, baseUrl: stri
         const done = await performAction(env, admin, { ...ctx, run: { ...ctx.run!, action: i } }, action, rule.name, baseUrl);
         results.push(done instanceof Skip ? { type: action.type, ok: true, skipped: true, detail: done.detail } : { type: action.type, ok: true, detail: done });
       } catch (error) {
+        // The email service is busy (Resend's 429 or 5xx): the run waits longer each time, and the
+        // batch stops so the rest don't pile in after it. After a few tries it fails, saying why.
+        if (error instanceof Busy && (run.busy_tries ?? 0) < BUSY_TRIES) {
+          notes.busy = true;
+          const wait = busyWait(run.busy_tries ?? 0);
+          const minutes = Math.round(wait / 60_000);
+          const note = `${error.message.replace(/ Try again in [^.]*\.$/, "")} It's tried again by itself in ${minutes === 1 ? "a minute" : `${minutes} minutes`}.`;
+          return postpone(admin, run, new WaitUntil(new Date(Date.now() + wait), note), results, true);
+        }
         // Not yet: the run waits with what's done so far, and this action and the ones after it go
         // then. The reason is the run's note, not a result, so the action isn't counted as done.
-        if (error instanceof WaitUntil) return postpone(admin, run, error, results);
+        if (error instanceof WaitUntil && !(error instanceof Busy)) return postpone(admin, run, error, results);
         results.push({ type: action.type, ok: false, detail: error instanceof Error ? error.message : String(error) });
       }
     }
@@ -633,10 +654,10 @@ export async function executeRun(env: Env, admin: Db, run: RunRow, baseUrl: stri
   }
 }
 
-/** Puts the run back to wait until the action can happen; "lost" when another worker has it now. */
-async function postpone(admin: Db, run: RunRow, wait: WaitUntil, results: ActionResult[]) {
+/** Puts the run back to wait until the action can happen (`busy`: for a busy email service, counted); "lost" when another worker has it now. */
+async function postpone(admin: Db, run: RunRow, wait: WaitUntil, results: ActionResult[], busy = false) {
   const { data: held, error } = await admin.rpc("postpone_automation_run", {
-    p_id: run.id, p_token: run.claim_token!, p_until: wait.until.toISOString(), p_result: results as unknown as never, p_note: wait.message,
+    p_id: run.id, p_token: run.claim_token!, p_until: wait.until.toISOString(), p_result: results as unknown as never, p_note: wait.message, ...(busy ? { p_busy: true } : {}),
   });
   if (error) throw new ClaimUnchecked(error.message);
   return held ? "waiting" : "lost";
@@ -668,7 +689,11 @@ export async function processAutomations(env: Env, options: { companyId?: string
         tally.lost++;
         continue;
       }
-      tally[await executeRun(env, admin, run, baseUrl)]++;
+      const notes: RunNotes = { busy: false };
+      tally[await executeRun(env, admin, run, baseUrl, notes)]++;
+      // The email service is turning emails away: the rest of the batch goes back for the next pass
+      // (finally, below) instead of meeting the same answer.
+      if (notes.busy) break;
     }
   } finally {
     // A batch that stops early (the database didn't answer) leaves the runs it didn't get to for the

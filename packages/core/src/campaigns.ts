@@ -329,6 +329,23 @@ export const HUB_HOME_BUTTON = "Request work";
 export const HUB_PAGE_BUTTON = "View online";
 export const linkButton = (key: AutomatedKey | "one_off") => (key === "close_quotes" ? HUB_PAGE_BUTTON : HUB_HOME_BUTTON);
 
+const SIGN_OFF = /^(thanks|thank you|many thanks|best|all the best|cheers|sincerely|regards|kind regards|warm regards|warmly|talk soon|see you|—|-)/i;
+
+/**
+ * A one-off campaign's body with {{link}} (the client's Client Hub home, a Request work button) on a
+ * line of its own, so its clicks and bookings can be counted: as written when it has one, otherwise
+ * just before the sign-off ("Thanks,\n{{company.name}}"), or at the end. Write with AI's drafts
+ * come back this way (routes/marketing.ts).
+ */
+export function withHubLink(body: string): string {
+  if (/\{\{\s*link\s*\}\}/i.test(body)) return body;
+  const paragraphs = body.trim().split(/\n{2,}/);
+  const last = paragraphs.at(-1)?.trim() ?? "";
+  const signOff = paragraphs.length > 1 && last.length <= 120 && last.split("\n").length <= 3 && (SIGN_OFF.test(last) || /\{\{\s*company\.name\s*\}\}\s*$/i.test(last));
+  const out = signOff ? [...paragraphs.slice(0, -1), "{{link}}", last] : [...paragraphs, "{{link}}"];
+  return out.join("\n\n");
+}
+
 // ---------------------------------------------------------------------------------------------
 // Results
 // ---------------------------------------------------------------------------------------------

@@ -90,7 +90,7 @@ account.get("/me", requireUser, async (c) => {
     db.from("profiles").select("user_id, email, full_name, phone, avatar_url, color").eq("user_id", userId).maybeSingle(),
     db
       .from("memberships")
-      .select("company_id, role, role_id, subcontractor_id, company:companies(id, name, slug, trade_preset, timezone, currency, address, settings)")
+      .select("company_id, role, role_id, subcontractor_id, company:companies(id, name, slug, trade_preset, timezone, currency, address, phone, settings)")
       .eq("user_id", userId)
       .eq("active", true),
     adminClient(c.env).from("memberships").select("company_id, role").eq("user_id", userId),

@@ -34,14 +34,16 @@ function buttonLabel(url: string): string {
   return "Open";
 }
 
-function paragraph(p: string, code: string | null | undefined, href: (url: string) => string, buttons: Record<string, string> | undefined): string {
+function paragraph(p: string, code: string | null | undefined, href: (url: string) => string, buttons: Record<string, string> | undefined, shown: readonly string[] | undefined): string {
   const trimmed = p.trim();
   if (code && trimmed === code) {
     return `<p style="margin:0 0 20px;font-size:32px;font-weight:800;letter-spacing:0.2em;font-variant-numeric:tabular-nums">${escape(code)}</p>`;
   }
   if (/^https?:\/\/\S+$/.test(trimmed)) {
     const url = escape(href(trimmed));
-    return `<p style="margin:0 0 20px"><a href="${url}" style="display:inline-block;background:#3b7d23;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:8px">${escape(buttons?.[trimmed] ?? buttonLabel(trimmed))}</a></p>`;
+    const button = `<p style="margin:0 0 20px"><a href="${url}" style="display:inline-block;background:#3b7d23;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:8px">${escape(buttons?.[trimmed] ?? buttonLabel(trimmed))}</a></p>`;
+    // A link the client is meant to pass on (their referral link) is written out under it, to copy.
+    return shown?.includes(trimmed) ? `${button}<p style="margin:-8px 0 20px;font-size:13px">${linkify(trimmed, href)}</p>` : button;
   }
   return `<p style="margin:0 0 16px">${linkify(p, href).replace(/\n/g, "<br>")}</p>`;
 }
@@ -62,10 +64,12 @@ export interface EmailParts {
   pixel?: string | null;
   /** A button's label for a link on its own line, by the link as written, where its address can't say (a Client Hub home). */
   buttons?: Record<string, string>;
+  /** Links on their own line written out under their button too, so they can be copied (a client's own referral link). */
+  showUrls?: readonly string[];
 }
 
-export function renderEmail({ companyName, logo, text, footer, unsubscribeUrl, code, href = asIs, pixel, buttons }: EmailParts): { html: string; text: string } {
-  const paragraphs = text.trim().split(/\n{2,}/).map((p) => paragraph(p, code, href, buttons)).join("");
+export function renderEmail({ companyName, logo, text, footer, unsubscribeUrl, code, href = asIs, pixel, buttons, showUrls }: EmailParts): { html: string; text: string } {
+  const paragraphs = text.trim().split(/\n{2,}/).map((p) => paragraph(p, code, href, buttons, showUrls)).join("");
   const foot = [footer ? escape(footer) : null, unsubscribeUrl ? `<a href="${escape(unsubscribeUrl)}" style="color:#5f6f76">Unsubscribe</a>` : null].filter(Boolean).join(" · ");
   const html = `<!doctype html><html><body style="margin:0;padding:24px 12px;background:#f6f5f1;font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;color:#0f2a35">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">

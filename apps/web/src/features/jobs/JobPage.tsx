@@ -33,6 +33,7 @@ import { jobCosts } from "./jobCosts";
 import { JobPayCard, seesJobPay } from "./JobPayCard";
 import { repeatText } from "./repeatText";
 import { ScopeOfWork } from "./ScopeOfWork";
+import { askToastKind, type AskResult } from "../marketing/askForm";
 
 /** The sections a job only shows once it uses them, offered under its line items until then. */
 type Extra = "materials" | "expenses" | "pay";
@@ -136,8 +137,8 @@ export function JobPage() {
     },
   });
   const review = useMutation({
-    mutationFn: (channel: "email" | "sms") => api.post<{ detail: string }>("/reviews/request", { client_id: j!.client!.id, job_id: id, channel }),
-    onSuccess: (r) => toast.success(r.detail),
+    mutationFn: (channel: "email" | "sms") => api.post<AskResult>("/reviews/request", { client_id: j!.client!.id, job_id: id, channel }),
+    onSuccess: (r) => toast[askToastKind(r)](r.detail),
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["review-requests", session.company.id] }),
   });
 

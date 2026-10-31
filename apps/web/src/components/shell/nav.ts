@@ -40,7 +40,7 @@ export const NAV_GROUPS: NavItem[][] = [
     { to: "/drive", label: "Drive", icon: "folder", roles: ["admin", "office", "estimator"], feature: "drive", keywords: "files documents folders google drive upload pdf word docx trash" },
   ],
   [
-    { to: "/marketing", label: "Marketing", icon: "marketing", roles: ["admin", "office"], perm: "marketing", feature: "marketing", keywords: "campaigns email blasts reviews referrals social facebook instagram posts" },
+    { to: "/marketing", label: "Marketing", icon: "marketing", roles: ["admin", "office"], perm: "marketing", feature: "marketing", keywords: "campaigns email blasts automated campaigns re-engage win back close pending quotes reviews google reviews referrals social facebook instagram posts promo promos codes coupons discounts website visits" },
     { to: "/website", label: "Website", icon: "globe", roles: ["admin", "office"], perm: "marketing", feature: "website", keywords: "site web page blog posts edit content cms sveltia decap" },
     { to: "/finance", label: "Finance", icon: "finance", roles: ["admin", "office"], perm: ["reports", "invoices"], keywords: "reports revenue profit payments money collected net volume fees deposits owed goal" },
     { to: "/metrics", label: "Metrics", icon: "metrics", roles: ["admin", "office"], perm: "reports", keywords: "reports analytics numbers sales conversion lead sources visits hours team clients" },
@@ -59,6 +59,11 @@ export const OTHER_SCREENS: NavItem[] = [
   { to: "/pipeline", label: "Sales board", icon: "pipeline", roles: ["admin", "office", "estimator"], keywords: "pipeline leads deals" },
   { to: "/messages", label: "Messages", icon: "messages", keywords: "texts sms email inbox conversations" },
   { to: "/payouts", label: "Stripe deposits", icon: "dollar", roles: ["admin", "office"], perm: "invoices", keywords: "payouts bank stripe fees" },
+  // Marketing's own tabs, so searching for one opens it rather than Campaigns.
+  { to: "/marketing?tab=reviews", label: "Reviews", icon: "star", roles: ["admin", "office"], perm: "marketing", feature: "marketing", keywords: "marketing google reviews review requests ask for a review reminders ratings replies" },
+  { to: "/marketing?tab=referrals", label: "Referrals", icon: "gift", roles: ["admin", "office"], perm: "marketing", feature: "marketing", keywords: "marketing referral credits refer a friend rewards" },
+  { to: "/marketing?tab=social", label: "Social posts", icon: "share", roles: ["admin", "office"], perm: "marketing", feature: "marketing", keywords: "marketing social facebook instagram google posts photos share" },
+  { to: "/marketing?tab=promos", label: "Promo codes", icon: "tag", roles: ["admin", "office"], perm: "marketing", feature: "marketing", keywords: "marketing promo promos codes coupons discounts" },
   // Every file deleted in Crewtavo waits here, for the whole team, whether or not Drive is installed.
   { to: "/drive/trash", label: "Trash", icon: "trash", keywords: "deleted files removed photos restore undo undelete recycle bin get back" },
 ];

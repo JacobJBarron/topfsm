@@ -11,7 +11,7 @@
  * Every ask that went counts toward the 6 months (begin_referral_ask).
  */
 import { renderTemplate } from "@crewtavo/core";
-import { marketingOn, referralAskRefusal, referralRewards, referralSettings, referralsReady, REFERRAL_EMAIL_NOT_CONNECTED, REFERRAL_GAP_DAYS } from "@crewtavo/core/marketing";
+import { marketingOn, referralAskRefusal, referralRewards, referralSettings, referralsReady, REFERRAL_EMAIL_NOT_CONNECTED, REFERRAL_GAP_DAYS, REFERRAL_LINK_BUTTON } from "@crewtavo/core/marketing";
 import type { Env } from "../env";
 import { companyFooter, firstName } from "../lib/email";
 import { clientLink } from "../lib/links";
@@ -127,8 +127,11 @@ export async function sendReferralAsk(env: Env, admin: Db, args: ReferralAskArgs
     link,
     rewards: referralRewards(settings),
   }).replace(/\n{3,}/g, "\n\n").trim();
+  // Their own link to pass on: a button named for them (not "Request a quote", which is the
+  // friend's), and the link written out under it so they can copy it.
   const result = await emailClient(env, {
     companyId: args.companyId, company, client, subject: `Know someone who could use ${company.name}?`, text, baseUrl: args.baseUrl, footer: companyFooter(company),
+    buttons: { [link]: REFERRAL_LINK_BUTTON }, showUrls: [link],
   });
   if (!result.sent) {
     const reason = result.reason ?? "The email wasn't sent.";

@@ -147,6 +147,8 @@ export const CONDITION_FIELDS: ConditionFieldDef[] = [
   { field: "client.status", label: "Client status", kind: "choice", ops: ["equals", "not_equals"], subjects: "all", choices: STATUS_CHOICES.client },
   { field: "client.lead_source", label: "Client lead source", kind: "text", ops: ["equals", "contains", "not_equals"], subjects: "all" },
   { field: "amount", label: "Total", kind: "money", ops: ["gte", "lte"], subjects: ["quote", "job", "invoice"] },
+  // What the client paid: an invoice a referral credit covered whole (or a 100%-off promo) is paid with $0.00 of it.
+  { field: "amount_paid", label: "Amount paid", kind: "money", ops: ["gte", "lte"], subjects: ["invoice"] },
   { field: "line_items", label: "Line items", kind: "text", ops: ["contains"], subjects: ["quote", "job", "invoice"] },
   {
     field: "source", label: "Where the request came from", kind: "choice", ops: ["equals", "in", "not_equals"], subjects: ["request"],
@@ -190,6 +192,8 @@ export const fieldsFor = (subject: SubjectKind) => CONDITION_FIELDS.filter((f) =
 export interface Facts {
   status?: string | null;
   amount?: number | null;
+  /** What an invoice has been paid (0 for one a referral credit covered whole). */
+  amount_paid?: number | null;
   source?: string | null;
   kind?: string | null;
   /** The kind of job a visit or invoice is on (one_off, recurring), and the job's own. */

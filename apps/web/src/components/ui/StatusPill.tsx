@@ -16,7 +16,8 @@
  *   Referral new "New lead" · quoted "Quoted" · won "Won" · lost "Lost"
  *   Credit   pending "Pending" · earned "Earned" · applied "Applied" · issued "Given" · none "No credit"
  *            (a referral credit: Marketing → Referrals shows the referral's state until the friend
- *            pays, then its credit's, packages/core/src/marketing.ts referralPill)
+ *            pays, then its credit's, and No credit for a friend who was the referrer or already a
+ *            client, who isn't a lead: packages/core/src/marketing.ts referralPill)
  *   Campaign draft "Draft" · scheduled "Scheduled" · sending "Sending" · sent "Sent" · cancelled "Stopped" ·
  *            automated "Automated" (one that sends by itself, Marketing → Campaigns)
  *   Recipient pending "Queued" · sending "Sending" · sent "Sent" · failed "Failed" · skipped "Skipped" ·

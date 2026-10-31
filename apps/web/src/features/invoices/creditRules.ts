@@ -28,3 +28,14 @@ export const creditRoom = (inv: { subtotal: number | string; discount_amount: nu
 
 /** "QuickBooks" for an invoice already in an accounting app, which a credit put on by hand doesn't reach. */
 export const BOOKS: Record<string, string> = { quickbooks: "QuickBooks", zoho_books: "Zoho Books" };
+
+/**
+ * What a paid invoice's callout says: paid in full (on the last payment's date), or, with nothing
+ * paid, what settled it: a referral credit that covered it whole (what was owed, the credit paid),
+ * or nothing to pay.
+ */
+export function paidWords(amountPaid: number, credit: number, lastPaidOn: string | null): string {
+  if (amountPaid <= 0 && credit > 0) return "Covered by a referral credit.";
+  if (amountPaid <= 0) return "Nothing to pay.";
+  return `Paid in full${lastPaidOn ? ` on ${lastPaidOn}` : ""}.`;
+}

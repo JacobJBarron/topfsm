@@ -4,7 +4,7 @@
  * post goes or went, and each network's line, in the StatusPill glossary's words.
  */
 import { autoPostWhen, missingPermissionWords, NETWORK_NAMES, networkWords, type Network } from "@crewtavo/core/social";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { statusText } from "@/components/ui/StatusPill";
 import { api } from "@/lib/api";
 import { signedUrls } from "@/lib/files";
@@ -154,17 +154,39 @@ export function postsPage(list: "upcoming" | "done", after: { at: string; id: st
 }
 
 /**
+ * Whether a post that was posting has finished (or gone): it's no longer posting in the first page
+ * of posts still to go, where posting ones come first. Then it's in the other list, read again.
+ */
+export function finishedPosting(before: ReadonlyArray<Pick<SocialPost, "id" | "status">>, firstPage: ReadonlyArray<Pick<SocialPost, "id" | "status">>): boolean {
+  const now = new Map(firstPage.map((p) => [p.id, p.status]));
+  return before.some((p) => p.status === "posting" && now.get(p.id) !== "posting");
+}
+
+type PostsPage = { posts: SocialPost[]; more: boolean };
+
+/**
  * Posts still to go (posting and scheduled in the order they go, then drafts) or done, 25 at a time,
- * checked every 5 seconds while one is posting.
+ * checked every 5 seconds while one is posting. A post that finishes moves to Posts: when the list
+ * still to go sees one leave posting, Posts (and where things stand) are read again, so it shows
+ * there without a reload.
  */
 export function useSocialPosts(list: "upcoming" | "done") {
   const session = useSession();
+  const queryClient = useQueryClient();
+  const key = [...socialKey(session.company.id), "posts", list];
   return useInfiniteQuery({
-    queryKey: [...socialKey(session.company.id), "posts", list],
+    queryKey: key,
     initialPageParam: null as { at: string; id: string; for: string | null } | null,
     queryFn: async ({ pageParam }) => {
       const page = await api.get<{ posts: Array<Omit<SocialPost, "thumb">>; more: boolean }>(postsPage(list, pageParam));
       const posts = (await withLinks(page.posts, (p) => p.thumb_path)).map(({ url, ...post }) => ({ ...post, thumb: url }));
+      if (list === "upcoming" && pageParam === null) {
+        const before = queryClient.getQueryData<InfiniteData<PostsPage>>(key)?.pages.flatMap((p) => p.posts) ?? [];
+        if (finishedPosting(before, posts)) {
+          void queryClient.invalidateQueries({ queryKey: [...socialKey(session.company.id), "posts", "done"] });
+          void queryClient.invalidateQueries({ queryKey: socialKey(session.company.id), exact: true });
+        }
+      }
       return { ...page, posts };
     },
     getNextPageParam: (last) => {
@@ -262,9 +284,35 @@ export function rememberNetworks(networks: readonly Network[]) {
   }
 }
 
-/** The networks a new post starts with: the last chosen that can be, or else every one that can. */
+/**
+ * The networks a new post starts with: the last chosen that can be, or else every one that can.
+ * `choices` are a photo post's, so Instagram, which only words alone can't have, is kept when it
+ * was chosen (effectiveNetworks leaves it off a words-alone post).
+ */
 export function startingNetworks(choices: readonly Choice[], remembered: readonly Network[] | null): Network[] {
   const open = choices.filter((c) => c.enabled).map((c) => c.network);
   const kept = remembered?.filter((n) => open.includes(n)) ?? [];
   return kept.length ? kept : open;
+}
+
+/**
+ * Where a post goes: what the person ticked (`wanted`, which is remembered) that this kind of post
+ * can go to. Switching to Just text leaves Instagram off, and back to Photos puts it back: the person
+ * never chose to leave it off.
+ */
+export function effectiveNetworks(wanted: readonly Network[], choices: readonly Choice[]): Network[] {
+  return wanted.filter((n) => choices.find((c) => c.network === n)?.enabled);
+}
+
+/**
+ * Post now's confirm: where it posts publicly, and, until the Meta app is Live, that Facebook and
+ * Instagram keep it hidden from the public, where only people with a role on the business's Meta app
+ * see it (not "only you": office staff posting aren't usually on it).
+ */
+export function postNowWords(networks: readonly Network[], notLive: boolean): string {
+  if (!notLive) return `This posts publicly on ${networkWords(networks)}.`;
+  const meta = networks.filter((n) => n !== "google");
+  const hidden = "it stays hidden from the public until your Meta app is Live: only people with a role on your Meta app can see it.";
+  if (!networks.includes("google")) return `This posts to ${networkWords(meta)}, where ${hidden}`;
+  return meta.length ? `This posts publicly on ${networkWords(["google"])}. On ${networkWords(meta)} ${hidden}` : `This posts publicly on ${networkWords(["google"])}.`;
 }

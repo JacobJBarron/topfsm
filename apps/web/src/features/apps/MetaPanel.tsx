@@ -62,6 +62,9 @@ interface CheckResult {
   instagram_username: string | null;
 }
 
+/** How wide a Page's or location's name stays beside its buttons before they wrap under it. */
+export const NAME_BASIS = "12rem";
+
 export function MetaPanel({ app, onChanged }: { app: AppRow; onChanged: () => void }) {
   const m = app.meta;
   const [picking, setPicking] = useState(false);
@@ -160,14 +163,17 @@ export function MetaPanel({ app, onChanged }: { app: AppRow; onChanged: () => vo
       ) : m.page ? (
         <div className="row wrap" style={{ gap: 10 }}>
           {m.page.picture ? <img src={m.page.picture} alt="" width={36} height={36} style={{ borderRadius: 8 }} /> : <Icon name="globe" size={18} />}
-          <span className="grow" style={{ minWidth: 0 }}>
+          {/* A basis for the name, so on a phone the buttons wrap under it rather than squeezing it to a word a line. */}
+          <span style={{ flex: `1 1 ${NAME_BASIS}`, minWidth: 0 }}>
             <strong style={{ display: "block" }}>{m.page.name ?? "Your Page"}</strong>
             <span className="muted small">
               {m.instagram ? `Instagram: @${m.instagram.username ?? m.instagram.id}` : m.page_instagram ? `Instagram @${m.page_instagram.username ?? ""} is linked, but posts don't go to it` : "No Instagram account linked to this Page"}
             </span>
           </span>
-          {app.status === "connected" && !m.user_token_expired && <Button size="sm" onClick={() => setPicking(true)}>Change Page</Button>}
-          <Button size="sm" variant="ghost" icon="refresh" loading={check.isPending} onClick={() => check.mutate()}>Check again</Button>
+          <span className="row wrap" style={{ gap: 8 }}>
+            {app.status === "connected" && !m.user_token_expired && <Button size="sm" onClick={() => setPicking(true)}>Change Page</Button>}
+            <Button size="sm" variant="ghost" icon="refresh" loading={check.isPending} onClick={() => check.mutate()}>Check again</Button>
+          </span>
         </div>
       ) : null}
 

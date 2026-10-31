@@ -22,7 +22,7 @@ vi.mock("../src/lib/notify", async (original) => ({
 }));
 
 const notify = await import("../src/lib/notify");
-const { executeRun, loadContext } = await import("../src/services/automations");
+const { BUSY_TRIES, busyWait, executeRun, loadContext, processAutomations } = await import("../src/services/automations");
 const { adminClient } = await import("../src/lib/supabase");
 const { readClientLink } = await import("../src/lib/links");
 const { app } = await import("../src/app");
@@ -131,7 +131,7 @@ describe("the starter rules", () => {
 
   it("are the migration's, word for word, so a deleted one comes back as it was", () => {
     // The latest install_default_automations, the wording that reads well without a phone.
-    const install = migration("20261031000230_automated_campaign_fixes.sql");
+    const install = migration("20261031000510_credit_covered_invoices.sql");
     for (const key of ["reengage", "win_back"] as const) {
       const rule = AUTOMATED_CAMPAIGNS[key].starter;
       expect(install, key).toContain(`(p_company, '${rule.template_key}', ${sql(rule.name)},\n     ${sql(rule.description)}, '${rule.trigger}', ${rule.delay_minutes},`);
@@ -334,6 +334,64 @@ describe("Re-engage past clients", () => {
     calls = world({ rule: copy, settings: { marketing: { enabled: false } } });
     expect(await executeRun(env, adminClient(env), run({ rule_id: "rule-copy" }), env.APP_URL!)).toBe("skipped");
     expect(finished(calls)[0].p_error).toBe("Marketing is off");
+  });
+});
+
+describe("a busy email service", () => {
+  const run = (over: Row = {}) => ({ id: 205, company_id: CO, rule_id: "rule-reengage", subject_type: "client", subject_id: ANA_ID, activity_id: null, result: [], claim_token: "claim-1", busy_tries: 0, ...over });
+  const world = () =>
+    serve({
+      tables: { companies: [companyRow()], automation_rules: [ruleOf("reengage")], clients: [ANA], visits: [visit("2025-09-01T15:00:00Z")] },
+      rpc: { begin_campaign_send: begun(), claim_automation_runs: () => [run(), run({ id: 206 })], start_automation_run: () => true },
+    });
+  const tooMany = async () => ({ sent: false, status: 429, reason: "Resend got too many emails at once. Try again in a minute." });
+
+  it("puts a run Resend turned away for too many at once back to wait, longer each time, keeping the client queued", async () => {
+    sendEmail.mockImplementation(tooMany);
+    const calls = world();
+    expect(await executeRun(env, adminClient(env), run(), env.APP_URL!)).toBe("waiting");
+    // The send is recorded failed, so the next try sends it again rather than finding it on its way.
+    expect(rpcCalls(calls, "finish_campaign_send")).toEqual([{ p_id: 501, p_status: "failed", p_error: "Resend got too many emails at once. Try again in a minute." }]);
+    expect(rpcCalls(calls, "postpone_automation_run")).toEqual([
+      { p_id: 205, p_token: "claim-1", p_until: "2026-10-27T15:01:00.000Z", p_result: [], p_note: "Resend got too many emails at once. It's tried again by itself in a minute.", p_busy: true },
+    ]);
+    expect(finished(calls)).toEqual([]);
+    // The client's stretch keeps its run, so they're still counted and still emailed.
+    expect(calls.some((c) => c.path === "inactive_client_marks")).toBe(false);
+    expect(busyWait(0)).toBe(60_000);
+    expect(busyWait(3)).toBe(480_000);
+  });
+
+  it("waits 4 minutes on its third try, and fails after the last, saying why", async () => {
+    sendEmail.mockImplementation(tooMany);
+    let calls = world();
+    await executeRun(env, adminClient(env), run({ busy_tries: 2 }), env.APP_URL!);
+    expect(rpcCalls(calls, "postpone_automation_run")[0]).toMatchObject({ p_until: "2026-10-27T15:04:00.000Z", p_busy: true });
+    calls = world();
+    expect(await executeRun(env, adminClient(env), run({ busy_tries: BUSY_TRIES }), env.APP_URL!)).toBe("failed");
+    expect(finished(calls)[0]).toMatchObject({ p_status: "failed", p_error: "Resend got too many emails at once. Try again in a minute." });
+  });
+
+  it("treats Resend's own trouble (a 5xx) as busy too, and a plain refusal as a failure", async () => {
+    sendEmail.mockImplementation(async () => ({ sent: false, status: 503, reason: "Resend is having trouble right now. Try again in a few minutes." }));
+    let calls = world();
+    expect(await executeRun(env, adminClient(env), run(), env.APP_URL!)).toBe("waiting");
+    expect(rpcCalls(calls, "postpone_automation_run")[0]).toMatchObject({ p_busy: true });
+    sendEmail.mockImplementation(async () => ({ sent: false, status: 422, reason: "That email address isn't valid, so Resend didn't send it." }));
+    calls = world();
+    expect(await executeRun(env, adminClient(env), run(), env.APP_URL!)).toBe("failed");
+    // A daily sending limit isn't busy for now: trying again in a minute won't help.
+    sendEmail.mockImplementation(async () => ({ sent: false, status: 429, reason: "This Resend account has reached its daily sending limit (100 emails on the free plan). Sending starts again after midnight UTC, or upgrade the Resend plan to send more." }));
+    calls = world();
+    expect(await executeRun(env, adminClient(env), run(), env.APP_URL!)).toBe("failed");
+  });
+
+  it("stops the batch at a busy answer, putting the rest back for the next pass instead of firing them at Resend", async () => {
+    sendEmail.mockImplementation(tooMany);
+    const calls = world();
+    expect(await processAutomations(env, { limit: 25 })).toEqual({ claimed: 2, done: 0, skipped: 0, failed: 0, waiting: 1, lost: 0 });
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(rpcCalls(calls, "release_automation_runs")).toEqual([{ p_token: "claim-1", p_ids: [206] }]);
   });
 });
 
