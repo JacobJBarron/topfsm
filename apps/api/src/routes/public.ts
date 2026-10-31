@@ -45,8 +45,9 @@ import { isJpeg } from "../services/photos";
 import { isRoofWork, quoteMeasurement, sitePriceSet } from "../services/roofPackages";
 import { optionsFrom } from "../services/sales";
 import { signatureImage } from "../services/signing";
+import { formPage } from "../services/websiteForms";
 import { firstName } from "../lib/email";
-import { signToken, verifyToken } from "../lib/crypto";
+import { fromBase64Url, signToken, verifyToken } from "../lib/crypto";
 import { appUrl, asJson, dbError, HttpError, must, readJson, uuid } from "../lib/http";
 import { allow } from "../lib/limit";
 import { clientLink, readClientLink, type LinkKind } from "../lib/links";
@@ -1234,6 +1235,74 @@ publicRoutes.get("/public/r/:token", async (c) => {
     .eq("company_id", payload.c)
     .eq("id", payload.id)
     .is("clicked_at", null);
+  return c.redirect(url, 302);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Campaign emails' tracking image and tracked links
+// ---------------------------------------------------------------------------------------------
+
+// A transparent 1x1 GIF.
+const PIXEL = Uint8Array.from(atob("R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="), (ch) => ch.charCodeAt(0));
+const TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A campaign email's tracking image: records an open (approximate: some mail apps load images to
+ * protect privacy). Always the same image, whatever the token, and a HEAD request records nothing.
+ * Like the links, it works while Marketing is uninstalled: it reads no settings.
+ */
+publicRoutes.get("/public/o/:token", async (c) => {
+  const token = c.req.param("token") ?? "";
+  if (c.req.method === "GET" && TOKEN.test(token)) {
+    try {
+      await adminClient(c.env).rpc("track_campaign_open", { p_token: token });
+    } catch {
+      // The image shows either way.
+    }
+  }
+  return c.body(PIXEL, 200, { "Content-Type": "image/gif", "Cache-Control": "no-store, private" });
+});
+
+/**
+ * The business a Client Hub link of ours is for, when it has expired (null when it hasn't, or isn't
+ * one). The link was stored with the email, so what it says is ours: only its date is checked.
+ */
+function expiredHubLink(url: string): string | null {
+  const token = /\/hub\/([\w-]+)\.[\w-]+$/.exec(url)?.[1];
+  if (!token) return null;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(fromBase64Url(token))) as { c?: unknown; exp?: unknown };
+    return typeof payload.c === "string" && typeof payload.exp === "number" && payload.exp <= Date.now() / 1000 ? payload.c : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A campaign email's tracked link: records the click, then goes to the link stored for this
+ * recipient and link, never anywhere the request says. A HEAD request (a link checker) isn't
+ * counted, nor is a click in the first 30 seconds (a mail scanner's: track_campaign_click). A link
+ * that isn't there, or a Client Hub link that has expired since (they last a year), gets a page saying
+ * so, in the business's look when it's known, instead of a bare error.
+ */
+publicRoutes.get("/public/c/:token/:n", async (c) => {
+  const token = c.req.param("token") ?? "";
+  const n = c.req.param("n") ?? "";
+  const page = (status: 404 | 410 | 503, heading: string, text: string, company?: { id: string; name: string; settings: unknown } | null) =>
+    c.html(formPage({ title: heading, heading, text, company: company ? { name: company.name, logo: logoImage(appUrl(c), company.id, company.settings) } : null, tone: "problem" }), status, {
+      "Cache-Control": "no-store",
+    });
+  const invalid = () => page(404, "This link isn't valid anymore", "It may have been copied only in part. Open the email again, or reply to it and ask for a new link.");
+  if (!TOKEN.test(token) || !/^\d{1,2}$/.test(n) || Number(n) > 49) return invalid();
+  const { data: url, error } = await adminClient(c.env).rpc("track_campaign_click", { p_token: token, p_n: Number(n), p_count: c.req.method !== "HEAD" });
+  if (error) return page(503, "This link can't be opened right now", "Try again in a minute.");
+  if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return invalid();
+  const expiredFor = expiredHubLink(url);
+  if (expiredFor) {
+    const company = (await adminClient(c.env).from("companies").select("id, name, settings").eq("id", expiredFor).maybeSingle()).data;
+    return page(410, "This link has expired", `Links in emails last a year. Reply to the email${company ? `, or get in touch with ${company.name},` : ""} for a new one.`, company);
+  }
+  c.header("Referrer-Policy", "no-referrer");
   return c.redirect(url, 302);
 });
 

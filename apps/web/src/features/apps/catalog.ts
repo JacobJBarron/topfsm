@@ -241,17 +241,18 @@ export const APP_INFO: Record<string, AppInfo> = {
     developer: "Crewtavo",
     tagline: "Reviews, referrals and campaigns that bring in work",
     about:
-      "Turn happy clients into more work. Crewtavo asks for a Google review after a job, a visit or a paid invoice, whichever you choose, by text, email or both. Anyone who hasn't opened the link gets up to two reminders, and no client is asked automatically more than once every six months. Every client has a referral link to share, an email can ask for referrals a week after a job, and they get a $ or % credit on their next invoice once the friend pays their first one. Email campaigns go to the clients you pick, by status, tags or time since their last visit, with promo codes and one-click unsubscribe. Clients who opt out aren't asked, and anyone who texts STOP gets no more texts.",
+      "Turn happy clients into more work. Crewtavo asks for a Google review after a job, a visit or a paid invoice, whichever you choose, by text, email or both. Anyone who hasn't opened the link gets up to two reminders, and no client is asked automatically more than once every six months. Every client has a referral link to share, an email can ask for referrals a week after a job, and they get a $ or % credit on their next invoice once the friend pays their first one. Automated campaigns send by themselves: re-engage clients who haven't had a visit in a year, win back lost quotes and follow up on quotes nobody has answered. One-off email campaigns go to the clients you pick, by status, tags, city, the services they've had, their recurring work or time since their last visit, with promo codes and one-click unsubscribe. Every campaign shows who opened it, who clicked and the work it brought in. Clients who opt out aren't asked, and anyone who texts STOP gets no more texts.",
     highlights: [
       { icon: "star", title: "Reviews", text: "Ask after a job, a visit or a paid invoice, with up to two reminders for anyone who hasn't opened the link." },
       { icon: "gift", title: "Referrals", text: "A link for every client, an email asking for referrals after a job, and a $ or % credit on their next invoice once the friend pays." },
-      { icon: "mail", title: "Campaigns", text: "Email the clients you pick, write it with AI, and add a promo code." },
+      { icon: "mail", title: "Campaigns", text: "Re-engage past clients, win back lost quotes and close pending quotes by themselves, or email the clients you pick, and see opens, clicks and the work they bring in." },
     ],
     access: [
       "Show Marketing in the menu to owners, admins and office staff with the marketing area",
       "Email and text your clients from your connected email and Twilio, asking each automatically at most once every 6 months",
       "Leave out clients who opted out of marketing or reviews, and texts to anyone who texted STOP",
       "Put referral credits clients earn on their next invoices",
+      "Count opens and clicks on campaign and quote follow-up emails, with a tracking image and tracked links",
       "Uninstalling hides Marketing and stops every automatic message it sends to clients, and keeps everything",
     ],
     connectsWith: "Your email and Twilio",

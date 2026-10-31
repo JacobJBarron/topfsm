@@ -5,7 +5,10 @@ Proposed 30 October 2026. Phase A, the app and review reminders, is built
 `packages/core/src/marketing.ts`, `apps/api/src/services/reviews.ts`, Marketing → Reviews). Phase B,
 referral credits and asks, is built (`20261031000100_referral_credits.sql`,
 `20261031000110_referral_lost.sql`, `20261031000120_referral_asks.sql`, `apps/api/src/services/referrals.ts`,
-Marketing → Referrals, the invoice page's credit rows). Phases C to E aren't. This is the plan.
+Marketing → Referrals, the invoice page's credit rows). Phase C, automated campaigns, more audiences and
+results, is built (`20261031000200_automated_campaigns.sql`, `20261031000210_campaign_audiences.sql`,
+`20261031000220_campaign_results.sql`, `20261031000230_automated_campaign_fixes.sql`, `apps/api/src/services/automatedCampaigns.ts`,
+`packages/core/src/campaigns.ts`, Marketing → Campaigns). Phases D and E aren't. This is the plan.
 
 The goal: Crewtavo's own version of Jobber's Marketing Suite (Reviews, Referrals, Campaigns and
 social posting), following how Jobber does each one, shipped as one built-in app in Apps that owns
@@ -256,24 +259,147 @@ counted.
   already shared keep working, referrals still earn, and earned credits still go on invoices: the
   business promised them.
 
-### 3. Automated campaigns (phase C)
+### 3. Automated campaigns (phase C, built)
 
-- **Three automated campaigns,** each with an email to edit and a switch:
+- **Three automated campaigns** on **Marketing → Campaigns**, above the one-off campaigns, each a small
+  card with its switch (saved at once), when it goes, what it brought in and **Edit email** (the days,
+  the subject and message, a preview and **Send a test**, saved without touching the switch):
   - **Re-engage past clients:** no visit in N days, sent to each client on their own date.
   - **Win back lost quotes:** N days after a quote is marked lost.
   - **Close pending quotes:** N days after a quote is sent and not answered. This takes over the
     `quote_followup` starter rule.
-- **They're automation rules underneath,** shown as campaigns. Re-engaging needs one new trigger,
-  **A client hasn't had a visit in N days**, checked daily. Clients with a visit scheduled or an
-  active recurring job are skipped.
-- **More audiences:** city, services on past jobs, has an active recurring job, recurring job
-  ending within 30 days (`jobs.ends_on`).
-- **Results:**
-  - **Opens:** a tracking pixel.
-  - **Clicks:** tracked links.
-  - **Revenue:** work a recipient books within 30 days of opening one of the campaign's links
-    (requests, approved quotes, paid invoices).
-- **Email only, like Jobber.**
+- **They're automation rules underneath,** shown as campaigns, so they still show in Automations.
+  Each has its own template key (`reengage_past_clients`, `win_back_lost_quotes`, `quote_followup`).
+  A card edits its rule the way Reviews' form does: a rule changed in Automations into something the
+  card can't show keeps its shape, the card links to it, and only the switch works. The two new
+  rules are off for every business until it turns them on; a deleted one is put back on turning it
+  on. The rule page says which campaign a rule is.
+- **Re-engage past clients** is a new trigger, **A client hasn't had a visit in a while**
+  (`client.inactive`):
+  - **N is the rule's own condition,** "days since their last visit is at least N" (from 30 to 730,
+    chosen as 1, 2, 3, 6, 9 or 12 months, 18 months or 2 years). The rule stays the one place it's
+    set. With two such conditions the largest counts, since every condition has to hold.
+  - **Conditions added in Automations count everywhere,** not only on the run. A rule given "client tags
+    include vip" is counted (the card, the turn-on question, the server's refusal), queued and let go
+    with all its conditions, checked in the database as the engine checks them
+    (`private.client_conditions_hold`), so clients it would skip don't use up the day's 100 or their
+    stretch. A run the engine still skips on its conditions (a tag taken off in between) lets the
+    stretch go, and skipped runs don't count against the 100.
+  - **A year by default,** so it reaches a client at the same time of year as their last visit, when
+    that work comes round again. A shorter wait would email lawn clients over winter.
+  - **A client's last visit** is their latest completed job visit or assessment (a task doesn't
+    count), and the days are counted in the company's own dates.
+  - **Checked hourly from 10am to 5pm in the company's time zone** (the later hours catch up a missed
+    10am run), so every client who reaches N on a day is emailed that morning. The runs are queued
+    rule by rule, not through an activity row, so two rules at different N each fire at their own N
+    and the activity feed isn't flooded.
+  - **Once each time they go quiet:** a new completed visit starts a new stretch. A run the office
+    cancels stays cancelled; one called off by turning the rule off, or by uninstalling Marketing, is
+    sent again once it's back on, a run already being sent at that moment included.
+  - **Not sent to** archived clients, clients who opted out of marketing or have no usable email,
+    clients the business is working with, or anyone whose last visit was over 3 years ago (those
+    addresses bounce). Working with them means:
+    - **recurring work:** an active recurring job
+    - **work sold:** an active one-off job with no visit completed yet. One whose visits are done but
+      that nobody closed is past work.
+    - **a visit** booked or not yet booked
+    - **an open request:** new or at its assessment, as the Client Hub and Pipeline count them. A
+      quoted request is left to its quote, so a client whose quote was lost isn't kept out for good.
+    - **a quote** approved, or awaiting an answer until its valid-until date (30 days after it was
+      sent when it has none). A quote nobody answered for years isn't waiting anymore.
+    - **a recent quote:** one sent, or marked lost, in the last 6 months, whatever came of it. A quote
+      is recent contact, not "a while", and Win back looks after a lost one (its wait is at most 180
+      days), so a client isn't emailed "it's been a while" the day their quote is lost and then a
+      win-back email for it.
+  - **At most once every 6 months** (182 days) for each client, recorded as the email starts, so two
+    at once send once. An email whose result couldn't be recorded (it went, and the database didn't
+    answer) is tried three times, then counts as sent for the 6 months anyway, and its first open or
+    click records it sent.
+  - **100 a day for each rule,** those who passed N most recently first, so a business turning it on
+    with 2,000 past clients emails them over about three weeks. Turning it on with clients who already
+    qualify asks first: **Email them too** (with **100 a day** when there are more than 100), or **Only clients who reach it from now on**,
+    which marks today's backlog as done. The switch waits for that count, and the server refuses to
+    turn it on without a choice while any qualify. A backlog let go isn't let go for good: turning it
+    off and on again asks again, and **Email them too** then emails them. Lowering N says how many more
+    it adds first.
+  - **Nothing is queued while the business can't email** (email not connected, or no APP_URL), so a
+    disconnected mailbox doesn't use up each client's stretch; a run that fails for that lets the
+    stretch go too.
+  - **Any rule on client.inactive is Re-engage,** a copy made in Automations included: marketing,
+    with the same 6 months, recorded on the same campaign.
+- **The starter emails read well for a business with no phone.** Re-engage and Win back ask for a reply,
+  and put `{{company.phone}}` on its own line under the company's name, where an empty one leaves no
+  gap. Rules still sending the first wording were given the new one; a changed email was left alone.
+- **`{{link}}` on a line of its own is a button named for where it goes:** **Request work** for the
+  Client Hub's home (Re-engage, Win back and one-off campaigns, as the Hub names that page), **View
+  online** for a quote's page (Close pending quotes). The preview and **Send a test** draw the same
+  button. A campaign email's Hub link lasts a year, as a review link does, since campaign emails are
+  kept longer than a quote's or invoice's; a tracked link to one that has expired since, or one that
+  isn't there, gets a page saying so, in the business's look when it's known. The Hub link isn't
+  renewed on a click: that would make an old email a Hub key that never expires.
+- **Win back lost quotes:** N days (30 by default, 1 to 180) after a quote is marked lost, if it still
+  is. Not if the client has since approved another quote (or one went straight to a job), has an
+  active job or a newer job, sent a request, or been sent a newer quote. Once for each quote. Its
+  `{{link}}` is the client's Client Hub home, where they can ask for work: a lost quote can't be
+  approved.
+- **Close pending quotes is `quote_followup`, and it isn't marketing.** It follows up a quote the
+  client asked for, so it keeps today's behaviour: it keeps running while Marketing is uninstalled,
+  reaches clients who unsubscribed from marketing, and has no unsubscribe link. It's tracked and
+  shown under Campaigns. Its starter name and description follow the days ("Follow up on quotes
+  after 5 days"); a name someone wrote stays. A second email added to it in Automations goes too, as
+  before: each email action of a run is its own send. Marketing's off screen and the uninstall
+  question say follow-ups keep going only while the rule is on.
+- **A changed wait moves the runs still waiting,** for every rule: Close pending quotes changed from 3
+  days to 5 holds for quotes already sent. Turning Close pending quotes or Win back off with emails
+  waiting says how many first, since turning it back on doesn't send them, and turning one on covers
+  quotes from then on.
+- **More audiences** for one-off campaigns: city (a property's or the billing address, picked from
+  the business's own cities), services on past jobs (a line's service or name, on a job that's done or
+  has had a visit, recurring work included), recurring work (one choice: any, has an active recurring
+  job, one ending in the next 30 days by `jobs.ends_on`, or none). A sent campaign shows its audience
+  in words, its cities and services as they were picked (they're matched in any case).
+- **Results,** one view for both kinds:
+  - **Every send is a recipient row:** an automated campaign is a `campaigns` row (kind
+    `automated`) for each template key, made the first time it's needed, with a row per email.
+  - **Opens:** a tracking image. They're approximate: Apple Mail and some others load images to
+    protect privacy, and the page says so. An open alone isn't a click.
+  - **Clicks:** each http and https link (up to 50) goes through a tracked link that redirects only
+    to the link stored for that email, never anywhere the request says. Each email has a random
+    token, so a link reveals no ids and can't be used to guess another's. A click counts as an open.
+    A click in the first 30 seconds after sending, or a HEAD request, is a link scanner's and isn't
+    counted; scanners that click later, like Defender Safe Links, still are.
+  - **Bookings:** "opening one of the campaign's links" reads as clicking one. A request or an
+    approved quote within 30 days of a click is a booking, attributed to the latest click, across
+    campaigns. A request and the quote made from it are one booking.
+  - **Revenue:** what that work has been paid, before tax and retainage held back (`total -
+    tax_amount - retainage_amount`; the retainage invoice that bills it later books the rest, so a job
+    counts once), whenever it's paid: an invoice goes with the booked quote or request behind it. An
+    invoice with no booked work behind it counts when it's paid within 30 days of a click and its work
+    (its job, or the invoice itself) was set up after the click, so a recurring client's routine
+    invoices, an old quote's job or an overdue invoice aren't the campaign's. An invoice that stops
+    being paid loses its revenue, and a request or quote deleted (or its client) its booking. Stripe
+    history imports book nothing. Referral revenue (phase B) still counts `total - tax_amount`, with
+    retainage in it; a follow-up.
+  - Each campaign and card shows sent, opened %, clicked %, bookings and revenue (with the Invoices
+    area), and the campaign page lists who got it and what each did, a page at a time to the last,
+    narrowed to **Opened**, **Clicked** or **Booked** when asked, so the one who booked isn't on page
+    three. Their pills grow stronger with each step: **Sent** grey, **Opened** blue, **Clicked** green.
+    A sent one-off campaign shows its numbers across the page, and its preview greets someone who got it.
+  - Each card is short: when it goes, emails waiting, what it brought in, and **Who gets it** folded
+    away. A switch that can't be turned on without email says so on the card, and **Send a test** says
+    so in Edit email, where a test that went says so too, not in a toast over the dialog's buttons.
+    While a card's numbers load it shows a placeholder, and a retry if they don't. Marketing's
+    overview adds revenue from campaigns, and the Referrals card what referred clients paid.
+  - **Office staff without the Automations area** see each card's state, on or off, and when it goes
+    from its rule (`automated_campaign_states`), with its results, not its switch.
+  - **Tracked links and pixels keep working while Marketing is uninstalled.** One-off and automated
+    emails without a link say "Add a link so clicks and bookings can be counted"; one-off campaigns
+    gain a **Client Hub link** token for that.
+- **Email only, like Jobber.** Every marketing email has one-click unsubscribe and the company's
+  address: campaigns, review asks and their reminders, and referral asks. While Marketing is
+  uninstalled, Re-engage and Win back don't send (their waiting emails are called off), and turning
+  them on is refused. Uninstalling says how many win-back emails are waiting, since they're cancelled
+  for good; past clients still due a re-engage email get it once Marketing is back.
 
 ### 4. Google reviews inside Crewtavo (phase D)
 
@@ -326,14 +452,28 @@ counted.
   can be split over invoices, and `referral_credit_skips` (invoices someone took a credit off).
   `invoices.credit_amount` is what an invoice takes of its credits, worked out with its totals.
 - `referral_asks`: each ask for referrals, automatic or not, sent or failed.
-- `campaigns`: `kind` (one_off, automated), opens and clicks per recipient on
-  `campaign_recipients` (`opened_at`, `clicked_at`), and a `campaign_bookings` table for the
-  revenue.
+- `campaigns`: `kind` (one_off, automated) and `template_key` (an automated campaign's rule, one
+  row each; its status is `automated`, so the one-off sender never touches it).
+- `campaign_recipients`: `track_token` (random), `links` (what its tracked links go to), `send_key`
+  (`''` for a one-off campaign, `run:<automation run>` for an automated send, `run:<run>:<n>` for the
+  run's later email actions; unique with the campaign and email), `subject_id` (the quote), `opened_at`, `open_count`, `clicked_at`,
+  `last_clicked_at`, `click_count`.
+- `campaign_bookings`: requests, approved quotes and paid invoices after a click (`chain_id` ties a
+  request, its quote and invoice together), with each invoice's amount before tax.
+- `campaign_recipient_results(…, p_filter)`: everyone, or those who opened, clicked or booked.
+  `marketing_summary` adds `automated_sent_30d`, so the overview says how many of the month's emails
+  were automated. `campaign_audience_choices` counts each city's and service's clients.
+- `inactive_client_marks`: each client's stretch without a visit, for each client.inactive rule,
+  with the run that emails it (none when the business let the backlog go, until it chooses **Email
+  them too**: `release_inactive_backlog`).
+- `automated_campaign_states`: each automated campaign's switch, days and emails waiting, for the
+  office with Marketing who can't read its rule.
 - Automations:
-  - a trigger `client.inactive`, checked daily
+  - a trigger `client.inactive`, checked hourly from 10am, and a condition `days_since_visit`
   - an action `request_referral`, and a trigger `referral.earned`
   - the recurring-visit count read from settings
-  - twelve starter rules, with `referral_after_job`
+  - fourteen starter rules, with `referral_after_job`, `reengage_past_clients` and
+    `win_back_lost_quotes`
 - Phase D adds `reviews`. Phase E adds `social_posts` and `attachments.shareable`.
 
 ## Build order
@@ -382,6 +522,26 @@ counted.
   on the Referrals tab, with **Referrals** on **Metrics → Clients**.
 - **Uninstalling Marketing** stops referral asks too. Credits clients have earned still go on their
   invoices.
+
+## Release notes for phase C
+
+- **Automated campaigns** on **Marketing → Campaigns**: **Re-engage past clients** emails clients a year
+  after their last visit (or the time you choose), **Win back lost quotes** emails a client 30 days
+  after a quote is marked lost, and **Close pending quotes** is the quote follow-up every business
+  already has, now with its own card. The first two are off until you turn them on. **Edit email**
+  changes the days and the email, with a preview and a test.
+- **Re-engage sends at most 100 a day** for each rule, newest first, and asks before emailing the
+  clients who already qualify (and asks again each time it's turned on). A client gets it at most once every 6 months, never while you're
+  working with them or for 6 months after a quote, and not if their last visit was over 3 years ago.
+  Conditions you add to its rule in Automations count in its numbers too.
+- **Close pending quotes isn't marketing:** it keeps going while Marketing is uninstalled and reaches
+  clients who unsubscribed from marketing, as it always has.
+- **Results for every campaign:** sent, opened, clicked, bookings and revenue, on each campaign and
+  card, with who got it and what each did. Opens are approximate.
+- **More audiences:** city, services on past jobs and recurring work, picked from lists that say how
+  many clients have each.
+- **A changed wait moves follow-ups still waiting,** on any automation rule.
+- **Uninstalling Marketing** stops automated campaigns too; links and images already sent keep working.
 
 ## Decisions on the open questions (30 October 2026)
 

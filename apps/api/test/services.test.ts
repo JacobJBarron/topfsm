@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { app } from "../src/app";
 import type { Env } from "../src/env";
 import { encryptJson, signToken } from "../src/lib/crypto";
-import { clientLink } from "../src/lib/links";
+import { clientLink, readClientLink } from "../src/lib/links";
 import { sendWithMailbox } from "../src/lib/notify";
 import { adminClient } from "../src/lib/supabase";
 import { zohoAccountsServer, zohoApiDomain } from "../src/integrations/registry";
@@ -70,19 +70,21 @@ describe("campaign sending", () => {
   };
   const recipients = [1, 2, 3].map((id) => ({
     id, campaign_id: "camp-1", company_id: "co-1", client_id: `client-${id}`, email: `person${id}@example.com`, name: `Person ${id}`, status: "sending", claim_token: "claim-1",
+    track_token: `5f0c2b1e-0000-4000-8000-00000000000${id}`,
   }));
 
   /** One campaign with three claimed recipients; `onEmail` can change things as each email goes. */
-  function run(options: { optedOut?: string[]; claimedSince?: number[]; onEmail?: (count: number, state: { status: string }) => Response | void } = {}) {
-    const state = { status: "sending", emails: [] as string[], claims: 0 };
+  function run(options: { optedOut?: string[]; claimedSince?: number[]; body?: string; onEmail?: (count: number, state: { status: string }) => Response | void } = {}) {
+    const state = { status: "sending", emails: [] as string[], claims: 0, messages: [] as Array<{ html: string; text: string }> };
     const calls = serve((call) => {
       if (call.url.host === "api.resend.com") {
         state.emails.push(call.body.to[0]);
+        state.messages.push({ html: call.body.html, text: call.body.text });
         return options.onEmail?.(state.emails.length, state) ?? Response.json({ id: `email-${state.emails.length}` });
       }
       if (call.path === "rpc/claim_campaign_recipients") return state.claims++ ? [] : recipients;
       if (call.path === "rpc/renew_campaign_recipient") return !(options.claimedSince ?? []).includes(call.body.p_id);
-      if (call.method === "GET" && call.path === "campaigns") return call.url.searchParams.get("select") === "status" ? [{ status: state.status }] : [campaign];
+      if (call.method === "GET" && call.path === "campaigns") return call.url.searchParams.get("select") === "status" ? [{ status: state.status }] : [{ ...campaign, body: options.body ?? campaign.body }];
       if (call.method === "GET" && call.path === "clients") return [{ marketing_opt_out: (options.optedOut ?? []).includes(call.url.searchParams.get("id")!.slice(3)) }];
       if (call.method === "HEAD") return counted(0);
       return [];
@@ -107,8 +109,30 @@ describe("campaign sending", () => {
     expect(state.emails).toEqual(["person1@example.com", "person3@example.com"]);
     const order = calls.filter((c) => c.path === "rpc/renew_campaign_recipient" || c.url.host === "api.resend.com").map((c) => c.body.p_id ?? c.body.to[0]);
     expect(order).toEqual([1, "person1@example.com", 2, 3, "person3@example.com"]);
-    expect(calls.find((c) => c.path === "rpc/renew_campaign_recipient")?.body).toEqual({ p_id: 1, p_token: "claim-1" });
+    expect(calls.find((c) => c.path === "rpc/renew_campaign_recipient")?.body).toEqual({ p_id: 1, p_token: "claim-1", p_links: [] });
     expect(settled().flatMap((s) => s.p_ids)).toEqual([1, 3]); // recipient 2 is the other run's to record
+  });
+
+  it("tracks each email's links and opens with the recipient's own token, and records the links it carries", async () => {
+    const { state, calls, done } = run({ body: "Hi {{client.first_name}}, book your fall cleanup at https://acme.example/fall.\n\n{{link}}" });
+    expect(await done).toMatchObject({ sent: 3 });
+    const renewed = calls.filter((c) => c.path === "rpc/renew_campaign_recipient").map((c) => c.body);
+    expect(renewed[0]).toEqual({ p_id: 1, p_token: "claim-1", p_links: ["https://acme.example/fall", expect.stringMatching(/^https:\/\/ops\.example\.com\/hub\//)] });
+    // Each client's {{link}} is their own Client Hub home.
+    expect(renewed[0].p_links[1]).not.toBe(renewed[1].p_links[1]);
+    const { html, text } = state.messages[0]!;
+    const token = recipients[0]!.track_token;
+    expect(html).toContain(`<a href="https://ops.example.com/api/public/c/${token}/0" style="color:#2c611a;font-weight:600;word-break:break-all">https://acme.example/fall</a>`);
+    expect(html).toContain(`href="https://ops.example.com/api/public/c/${token}/1"`);
+    // {{link}} on its own line is their Hub home, a button named as the Hub names it, and it lasts a year.
+    expect(html).toContain(">Request work</a>");
+    expect((await readClientLink(env, renewed[0].p_links[1].split("/hub/")[1]))!.exp - Date.now() / 1000).toBeGreaterThan(364 * 86_400);
+    expect(html).toContain(`<img src="https://ops.example.com/api/public/o/${token}" width="1" height="1" alt=""`);
+    // The unsubscribe link is never a tracked one.
+    expect(html).toMatch(/<a href="https:\/\/ops\.example\.com\/u\/[^"]+" style="color:#5f6f76">Unsubscribe<\/a>/);
+    expect(text).toContain(`book your fall cleanup at https://ops.example.com/api/public/c/${token}/0.`);
+    expect(text).not.toContain("https://acme.example/fall");
+    expect(state.messages[1]!.html).toContain(`/api/public/o/${recipients[1]!.track_token}`);
   });
 
   it("doesn't email people who unsubscribed after Send", async () => {

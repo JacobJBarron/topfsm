@@ -46,6 +46,11 @@ const SUB_VARIABLES = [
 
 export const TRIGGERS: TriggerDef[] = [
   { verb: "client.created", label: "A client is added", group: "Clients", subject: "client", delayable: true },
+  // Checked each morning from 10, in the company's time zone, for each rule on it (Marketing →
+  // Campaigns' Re-engage past clients, supabase/migrations/20261031000200_automated_campaigns.sql).
+  // How many days is the rule's own days_since_visit condition.
+  // Its {{title}} is only the client's name again, so the token isn't offered.
+  { verb: "client.inactive", label: "A client hasn't had a visit in a while", group: "Clients", subject: "client", delayable: false, hides: ["title"] },
   // On the client who referred a friend, once the friend pays their first invoice (Marketing → Referrals).
   {
     verb: "referral.earned", label: "A client earns a referral credit", group: "Clients", subject: "client", delayable: true,
@@ -107,7 +112,7 @@ export interface Condition {
 export interface ConditionFieldDef {
   field: string;
   label: string;
-  kind: "status" | "tags" | "text" | "money" | "choice";
+  kind: "status" | "tags" | "text" | "money" | "choice" | "days";
   ops: ConditionOp[];
   subjects: SubjectKind[] | "all";
   choices?: Array<{ value: string; label: string }>;
@@ -164,6 +169,8 @@ export const CONDITION_FIELDS: ConditionFieldDef[] = [
     field: "invoice_kind", label: "Invoice type", kind: "choice", ops: ["equals", "not_equals"], subjects: ["invoice"],
     choices: [{ value: "standard", label: "Standard" }, { value: "deposit", label: "Deposit" }, { value: "progress", label: "Progress billing" }, { value: "visits", label: "Visits" }],
   },
+  // A client's last completed job visit or assessment, counted in the company's own days.
+  { field: "days_since_visit", label: "Days since their last visit", kind: "days", ops: ["gte"], subjects: ["client"] },
 ];
 
 export const OP_LABELS: Record<ConditionOp, string> = {
@@ -190,6 +197,8 @@ export interface Facts {
   /** An invoice's kind: standard, deposit, progress or visits. */
   invoice_kind?: string | null;
   line_items?: string[];
+  /** Days since the client's last completed visit, or null when they've had none. */
+  days_since_visit?: number | null;
   client?: { tags?: string[]; status?: string | null; lead_source?: string | null } | null;
 }
 
@@ -242,6 +251,7 @@ function valueLabel(condition: Condition, subject: SubjectKind): string {
   const choices = def?.kind === "status" ? STATUS_CHOICES[subject] : def?.choices;
   const one = (v: string) => choices?.find((c) => c.value === v)?.label ?? v;
   if (def?.kind === "money") return `$${Number(condition.value).toLocaleString("en-US")}`;
+  if (def?.kind === "days") return `${Number(condition.value).toLocaleString("en-US")} ${Number(condition.value) === 1 ? "day" : "days"}`;
   if (Array.isArray(condition.value)) return condition.value.map(one).join(", ");
   return one(String(condition.value));
 }
@@ -316,7 +326,9 @@ export const TEMPLATE_VARIABLES: Array<{ token: string; label: string; subjects:
   { token: "title", label: "Title", subjects: "all" },
   { token: "total", label: "Total", subjects: ["quote", "job", "invoice"] },
   { token: "balance", label: "Balance due", subjects: ["invoice"] },
-  { token: "link", label: "Client link", subjects: ["quote", "invoice"] },
+  // A quote's or invoice's Client Hub page, or for a client the Hub's home, where they can ask for work.
+  { token: "link", label: "Client Hub link", subjects: ["client", "quote", "invoice"] },
+  { token: "last_visit", label: "Last visit date", subjects: ["client"] },
   { token: "date", label: "Visit date", subjects: ["visit"] },
   { token: "time", label: "Visit time", subjects: ["visit"] },
   { token: "address", label: "Address", subjects: ["visit", "request", "quote", "job"] },
@@ -398,6 +410,12 @@ export function validateRule(rule: RuleShape): string[] {
   if (rule.delay_minutes < 0 || rule.delay_minutes > 525_600) errors.push("The wait must be between 0 minutes and a year.");
   if (!rule.actions.length) errors.push("Add at least one action.");
   if (rule.actions.length > 10) errors.push("A rule can have at most 10 actions.");
+  if (rule.trigger === "client.inactive") {
+    const days = rule.conditions.filter((c) => c.field === "days_since_visit" && c.op === "gte");
+    if (!days.length || days.some((c) => !Number.isInteger(Number(c.value)) || Number(c.value) < 30 || Number(c.value) > 730)) {
+      errors.push("Say how many days without a visit, from 30 to 730.");
+    }
+  }
   rule.conditions.forEach((c, i) => {
     const value = Array.isArray(c.value) ? c.value.join("") : String(c.value ?? "");
     if (!value.trim()) errors.push(`Condition ${i + 1} needs a value.`);

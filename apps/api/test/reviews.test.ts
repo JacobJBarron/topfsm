@@ -59,7 +59,8 @@ const ANA: Row = {
   review_opt_out: false, marketing_opt_out: false, sms_opt_out_at: null,
 };
 const companyRow = (settings: Row = {}): Row => ({
-  id: CO, name: "Acme Lawn", phone: "555-0100", email: "office@acme.example", website: null, timezone: NY, currency: "USD", trade_preset: "lawn_care", address: {},
+  id: CO, name: "Acme Lawn", phone: "555-0100", email: "office@acme.example", website: null, timezone: NY, currency: "USD", trade_preset: "lawn_care",
+  address: { line1: "1 Main St", city: "Radford", region: "VA", postal_code: "24141" },
   settings: { review_url: "https://g.page/r/acme/review", marketing: { enabled: true }, ...settings },
 });
 
@@ -312,11 +313,12 @@ describe("an ask by text and email", () => {
     expect(typeof marked.body.sms_opt_out_at).toBe("string");
   });
 
-  it("carries one-click unsubscribe in the email", async () => {
+  it("carries one-click unsubscribe and the company's address in the email", async () => {
     asking();
     await ask();
     const message = sendEmail.mock.calls[0]![1];
     expect(message.text).toMatch(/Unsubscribe: https:\/\/ops\.example\.com\/u\//);
+    expect(message.text).toContain("Acme Lawn · 1 Main St, Radford, VA, 24141");
     expect(message.headers?.["List-Unsubscribe"]).toMatch(/^<https:\/\/ops\.example\.com\/api\/public\/unsubscribe\//);
     expect(message.headers?.["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
   });
@@ -481,6 +483,7 @@ describe("the reminder task", () => {
     expect(await readClientLink(env, token)).toMatchObject({ c: CO, t: "review", id: "rr-1" });
     expect(message.text).toContain("just a friendly reminder from Acme Lawn");
     expect(message.text).toMatch(/Unsubscribe: https:\/\/ops\.example\.com\/u\//);
+    expect(message.text).toContain("Acme Lawn · 1 Main St, Radford, VA, 24141");
     expect(writes(calls, "POST", "messages").map((c) => [c.body.channel, c.body.subject, c.body.related_type, c.body.related_id])).toEqual([["email", "Review reminder", "review", "rr-1"]]);
     // Counted before it goes, with the second 5 days after the ask, at 1:30pm (standard time by then).
     expect(starts(calls)).toEqual([{ p_id: "rr-1", p_token: "claim-9", p_next: "2026-11-01T18:30:00.000Z" }]);

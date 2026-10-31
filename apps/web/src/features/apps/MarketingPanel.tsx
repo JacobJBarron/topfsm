@@ -12,7 +12,8 @@ export function MarketingPanel() {
       <span className="muted">
         Owners, admins and office staff with the marketing area have <strong>Marketing</strong> in the menu. Choose when clients are asked for a review, and how
         many reminders follow, in <strong>Reviews</strong>. Set the credit for each friend who becomes a client, and when clients are asked for
-        referrals, in <strong>Referrals</strong>, and write and send email in <strong>Campaigns</strong>.
+        referrals, in <strong>Referrals</strong>. In <strong>Campaigns</strong>, turn on the automated campaigns (re-engage past clients, win back
+        lost quotes, close pending quotes), write one-off emails, and see the opens, clicks and work each brings in.
       </span>
       <div className="row wrap" style={{ gap: 8 }}>
         <Link className="btn" to="/marketing?tab=reviews"><Icon name="star" size={16} />Reviews</Link>

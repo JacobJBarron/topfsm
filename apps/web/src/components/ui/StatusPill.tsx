@@ -17,6 +17,10 @@
  *   Credit   pending "Pending" · earned "Earned" · applied "Applied" · issued "Given" · none "No credit"
  *            (a referral credit: Marketing → Referrals shows the referral's state until the friend
  *            pays, then its credit's, packages/core/src/marketing.ts referralPill)
+ *   Campaign draft "Draft" · scheduled "Scheduled" · sending "Sending" · sent "Sent" · cancelled "Stopped" ·
+ *            automated "Automated" (one that sends by itself, Marketing → Campaigns)
+ *   Recipient pending "Queued" · sending "Sending" · sent "Sent" · failed "Failed" · skipped "Skipped" ·
+ *            opened "Opened" · clicked "Clicked" (a campaign email, and what was done with it)
  *
  * Money that's late is "Past due", never "Overdue" or "Waiting on payment". "Overdue" is kept for work
  * that's late: a new request nobody has answered in two days (Home's workflow), a visit past its day,
@@ -58,6 +62,8 @@ const STATUS_TEXT = {
   visit: { unscheduled: "Unscheduled", scheduled: "Scheduled", en_route: "On the way", in_progress: "In progress", completed: "Completed", cancelled: "Cancelled" },
   referral: { new: "New lead", quoted: "Quoted", won: "Won", lost: "Lost" },
   credit: { pending: "Pending", earned: "Earned", applied: "Applied", issued: "Given", none: "No credit" },
+  campaign: { draft: "Draft", scheduled: "Scheduled", sending: "Sending", sent: "Sent", cancelled: "Stopped", automated: "Automated" },
+  recipient: { pending: "Queued", sending: "Sending", sent: "Sent", failed: "Failed", skipped: "Skipped", opened: "Opened", clicked: "Clicked" },
 } satisfies Record<string, Record<string, string>>;
 
 export type StatusKind = keyof typeof STATUS_TEXT;
@@ -85,6 +91,9 @@ const ENTITY_TONES: Record<StatusKind, Record<string, Tone>> = {
   visit: VISIT_TONES,
   referral: { new: "warning", quoted: "info", won: "good", lost: "danger" },
   credit: { pending: "muted", earned: "warning", applied: "good", issued: "good", none: "muted" },
+  campaign: { draft: "muted", scheduled: "info", sending: "info", sent: "good", cancelled: "danger", automated: "info" },
+  // Each step further reads stronger: sent, then opened, then clicked.
+  recipient: { pending: "muted", sending: "info", sent: "muted", failed: "danger", skipped: "muted", opened: "info", clicked: "good" },
 };
 
 /** Pill for a record's status, e.g. <EntityStatus kind="quote" status="sent" />. */

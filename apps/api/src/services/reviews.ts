@@ -34,7 +34,7 @@ import {
   type SendChannel,
 } from "@crewtavo/core/marketing";
 import type { Env } from "../env";
-import { firstName } from "../lib/email";
+import { companyFooter, firstName } from "../lib/email";
 import { clientLink } from "../lib/links";
 import { reportError } from "../lib/monitoring";
 import { emailReady, sendSms, smsConfigured, type SendResult } from "../lib/notify";
@@ -92,6 +92,8 @@ interface Company {
   email: string | null;
   timezone: string | null;
   settings: unknown;
+  /** Its postal address, in a review ask's footer as every marketing email has it. */
+  address?: unknown;
 }
 
 const recentlyAsked = (days: number) => `Already asked in the last ${days === REVIEW_GAP_DAYS ? "6 months" : `${days} days`}`;
@@ -117,7 +119,7 @@ async function deliver(
   for (const channel of d.channels) {
     let result: SendResult;
     if (channel === "email") {
-      result = await emailClient(env, { companyId: d.companyId, company: d.company, client: d.client, subject: d.subject, text: d.text, baseUrl: d.baseUrl });
+      result = await emailClient(env, { companyId: d.companyId, company: d.company, client: d.client, subject: d.subject, text: d.text, baseUrl: d.baseUrl, footer: companyFooter(d.company) });
     } else {
       result = await sendSms(env, { to: d.client.phone!, body: d.text });
       await noteRefusedText(admin, d.client, d.client.phone!, result);
@@ -140,7 +142,7 @@ export async function sendReviewRequest(env: Env, admin: Db, args: ReviewArgs): 
   const { client } = args;
   const name = client.display_name;
   const skipped = (detail: string): ReviewResult => ({ sent: false, link: "", detail, id: "", skipped: true });
-  const { data: company } = await admin.from("companies").select("name, phone, email, timezone, settings").eq("id", args.companyId).maybeSingle();
+  const { data: company } = await admin.from("companies").select("name, phone, email, address, timezone, settings").eq("id", args.companyId).maybeSingle();
   if (!company) throw new Error("Company not found.");
   const settings = (company.settings ?? {}) as Record<string, unknown> & { review_url?: string; review_message?: string };
 
@@ -245,7 +247,7 @@ export async function sendDueReminders(env: Env) {
   if (!claimed.length) return tally;
 
   const [companies, clients] = await Promise.all([
-    admin.from("companies").select("id, name, phone, email, timezone, settings").in("id", [...new Set(claimed.map((r) => r.company_id))]),
+    admin.from("companies").select("id, name, phone, email, address, timezone, settings").in("id", [...new Set(claimed.map((r) => r.company_id))]),
     admin.from("clients").select("id, display_name, email, phone, status, review_opt_out, marketing_opt_out, sms_opt_out_at").in("id", [...new Set(claimed.map((r) => r.client_id))]),
   ]);
   if (companies.error) throw new Error(companies.error.message);

@@ -371,6 +371,31 @@ describe("email rendering", () => {
     expect(text).toContain("1 Main St, Radford, VA");
   });
 
+  it("sends a campaign's links through tracked ones, showing each as written, and never tracks unsubscribing", () => {
+    const tracked = (url: string) => `https://ops.example.com/api/public/c/tok/${url.includes("review") ? 1 : 0}`;
+    const { html, text } = renderEmail({
+      companyName: "Acme Lawn",
+      text: "Book at https://acme.example/book?a=1&b=2.\n\nhttps://ops.example.com/api/public/r/review\n\nOr write to mailto:office@acme.example",
+      unsubscribeUrl: "https://ops.example.com/u/unsub",
+      href: tracked,
+      pixel: "https://ops.example.com/api/public/o/tok",
+    });
+    expect(html).toContain('<a href="https://ops.example.com/api/public/c/tok/0" style="color:#2c611a;font-weight:600;word-break:break-all">https://acme.example/book?a=1&amp;b=2</a>.');
+    // The button keeps the label its real link gives it.
+    expect(html).toContain('href="https://ops.example.com/api/public/c/tok/1" style="display:inline-block');
+    expect(html).toContain(">Leave a review</a>");
+    expect(html).toContain('href="https://ops.example.com/u/unsub"');
+    expect(html).toContain("mailto:office@acme.example");
+    expect(html).not.toContain('href="mailto:');
+    expect(html).toMatch(/Unsubscribe<\/a><\/p>\n<img src="https:\/\/ops\.example\.com\/api\/public\/o\/tok" width="1" height="1" alt=""/);
+    expect(text).toBe("Book at https://ops.example.com/api/public/c/tok/0.\n\nhttps://ops.example.com/api/public/c/tok/1\n\nOr write to mailto:office@acme.example\n\nUnsubscribe: https://ops.example.com/u/unsub");
+    // Without them, links go as they are and there's no image.
+    const plain = renderEmail({ companyName: "Acme Lawn", text: "Book at https://acme.example/book." });
+    expect(plain.html).toContain('href="https://acme.example/book"');
+    expect(plain.html).not.toContain("<img");
+    expect(plain.text).toBe("Book at https://acme.example/book.");
+  });
+
   it("shows a one-time code large, on its own, and leaves the plain text as it is", () => {
     const { html, text } = renderEmail({ companyName: "Oscar Roofing", text: "Your code:\n\n042517\n\nNot 042517 here.", code: "042517" });
     expect(html.match(/font-size:32px[^>]*>042517<\/p>/g)).toHaveLength(1);

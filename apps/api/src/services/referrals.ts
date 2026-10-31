@@ -13,7 +13,7 @@
 import { renderTemplate } from "@crewtavo/core";
 import { marketingOn, referralAskRefusal, referralRewards, referralSettings, referralsReady, REFERRAL_EMAIL_NOT_CONNECTED, REFERRAL_GAP_DAYS } from "@crewtavo/core/marketing";
 import type { Env } from "../env";
-import { firstName } from "../lib/email";
+import { companyFooter, firstName } from "../lib/email";
 import { clientLink } from "../lib/links";
 import { emailReady } from "../lib/notify";
 import type { Db } from "../lib/supabase";
@@ -65,7 +65,7 @@ export async function sendReferralAsk(env: Env, admin: Db, args: ReferralAskArgs
   const automatic = args.automatic === true;
   const { client } = args;
   const skipped = (detail: string): ReferralAskResult => ({ sent: false, detail, id: "", skipped: true });
-  const { data: company } = await admin.from("companies").select("name, phone, email, settings").eq("id", args.companyId).maybeSingle();
+  const { data: company } = await admin.from("companies").select("name, phone, email, address, settings").eq("id", args.companyId).maybeSingle();
   if (!company) throw new Error("Company not found.");
   const settings = (company.settings ?? {}) as Record<string, unknown>;
 
@@ -127,7 +127,9 @@ export async function sendReferralAsk(env: Env, admin: Db, args: ReferralAskArgs
     link,
     rewards: referralRewards(settings),
   }).replace(/\n{3,}/g, "\n\n").trim();
-  const result = await emailClient(env, { companyId: args.companyId, company, client, subject: `Know someone who could use ${company.name}?`, text, baseUrl: args.baseUrl });
+  const result = await emailClient(env, {
+    companyId: args.companyId, company, client, subject: `Know someone who could use ${company.name}?`, text, baseUrl: args.baseUrl, footer: companyFooter(company),
+  });
   if (!result.sent) {
     const reason = result.reason ?? "The email wasn't sent.";
     await admin.from("referral_asks").update({ status: "failed", error: reason.slice(0, 500) }).eq("id", id);

@@ -2,6 +2,7 @@ export * from "./address";
 export * from "./assistants";
 export * from "./automations";
 export * from "./breaks";
+export * from "./campaigns";
 export * from "./chat";
 export * from "./clientImport";
 export * from "./contracts";

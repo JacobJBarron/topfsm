@@ -16,6 +16,7 @@ import { checkHosting } from "./services/hosting";
 import { purgeTrash, tidyApplicantFiles, tidyPlanFiles, tidySubFiles, tidyUnrecordedFiles } from "./services/planFiles";
 import { keepRailwayAlive } from "./services/railway";
 import { checkStorage } from "./services/storageUsage";
+import { emitInactiveClients } from "./services/automatedCampaigns";
 import { processAutomations } from "./services/automations";
 import { processCampaigns } from "./services/campaigns";
 import { sendDueReminders } from "./services/reviews";
@@ -24,7 +25,7 @@ import { remindSubs } from "./services/subs";
 import { dailyOutlook } from "./services/external";
 import { autoRoutes } from "./services/routes";
 
-export const TASKS = ["automations", "campaigns", "notify", "outbox", "calendars", "recurrence", "followups", "weather", "address", "railway", "hosting", "plans", "trash", "storage", "routes", "website", "reviews"] as const;
+export const TASKS = ["automations", "campaigns", "notify", "outbox", "calendars", "recurrence", "followups", "weather", "address", "railway", "hosting", "plans", "trash", "storage", "routes", "website", "reviews", "inactive"] as const;
 export type TaskName = (typeof TASKS)[number];
 
 /** Cron expressions -> tasks, run by server.ts's scheduler. */
@@ -35,6 +36,9 @@ export const CRON_TASKS: Record<string, TaskName[]> = {
   "*/5 * * * *": ["outbox", "reviews"],
   "*/15 * * * *": ["calendars"],
   "0 * * * *": ["followups"],
+  // Clients who haven't had a visit in a while: hourly, so each company's own 10am is met; at most
+  // 100 a day for each rule (services/automatedCampaigns.ts). The automations task sends them.
+  "5 * * * *": ["inactive"],
   "0 */6 * * *": ["weather"],
   "30 * * * *": ["routes"],
   "10 * * * *": ["website"],
@@ -92,6 +96,8 @@ export async function runTask(name: TaskName, env: Env): Promise<Record<string, 
       return rollUpVisits(adminClient(env));
     case "reviews":
       return sendDueReminders(env);
+    case "inactive":
+      return emitInactiveClients(env);
   }
 }
 

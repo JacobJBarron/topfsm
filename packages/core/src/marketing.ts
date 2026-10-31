@@ -469,7 +469,7 @@ export interface AskRuleForm {
 const conditionKey = (c: Condition) => `${c.field}|${c.op}|${Array.isArray(c.value) ? c.value.map((v) => String(v).trim().toLowerCase()).sort().join(",") : String(c.value).trim().toLowerCase()}`;
 
 /** The same conditions, in any order. */
-function sameConditions(actual: unknown, expected: Condition[]): boolean {
+export function sameConditions(actual: unknown, expected: Condition[]): boolean {
   if (!Array.isArray(actual) || actual.length !== expected.length) return false;
   const have = (actual as Condition[]).map(conditionKey).sort();
   const want = expected.map(conditionKey).sort();

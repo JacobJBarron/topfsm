@@ -5,6 +5,7 @@
 import { addDays } from "@crewtavo/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env";
+import { cronMatches } from "../src/lib/cron";
 import { CRON_TASKS, runTask, TASKS } from "../src/tasks";
 
 const env: Env = {
@@ -158,6 +159,43 @@ describe("review reminders", () => {
     const calls = serve(() => []);
     expect(await runTask("reviews", { ...env, APP_URL: "https://ops.example.com" })).toEqual({ claimed: 0, sent: 0, failed: 0, stopped: 0, waiting: 0, lost: 0, errors: 0 });
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST rpc/claim_review_reminders"]);
+  });
+});
+
+describe("clients who haven't had a visit in a while", () => {
+  it("are queued hourly, for each company that can email them, at most 100 a day for each rule (services/automatedCampaigns.ts)", async () => {
+    expect(TASKS).toContain("inactive");
+    expect(CRON_TASKS["5 * * * *"]).toEqual(["inactive"]);
+    // The scheduler's minute check runs it at five past each hour, and only then.
+    expect(cronMatches("5 * * * *", new Date("2026-10-27T14:05:30Z"))).toBe(true);
+    expect([0, 4, 6, 35].some((m) => cronMatches("5 * * * *", new Date(Date.UTC(2026, 9, 27, 14, m))))).toBe(false);
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-10-27T14:05:00Z") });
+    try {
+      const calls = serve((call) => {
+        if (call.method === "GET" && call.path === "automation_rules") return [{ company_id: "co-1" }, { company_id: "co-1" }, { company_id: "co-2" }];
+        if (call.path === "rpc/emit_inactive_clients") return call.body.p_company === "co-1" ? 3 : 1;
+        return [];
+      });
+      const sending = { ...env, APP_URL: "https://ops.example.com", RESEND_API_KEY: "re_test", EMAIL_FROM: "Crewtavo <noreply@example.com>" };
+      expect(await runTask("inactive", sending)).toEqual({ companies: 2, queued: 4, waiting: 0 });
+      const rules = calls.find((c) => c.path === "automation_rules")!;
+      expect([rules.url.searchParams.get("trigger"), rules.url.searchParams.get("enabled"), rules.url.searchParams.get("company.settings->marketing->>enabled")]).toEqual(["eq.client.inactive", "eq.true", "eq.true"]);
+      expect(calls.filter((c) => c.path.startsWith("rpc/")).map((c) => [c.path, c.body])).toEqual([
+        ["rpc/emit_inactive_clients", { p_now: "2026-10-27T14:05:00.000Z", p_cap: 100, p_company: "co-1" }],
+        ["rpc/emit_inactive_clients", { p_now: "2026-10-27T14:05:00.000Z", p_cap: 100, p_company: "co-2" }],
+      ]);
+
+      // Without a way to send them, they wait: the runs would only fail and use up each client's turn.
+      const quiet = serve((call) => (call.method === "GET" && call.path === "automation_rules" ? [{ company_id: "co-1" }] : []));
+      expect(await runTask("inactive", { ...sending, APP_URL: undefined })).toEqual({ companies: 1, queued: 0, waiting: 1 });
+      expect(quiet.some((c) => c.path === "rpc/emit_inactive_clients")).toBe(false);
+      // Nor while the company has no mailbox and the server sends no email of its own.
+      const unconnected = serve((call) => (call.method === "GET" && call.path === "automation_rules" ? [{ company_id: "co-1" }] : []));
+      expect(await runTask("inactive", { ...env, APP_URL: "https://ops.example.com" })).toEqual({ companies: 1, queued: 0, waiting: 1 });
+      expect(unconnected.some((c) => c.path === "rpc/emit_inactive_clients")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

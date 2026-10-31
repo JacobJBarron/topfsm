@@ -1,10 +1,23 @@
 /**
  * Crewtavo - Marketing (Apps → Crewtavo - Marketing): installing it (POST /marketing/enabled),
- * campaigns (send, schedule, test, AI drafts), review requests and when they're asked automatically
- * (PUT /reviews/asks edits the two starter rules), referral links, and asking for referrals (POST
- * /referrals/request by hand, PUT /referrals/asks switches the starter rule).
+ * campaigns (send, schedule, test, AI drafts), automated campaigns (PUT /campaigns/automated/:key
+ * edits each one's rule, POST …/test sends a test), review requests and when they're asked
+ * automatically (PUT /reviews/asks edits the two starter rules), referral links, and asking for
+ * referrals (POST /referrals/request by hand, PUT /referrals/asks switches the starter rule).
  */
-import { ADMINS, OFFICE, SALES, type TablesInsert } from "@crewtavo/core";
+import { addDays, ADMINS, localDate, OFFICE, SALES, type TablesInsert } from "@crewtavo/core";
+import {
+  AUTOMATED_CAMPAIGNS,
+  AUTOMATED_KEYS,
+  automatedDaysError,
+  automatedRuleUpdate,
+  HUB_HOME_BUTTON,
+  inactiveDays,
+  linkButton,
+  readAutomatedRule,
+  type AutomatedKey,
+  type AutomatedRuleRow,
+} from "@crewtavo/core/campaigns";
 import {
   ASK_TEMPLATE_KEYS,
   askRuleUpdate,
@@ -48,23 +61,59 @@ marketing.post("/marketing/enabled", requireUser, requireCompany(ADMINS, "apps")
   return c.json({ enabled: body.enabled });
 });
 
-const requireEmail = async (c: Parameters<typeof appUrl>[0]) => {
+type Ctx = Parameters<typeof appUrl>[0];
+
+const requireEmail = async (c: Ctx) => {
   if (!(await emailReady(c.env, c.var.companyId))) throw new HttpError(501, "Email isn't connected yet, so campaigns can't be sent. An admin can connect it in Settings → Email.");
 };
 
 /** Uninstalled, Marketing sends clients nothing, so no campaign goes out (or starts, or is tested). */
-const requireMarketing = async (c: Parameters<typeof appUrl>[0]) => {
+const requireMarketing = async (c: Ctx) => {
   const company = must(await c.var.db.from("companies").select("settings").eq("id", c.var.companyId).maybeSingle());
   if (!marketingOn(company.settings as Record<string, unknown> | null)) {
     throw new HttpError(409, "Marketing is off, so campaigns can't be sent. An owner or admin can install it again in Apps.");
   }
 };
 
-async function loadCampaign(c: Parameters<typeof appUrl>[0]) {
-  return must(
-    await c.var.db.from("campaigns").select("id, status, name, subject, body, audience, scheduled_at").eq("id", param(c, "id")).eq("company_id", c.var.companyId).maybeSingle(),
+/** A one-off campaign: an automated one is changed on Marketing → Campaigns, through its rule. */
+async function loadCampaign(c: Ctx) {
+  const campaign = must(
+    await c.var.db.from("campaigns").select("id, kind, status, name, subject, body, audience, scheduled_at").eq("id", param(c, "id")).eq("company_id", c.var.companyId).maybeSingle(),
     "Campaign not found.",
   );
+  if (campaign.kind === "automated") throw new HttpError(409, "This campaign sends by itself. Change it in Marketing → Campaigns.");
+  return campaign;
+}
+
+/**
+ * Sends the signed-in person (or `to`) a test copy, with "[Test]" in the subject: no tracking, and
+ * an unsubscribe link that goes nowhere when the real one would have one.
+ */
+async function sendTest(c: Ctx, d: { to?: string; subject: string; body: string; vars: Record<string, unknown>; unsubscribe: boolean; button: string }) {
+  const me = must(await c.var.db.from("profiles").select("email, full_name").eq("user_id", c.var.userId).maybeSingle());
+  const to = d.to ?? me.email;
+  if (!to || !isEmail(to)) throw new HttpError(400, "Add an email address to send the test to.");
+  const company = must(await c.var.db.from("companies").select("name, phone, email, website, address, settings").eq("id", c.var.companyId).maybeSingle());
+  // {{title}} is the client's name for an email about a client (Re-engage), as the engine has it.
+  const vars = {
+    client: { first_name: firstName(me.full_name), name: me.full_name, email: to, phone: "" },
+    company: { name: company.name, phone: company.phone ?? "", email: company.email ?? "", website: company.website ?? "" },
+    link: appUrl(c),
+    title: me.full_name ?? "",
+    ...d.vars,
+  } as Parameters<typeof renderTemplate>[1];
+  const email = renderEmail({
+    companyName: company.name,
+    logo: logoImage(appUrl(c), c.var.companyId, company.settings),
+    text: renderTemplate(d.body, vars),
+    footer: [company.name, companyAddress(company.address as Record<string, string>)].filter(Boolean).join(" · "),
+    unsubscribeUrl: d.unsubscribe ? `${appUrl(c)}/u/test` : null,
+    // {{link}} on its own line is the same button the real email has.
+    buttons: { [String(vars.link)]: d.button },
+  });
+  const result = await sendEmail(c.env, { to, subject: `[Test] ${renderTemplate(d.subject, vars)}`, ...email, fromName: company.name }, c.var.companyId);
+  if (!result.sent) throw new HttpError(502, result.reason ?? "The test email wasn't sent.");
+  return c.json({ sent: true, to });
 }
 
 /** Send now, or schedule: snapshots the audience so later edits to clients don't change who gets it. */
@@ -85,7 +134,7 @@ marketing.post("/campaigns/:id/send", requireUser, requireCompany(OFFICE, "marke
   const admin = adminClient(c.env);
   const { error } = await admin.from("campaign_recipients").upsert(
     audience.map((a) => ({ company_id: c.var.companyId, campaign_id: campaign.id, client_id: a.client_id, email: a.email, name: a.display_name })),
-    { onConflict: "campaign_id,email", ignoreDuplicates: true },
+    { onConflict: "campaign_id,email,send_key", ignoreDuplicates: true },
   );
   if (error) throw dbError(error);
   const scheduled = Boolean(body.scheduled_at && Date.parse(body.scheduled_at) > Date.now() + 60_000);
@@ -129,21 +178,140 @@ marketing.post("/campaigns/:id/test", requireUser, requireCompany(OFFICE, "marke
   await requireEmail(c);
   const body = await readJson(c, z.object({ to: z.email().optional() }));
   const campaign = await loadCampaign(c);
-  const me = must(await c.var.db.from("profiles").select("email, full_name").eq("user_id", c.var.userId).maybeSingle());
-  const to = body.to ?? me.email;
-  if (!to || !isEmail(to)) throw new HttpError(400, "Add an email address to send the test to.");
-  const company = must(await c.var.db.from("companies").select("name, phone, email, address, settings").eq("id", c.var.companyId).maybeSingle());
-  const vars = { client: { first_name: firstName(me.full_name), name: me.full_name }, company: { name: company.name, phone: company.phone ?? "" } };
-  const email = renderEmail({
-    companyName: company.name,
-    logo: logoImage(appUrl(c), c.var.companyId, company.settings),
-    text: renderTemplate(campaign.body, vars),
-    footer: [company.name, companyAddress(company.address as Record<string, string>)].filter(Boolean).join(" · "),
-    unsubscribeUrl: `${appUrl(c)}/u/test`,
-  });
-  const result = await sendEmail(c.env, { to, subject: `[Test] ${renderTemplate(campaign.subject, vars)}`, ...email, fromName: company.name }, c.var.companyId);
-  if (!result.sent) throw new HttpError(502, result.reason ?? "The test email wasn't sent.");
-  return c.json({ sent: true, to });
+  return sendTest(c, { to: body.to, subject: campaign.subject, body: campaign.body, vars: {}, unsubscribe: true, button: HUB_HOME_BUTTON });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Automated campaigns
+// ---------------------------------------------------------------------------------------------
+
+const AUTOMATED_RULE_FIELDS = "id, name, description, template_key, trigger, enabled, delay_minutes, conditions, actions";
+
+function automatedKey(c: Ctx): AutomatedKey {
+  const key = c.req.param("key") as AutomatedKey;
+  if (!AUTOMATED_KEYS.includes(key)) throw new HttpError(404, "There's no automated campaign by that name.");
+  return key;
+}
+
+/**
+ * Marketing → Campaigns' automated campaigns: the switch (`enabled`, saved at once), and Edit
+ * email's days, subject and message (saved without touching the switch). The rule stays where the
+ * campaign is set, so it still shows in Automations: one shaped the way the card writes it is
+ * changed, one that's gone is put back, and one someone changed into something the card can't show
+ * keeps its shape and is named in `kept`, with only the switch turning it on or off.
+ *
+ * Turning Re-engage past clients on says what to do with the clients who already qualify: `backlog:
+ * "skip"` marks them as done, so only those who reach it from now on are emailed, and "send" emails
+ * them too, 100 a day, a backlog let go before included. Without it, turning it on is refused (409)
+ * while any qualify, so nobody's past clients are emailed without being asked. Turning a campaign on
+ * needs email connected, and Marketing installed for the two marketing ones. Off always goes through.
+ */
+marketing.put("/campaigns/automated/:key", requireUser, requireCompany(ADMINS, "marketing"), async (c) => {
+  if (!c.var.permissions.includes("automations")) throw new HttpError(403, "Changing automated campaigns needs the Automations area.");
+  const key = automatedKey(c);
+  const campaign = AUTOMATED_CAMPAIGNS[key];
+  const body = await readJson(
+    c,
+    z.object({
+      enabled: z.boolean().optional(),
+      days: z.number().int().optional(),
+      subject: z.string().trim().min(1).max(200).optional(),
+      body: z.string().trim().min(10).max(20000).optional(),
+      backlog: z.enum(["send", "skip"]).optional(),
+    }),
+  );
+  if (body.days !== undefined) {
+    const problem = automatedDaysError(key, body.days);
+    if (problem) throw new HttpError(400, problem);
+  }
+  const { db, companyId } = c.var;
+  if (body.enabled) {
+    if (campaign.marketing) {
+      const company = must(await db.from("companies").select("settings").eq("id", companyId).maybeSingle());
+      if (!marketingOn(company.settings as Record<string, unknown> | null)) {
+        throw new HttpError(409, "Marketing is off, so automated campaigns can't be sent. An owner or admin can install it again in Apps.");
+      }
+    }
+    if (!(await emailReady(c.env, companyId))) throw new HttpError(400, "Connect your email first, so campaign emails can go out. An admin can connect it in Settings → Email.");
+  }
+  const { data: rule, error } = await db.from("automation_rules").select(AUTOMATED_RULE_FIELDS).eq("company_id", companyId).eq("template_key", campaign.templateKey).maybeSingle();
+  if (error) throw dbError(error);
+  const form = { days: body.days, subject: body.subject, body: body.body };
+  const editing = Object.values(form).some((v) => v !== undefined);
+  const admin = adminClient(c.env);
+  const kept: Array<{ id: string; name: string }> = [];
+  // The backlog is settled before the switch, so the hourly task never sees it on without it.
+  const turningOn = key === "reengage" && body.enabled === true && !rule?.enabled;
+  if (turningOn && !body.backlog) {
+    // At the days it'll have: the form's, unless the rule keeps a shape of its own.
+    const own = rule && (body.days === undefined || !readAutomatedRule(rule as unknown as AutomatedRuleRow, key));
+    const days = own ? inactiveDays(rule.conditions) : (body.days ?? campaign.days.default);
+    const { data: waiting, error: countError } = await db.rpc("inactive_client_count", { p_company: companyId, p_days: days });
+    if (countError) throw dbError(countError);
+    if (waiting) throw new HttpError(409, `${waiting.toLocaleString("en-US")} past ${waiting === 1 ? "client qualifies" : "clients qualify"} already. Turn it on again to choose whether to email them too or only clients who reach it from now on.`);
+  }
+  const skipBacklog = turningOn && body.backlog === "skip";
+  let ruleId: string;
+  let enabled = rule?.enabled ?? false;
+  if (!rule) {
+    const fresh = automatedRuleUpdate(null, key, { ...form, enabled: skipBacklog ? false : (body.enabled ?? false) });
+    const added = must(
+      await db
+        .from("automation_rules")
+        .insert({ ...fresh, conditions: asJson(fresh.conditions), actions: asJson(fresh.actions), company_id: companyId } as TablesInsert<"automation_rules">)
+        .select("id")
+        .single(),
+    );
+    ruleId = added.id;
+    enabled = fresh.enabled ?? false;
+  } else {
+    ruleId = rule.id;
+    if (!readAutomatedRule(rule as unknown as AutomatedRuleRow, key)) {
+      kept.push({ id: rule.id, name: rule.name });
+    } else if (editing) {
+      const change = automatedRuleUpdate(rule as unknown as AutomatedRuleRow, key, form);
+      const written = await db.from("automation_rules").update({ ...change, conditions: asJson(change.conditions), actions: asJson(change.actions) }).eq("id", rule.id);
+      if (written.error) throw dbError(written.error);
+    }
+  }
+  if (skipBacklog) {
+    const { error: skipError } = await admin.rpc("skip_inactive_backlog", { p_rule: ruleId });
+    if (skipError) throw dbError(skipError);
+  } else if (turningOn && body.backlog === "send") {
+    const { error: releaseError } = await admin.rpc("release_inactive_backlog", { p_rule: ruleId });
+    if (releaseError) throw dbError(releaseError);
+  }
+  if (body.enabled !== undefined && body.enabled !== enabled) {
+    const switched = await db.from("automation_rules").update({ enabled: body.enabled }).eq("id", ruleId);
+    if (switched.error) throw dbError(switched.error);
+  }
+  const { data: campaignId, error: campaignError } = await admin.rpc("ensure_automated_campaign", { p_company: companyId, p_key: campaign.templateKey });
+  if (campaignError) throw dbError(campaignError);
+  return c.json({ kept, rule_id: ruleId, campaign_id: campaignId });
+});
+
+/** A test of an automated campaign's email as it's being written, with a made-up quote and visit. */
+marketing.post("/campaigns/automated/:key/test", requireUser, requireCompany(OFFICE, "marketing"), async (c) => {
+  const key = automatedKey(c);
+  const campaign = AUTOMATED_CAMPAIGNS[key];
+  if (campaign.marketing) await requireMarketing(c);
+  await requireEmail(c);
+  const body = await readJson(
+    c,
+    z.object({ to: z.email().optional(), subject: z.string().trim().min(1).max(200), body: z.string().trim().min(1).max(20000), days: z.number().int().min(0).max(1000).optional() }),
+  );
+  const company = must(await c.var.db.from("companies").select("timezone, currency").eq("id", c.var.companyId).maybeSingle());
+  const tz = company.timezone || "UTC";
+  const lastVisit = addDays(localDate(new Date(), tz), -(body.days ?? campaign.days.default));
+  const vars = {
+    number: 1042,
+    ...(key === "reengage" ? {} : { title: "Spring cleanup" }),
+    total: new Intl.NumberFormat("en-US", { style: "currency", currency: company.currency || "USD" }).format(1250),
+    address: "12 Oak Street",
+    status: key === "close_quotes" ? "Awaiting response" : key === "win_back" ? "Lost" : "Active",
+    last_visit: new Date(`${lastVisit}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" }),
+  };
+  return sendTest(c, { to: body.to, subject: body.subject, body: body.body, vars, unsubscribe: campaign.marketing, button: linkButton(key) });
 });
 
 /** Draft a campaign with Claude from a short goal. */

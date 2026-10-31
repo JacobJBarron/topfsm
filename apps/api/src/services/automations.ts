@@ -7,6 +7,11 @@
  * A retried run skips actions that already succeeded, so nobody gets the same email twice. An
  * action that has to wait (an automatic review ask during quiet hours: WaitUntil) puts the run back
  * until then, and one with nothing to do says so (Skip) without failing the run.
+ *
+ * A rule that's an automated campaign (Marketing → Campaigns, services/automatedCampaigns.ts) sends
+ * its email as one, tracked. Re-engage past clients (any rule on client.inactive) and Win back lost
+ * quotes are marketing: their runs are skipped while Marketing is off and for clients who opted out
+ * of marketing or are archived, whatever actions the rule has.
  */
 import {
   actionsForTrigger,
@@ -26,14 +31,16 @@ import {
   type Role,
   type TemplateVars,
 } from "@crewtavo/core";
+import { daysSinceVisit, type AutomatedCampaign } from "@crewtavo/core/campaigns";
 import { hidesExactPrice } from "@crewtavo/core/estimates";
-import { REFERRAL_GAP_DAYS, REVIEW_GAP_DAYS, textsOff, textsOffReason } from "@crewtavo/core/marketing";
+import { marketingOn, REFERRAL_GAP_DAYS, REVIEW_GAP_DAYS, textsOff, textsOffReason } from "@crewtavo/core/marketing";
 import { countsOn } from "@crewtavo/core/money";
 import type { Env } from "../env";
-import { firstName, isEmail, renderEmail } from "../lib/email";
+import { companyAddress, companyFooter, firstName, isEmail, renderEmail } from "../lib/email";
 import { clientLink } from "../lib/links";
 import { sendEmail, sendSms } from "../lib/notify";
 import { adminClient, type Db } from "../lib/supabase";
+import { CAMPAIGN_LINK_DAYS, campaignRuleOf, letStretchGo, sendCampaignEmail } from "./automatedCampaigns";
 import { logoImage } from "./logo";
 import { sendReferralAsk } from "./referrals";
 import { sendReviewRequest, WaitUntil } from "./reviews";
@@ -91,6 +98,10 @@ export interface RunContext {
   propertyId: string | null;
   /** What started the rule (its trigger), once it's running: some keep to their own rules (sub_offer.*). */
   trigger?: string;
+  /** The automated campaign the rule's email is sent as, once it's running. */
+  campaign?: AutomatedCampaign;
+  /** The run, for recording its campaign email once, and which of its actions this is (from 0). */
+  run?: { id: number; activity_id: number | null; action?: number };
 }
 
 const SUBJECTS: SubjectKind[] = ["client", "request", "quote", "job", "visit", "invoice"];
@@ -107,10 +118,7 @@ export function moneyRange(low: number | string | null | undefined, high: number
   return `${format.format(ends[0]!)} to ${format.format(ends[1]!)}`;
 }
 
-export function companyAddress(address: Record<string, string | undefined> | null | undefined): string {
-  if (!address) return "";
-  return [address.line1, address.line2, [address.city, address.region].filter(Boolean).join(", "), address.postal_code].filter(Boolean).join(", ");
-}
+export { companyAddress, companyFooter };
 
 type Property = { line1: string; city: string | null; region: string | null } | null;
 const addressOf = (p: Property) => (p ? [p.line1, [p.city, p.region].filter(Boolean).join(", ")].filter(Boolean).join(", ") : "");
@@ -123,6 +131,20 @@ async function roofWork(admin: Db, company: CompanyInfo, quoteId: string, sentAs
   if (sentAsRange || isRoofWork(company.trade_preset, null)) return true;
   const { data } = await admin.from("measurements").select("sections, roof_pitch, roofing_squares").eq("company_id", company.id).eq("quote_id", quoteId).order("updated_at", { ascending: false }).limit(1);
   return isRoofWork(company.trade_preset, data?.[0] ?? null);
+}
+
+/** When the client's last visit was: their latest completed job visit or assessment, on a job or a request of theirs. */
+async function lastVisit(admin: Db, companyId: string, clientId: string): Promise<Date | null> {
+  const latest = (rows: Array<{ completed_at: string | null }> | null) => rows?.[0]?.completed_at ?? null;
+  const [onJobs, onRequests] = await Promise.all([
+    admin.from("visits").select("completed_at, job:jobs!inner(client_id)").eq("company_id", companyId).eq("job.client_id", clientId).eq("status", "completed")
+      .in("kind", ["job", "assessment"]).not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1),
+    admin.from("visits").select("completed_at, request:requests!inner(client_id)").eq("company_id", companyId).eq("request.client_id", clientId).is("job_id", null)
+      .eq("status", "completed").in("kind", ["job", "assessment"]).not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1),
+  ]);
+  if (onJobs.error || onRequests.error) throw new Error((onJobs.error ?? onRequests.error)!.message);
+  const times = [latest(onJobs.data), latest(onRequests.data)].filter((t): t is string => Boolean(t)).map((t) => Date.parse(t));
+  return times.length ? new Date(Math.max(...times)) : null;
 }
 
 /** Everything a rule can know about the record it runs on. Null when the record is gone. */
@@ -270,8 +292,11 @@ export async function loadContext(admin: Db, companyId: string, subjectType: str
     client = data ?? null;
     if (subject === "client") {
       if (!client) return null;
-      facts = { status: client.status };
-      vars = { title: client.display_name };
+      // Days since their last visit, in the company's own dates, as client.inactive counts them.
+      const tz = co.timezone || "UTC";
+      const last = await lastVisit(admin, companyId, client.id);
+      facts = { status: client.status, days_since_visit: last ? daysSinceVisit(last, new Date(), tz) : null };
+      vars = { title: client.display_name, last_visit: last ? last.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: tz }) : "" };
       label = client.display_name;
     }
   }
@@ -296,11 +321,21 @@ export async function loadContext(admin: Db, companyId: string, subjectType: str
   };
 }
 
-/** Adds the signed client link ({{link}}) for quotes and invoices. */
+/** Adds the signed client link ({{link}}): a quote's or invoice's Client Hub page, or for a client the Hub's home. */
 async function withLink(env: Env, ctx: RunContext, baseUrl: string | null): Promise<RunContext> {
-  if (!baseUrl || (ctx.subject !== "quote" && ctx.subject !== "invoice")) return ctx;
+  if (!baseUrl || (ctx.subject !== "quote" && ctx.subject !== "invoice" && ctx.subject !== "client")) return ctx;
   const link = await clientLink(env, baseUrl, { c: ctx.company.id, t: ctx.subject, id: ctx.id });
   return { ...ctx, vars: { ...ctx.vars, link } };
+}
+
+/**
+ * {{link}} in a re-engage or win-back email is the client's Client Hub home, where they can ask for
+ * work (a lost quote can't be approved from its page). It lasts a year, as a review link does: campaign
+ * emails are kept and clicked long after a quote's or invoice's would be.
+ */
+async function withHomeLink(env: Env, ctx: RunContext, baseUrl: string | null): Promise<RunContext> {
+  if (!baseUrl || !ctx.client) return ctx;
+  return { ...ctx, vars: { ...ctx.vars, link: await clientLink(env, baseUrl, { c: ctx.company.id, t: "client", id: ctx.client.id }, CAMPAIGN_LINK_DAYS) } };
 }
 
 /**
@@ -331,10 +366,6 @@ export async function buildContext(env: Env, admin: Db, companyId: string, subje
 }
 
 const render = (template: string | undefined, ctx: RunContext) => renderTemplate(template ?? "", ctx.vars).trim();
-
-function companyFooter(company: CompanyInfo) {
-  return [company.name, companyAddress(company.address)].filter(Boolean).join(" · ");
-}
 
 /**
  * Whoever of these the trigger lets hear about it: for a sub's offer (its price), only the office with
@@ -391,6 +422,8 @@ export async function performAction(env: Env, admin: Db, ctx: RunContext, action
       return `Notified ${people.length} ${people.length === 1 ? "person" : "people"}`;
     }
     case "send_email": {
+      // An automated campaign's email goes as one, tracked (Close pending quotes as it always has without APP_URL).
+      if (ctx.campaign && (ctx.campaign.marketing || baseUrl)) return sendCampaignEmail(env, admin, ctx, action, baseUrl);
       if (!client) throw new Error("There's no client on this record.");
       if (!isEmail(client.email)) throw new Error(`${client.display_name} has no email address.`);
       const subject = render(action.subject, ctx);
@@ -512,14 +545,35 @@ async function renew(admin: Db, run: RunRow, results: ActionResult[]) {
   return data === true;
 }
 
+/**
+ * Skips a run called off by its rule being turned off or Marketing uninstalled after this worker
+ * claimed it, when the database's own calling off (only of runs still waiting) missed it. A
+ * client.inactive run lets the client's stretch go then too, so they're emailed once it's back on.
+ */
+async function calledOff(admin: Db, run: RunRow, inactive: boolean, why: string) {
+  const outcome = await finish(admin, run, "skipped", [], why);
+  if (inactive && outcome !== "lost") await letStretchGo(admin, run.id);
+  return outcome;
+}
+
 export async function executeRun(env: Env, admin: Db, run: RunRow, baseUrl: string | null): Promise<"done" | "skipped" | "failed" | "waiting" | "lost"> {
   try {
-    const { data: rule } = await admin.from("automation_rules").select("id, name, trigger, enabled, conditions, actions, run_count").eq("id", run.rule_id).maybeSingle();
-    if (!rule || !rule.enabled) return finish(admin, run, "skipped", [], "The rule was turned off or deleted.");
+    const { data: rule } = await admin.from("automation_rules").select("id, name, trigger, enabled, conditions, actions, run_count, template_key").eq("id", run.rule_id).maybeSingle();
+    if (!rule || !rule.enabled) return calledOff(admin, run, rule?.trigger === "client.inactive", "The rule was turned off or deleted.");
     if (!run.subject_type || !run.subject_id) return finish(admin, run, "skipped", [], "There was nothing to act on.");
     const loaded = await buildContext(env, admin, run.company_id, run.subject_type, run.subject_id, baseUrl);
     if (!loaded) return finish(admin, run, "skipped", [], "The record was deleted.");
-    const ctx = { ...(await withEvent(admin, loaded, rule.trigger, run.activity_id)), trigger: rule.trigger };
+    const campaign = campaignRuleOf(rule) ?? undefined;
+    let ctx: RunContext = { ...(await withEvent(admin, loaded, rule.trigger, run.activity_id)), trigger: rule.trigger, campaign, run: { id: run.id, activity_id: run.activity_id ?? null } };
+    // A marketing campaign's run does nothing at all (an action a business added, a text, included)
+    // while Marketing is off, or for a client who unsubscribed from marketing or is archived.
+    if (campaign?.marketing) {
+      const who = ctx.client;
+      if (!marketingOn(ctx.company.settings)) return calledOff(admin, run, campaign.key === "reengage", "Marketing is off");
+      if (who?.marketing_opt_out) return finish(admin, run, "skipped", [], `${who.display_name} unsubscribed from marketing`);
+      if (who?.status === "archived") return finish(admin, run, "skipped", [], `${who.display_name} is archived`);
+    }
+    if (campaign?.marketing) ctx = await withHomeLink(env, ctx, baseUrl);
     // The actions this trigger takes (a sub's offer: notices to the office and tasks), whatever the
     // rule says: a rule written straight to the database doesn't get to text the client a sub's price.
     // A status change is checked by the action itself, as the rule screen checks it.
@@ -528,7 +582,13 @@ export async function executeRun(env: Env, admin: Db, run: RunRow, baseUrl: stri
     const fitsTrigger = (action: Action) => (action.type === "update_status" ? !def?.actions || def.actions.includes("update_status") : fits.has(action.type));
 
     const check = evaluateConditions((rule.conditions ?? []) as unknown as Condition[], ctx.facts, ctx.subject);
-    if (!check.pass) return finish(admin, run, "skipped", [], `Conditions not met: ${(check.failed ?? "").charAt(0).toLowerCase()}${(check.failed ?? "").slice(1)}.`);
+    if (!check.pass) {
+      const outcome = await finish(admin, run, "skipped", [], `Conditions not met: ${(check.failed ?? "").charAt(0).toLowerCase()}${(check.failed ?? "").slice(1)}.`);
+      // A client.inactive run's client changed since it was queued (a tag taken off): their stretch is
+      // let go, so they're emailed if they meet the rule again before their next visit.
+      if (rule.trigger === "client.inactive" && outcome !== "lost") await letStretchGo(admin, run.id);
+      return outcome;
+    }
 
     const prior = Array.isArray(run.result) ? (run.result as ActionResult[]) : [];
     const results: ActionResult[] = [];
@@ -549,7 +609,7 @@ export async function executeRun(env: Env, admin: Db, run: RunRow, baseUrl: stri
       if (acted && !(await renew(admin, run, results))) return "lost";
       acted = true;
       try {
-        const done = await performAction(env, admin, ctx, action, rule.name, baseUrl);
+        const done = await performAction(env, admin, { ...ctx, run: { ...ctx.run!, action: i } }, action, rule.name, baseUrl);
         results.push(done instanceof Skip ? { type: action.type, ok: true, skipped: true, detail: done.detail } : { type: action.type, ok: true, detail: done });
       } catch (error) {
         // Not yet: the run waits with what's done so far, and this action and the ones after it go

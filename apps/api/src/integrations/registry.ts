@@ -88,7 +88,7 @@ export const CATALOG: CatalogEntry[] = [
     id: "marketing",
     name: "Crewtavo - Marketing",
     category: "Team",
-    description: "Ask happy clients for Google reviews with reminders, and for referrals with a credit on their next invoice, and send email campaigns.",
+    description: "Ask happy clients for Google reviews with reminders, and for referrals with a credit on their next invoice, and send email campaigns, automated ones too, with opens, clicks and the work they bring in.",
     auth: "builtin",
     docs: "https://crewtavo.com/docs/connections/marketing/",
     available: () => true,

@@ -4,13 +4,20 @@
  * recipient's outcome is recorded. Nothing goes while the company has Marketing uninstalled:
  * uninstalling puts its scheduled campaigns back to drafts and stops ones sending
  * (public.marketing_set_enabled), so installing it again sends nothing late.
+ *
+ * Each email's links go through the recipient's own tracked links, and it carries their tracking
+ * image (services/automatedCampaigns.ts trackedLinks), so the campaign's opens, clicks and the work
+ * it brought in can be counted. {{link}} is the client's Client Hub home, where they can ask for work
+ * (a link that lasts a year, and a "Request work" button on a line of its own).
  */
 import { renderTemplate } from "@crewtavo/core";
+import { HUB_HOME_BUTTON, trackableLinks } from "@crewtavo/core/campaigns";
 import type { Env } from "../env";
 import { firstName, renderEmail } from "../lib/email";
 import { clientLink } from "../lib/links";
 import { emailReady, sendEmail } from "../lib/notify";
 import { adminClient, type Db } from "../lib/supabase";
+import { CAMPAIGN_LINK_DAYS, trackedLinks } from "./automatedCampaigns";
 import { companyAddress } from "./automations";
 import { logoImage } from "./logo";
 
@@ -108,19 +115,27 @@ export async function processCampaigns(env: Env, options: { campaignId?: string;
           skipped++;
           continue;
         }
-        const vars = { client: { first_name: firstName(r.name), name: r.name ?? "" }, company: { name: company.name, phone: company.phone ?? "" } };
+        const vars = {
+          client: { first_name: firstName(r.name), name: r.name ?? "" },
+          company: { name: company.name, phone: company.phone ?? "" },
+          link: await clientLink(env, baseUrl, { c: campaign.company_id, t: "client", id: r.client_id }, CAMPAIGN_LINK_DAYS),
+        };
         const unsubscribe = await clientLink(env, baseUrl, { c: campaign.company_id, t: "unsub", id: r.client_id });
+        const text = renderTemplate(campaign.body, vars);
+        const links = trackableLinks(text);
         const email = renderEmail({
           companyName: company.name,
           logo: logoImage(baseUrl, campaign.company_id, company.settings),
-          text: renderTemplate(campaign.body, vars),
+          text,
           footer: [company.name, companyAddress(company.address)].filter(Boolean).join(" · "),
           unsubscribeUrl: unsubscribe,
+          ...trackedLinks(baseUrl, r.track_token, links),
+          buttons: { [vars.link]: HUB_HOME_BUTTON },
         });
-        // The claim is renewed right before each email. A slow mail server can take minutes per
-        // message, so a batch can outlast its claim; by now another run may have claimed this
-        // recipient, and then it's theirs to email.
-        const { data: held, error: renewError } = await admin.rpc("renew_campaign_recipient", { p_id: r.id, p_token: token });
+        // The claim is renewed right before each email, with the links it carries (its tracked links
+        // go only to these). A slow mail server can take minutes per message, so a batch can outlast
+        // its claim; by now another run may have claimed this recipient, and then it's theirs to email.
+        const { data: held, error: renewError } = await admin.rpc("renew_campaign_recipient", { p_id: r.id, p_token: token, p_links: links });
         if (renewError) {
           await release(admin, token, rest(index));
           break;

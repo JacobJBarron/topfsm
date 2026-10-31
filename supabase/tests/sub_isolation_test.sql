@@ -487,14 +487,15 @@ select t1070.check(array(
   select p.proname || '(' || oidvectortypes(p.proargtypes) || ')' from pg_proc p join pg_namespace n on n.oid = p.pronamespace
   where n.nspname = 'public' and has_function_privilege('authenticated', p.oid, 'execute') order by 1) = array[
   'accept_terms(uuid, text)', 'answer_sub_offer(uuid, boolean, text, integer, uuid)', 'apply_promo_code(text, uuid, text, uuid, uuid[])',
-  'apply_quote_options(uuid, jsonb, text, uuid[], jsonb)', 'apply_referral_credit(uuid, uuid)', 'campaign_audience(uuid, jsonb)', 'careers_set_enabled(uuid, boolean)',
+  'apply_quote_options(uuid, jsonb, text, uuid[], jsonb)', 'apply_referral_credit(uuid, uuid)', 'automated_campaign_states(uuid)', 'campaign_audience(uuid, jsonb)', 'campaign_audience_choices(uuid)',
+  'campaign_recipient_results(uuid, integer, integer, text)', 'campaign_results(uuid, uuid)', 'careers_set_enabled(uuid, boolean)',
   'change_sub_offer(uuid, jsonb, timestamp with time zone)', 'chat_create_channel(uuid, text, text, text, text, uuid)', 'chat_mark_read(uuid)', 'chat_members(uuid)', 'chat_overview(uuid)',
   'chat_save_roles(uuid, jsonb, jsonb)', 'chat_set_enabled(uuid, boolean)', 'company_basics(uuid)', 'convert_quote_to_job(uuid)',
   'create_company(text, text, text)', 'create_invoice_for_job(uuid, text, numeric)', 'dashboard(uuid)',
   'drive_clients(uuid, text, integer)', 'drive_list(uuid, text, uuid, text, integer)', 'drive_restore(text, uuid)', 'drive_root(uuid)',
   'drive_set_enabled(uuid, boolean)', 'drive_trash(uuid)', 'drive_trash_file(uuid)', 'drive_trash_folder(uuid)', 'drive_trash_version(uuid)',
   'drive_versions(uuid)', 'duplicate_quote(uuid)',
-  'equipment_conflicts(uuid, uuid[], date, timestamp with time zone, timestamp with time zone, uuid)', 'global_search(uuid, text, integer)',
+  'equipment_conflicts(uuid, uuid[], date, timestamp with time zone, timestamp with time zone, uuid)', 'global_search(uuid, text, integer)', 'inactive_client_count(uuid, integer)',
   'job_material_costs(uuid)', 'job_pay_accept(uuid, uuid[])', 'job_pay_cancel(uuid)', 'job_pay_costs(uuid[])', 'job_pay_covers(uuid, uuid, uuid)', 'job_pay_mark_done(uuid, date)',
   'job_pay_mark_paid(uuid[], text, date, text, numeric)', 'job_pay_start(uuid, uuid, uuid, uuid[])', 'job_pay_suggest(uuid, uuid, uuid, uuid[])',
   'job_pay_unmark_paid(uuid[])', 'job_scope(uuid)', 'last_referral_ask(uuid, uuid)', 'last_review_ask(uuid, uuid)', 'marketing_set_enabled(uuid, boolean)', 'marketing_summary(uuid)', 'material_choices(uuid)', 'my_crew_ids(uuid)', 'my_sub_offers(boolean, uuid)', 'my_sub_pay_totals(uuid)',
@@ -602,6 +603,12 @@ select t1070.expect_error(format('select public.referral_no_reward(%L)', gen_ran
 select t1070.expect_error(format('select public.referral_give_credit(%L)', gen_random_uuid()), 'referral_give_credit refuses');
 select t1070.expect_error(format('select public.referral_stats(%L)', :'co'), 'referral_stats refuses');
 select t1070.check(not exists (select 1 from public.referral_credits_for(:'co', :'c1')), 'referral_credits_for finds nothing');
+-- Campaigns' results, and who a campaign would reach, are the office's too.
+select t1070.expect_error(format('select public.campaign_results(%L)', :'co'), 'campaign_results refuses');
+select t1070.expect_error(format('select public.campaign_recipient_results(%L)', gen_random_uuid()), 'campaign_recipient_results refuses');
+select t1070.expect_error(format('select public.inactive_client_count(%L, 365)', :'co'), 'inactive_client_count refuses');
+select t1070.expect_error(format('select public.automated_campaign_states(%L)', :'co'), 'automated_campaign_states refuses');
+select t1070.check(public.campaign_audience_choices(:'co') = '{"cities": [], "services": []}', 'campaign_audience_choices finds nothing');
 select t1070.check((select (public.marketing_summary(:'co') ->> 'opted_out')::int = 0
   and public.last_referral_ask(:'co', :'c1') is null and public.marketing_summary(:'co') -> 'referral_revenue' = 'null'::jsonb
   and public.last_review_ask(:'co', :'c1') is null

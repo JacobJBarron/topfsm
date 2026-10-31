@@ -52,7 +52,8 @@ const ANA: Row = {
 };
 const REFERRALS = { reward: { kind: "amount", value: 50 }, offer: "10% off your first mow" };
 const companyRow = (settings: Row = {}): Row => ({
-  id: CO, name: "Acme Lawn", phone: "555-0100", email: "office@acme.example", website: null, timezone: "America/New_York", currency: "USD", trade_preset: "lawn_care", address: {},
+  id: CO, name: "Acme Lawn", phone: "555-0100", email: "office@acme.example", website: null, timezone: "America/New_York", currency: "USD", trade_preset: "lawn_care",
+  address: { line1: "1 Main St", city: "Radford", region: "VA", postal_code: "24141" },
   settings: { marketing: { enabled: true }, referrals: REFERRALS, ...settings },
 });
 
@@ -171,6 +172,9 @@ describe("an automatic referral ask", () => {
     expect(message.text).toContain("For your friends: “10% off your first mow”\nYou'll get a $50 credit on your next invoice once they pay their first one.");
     expect(message.headers?.["List-Unsubscribe"]).toMatch(/^<https:\/\/ops\.example\.com\/api\/public\/unsubscribe\//);
     expect(message.headers?.["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
+    // A marketing email carries the company's postal address, as campaigns do.
+    expect(message.text).toContain("Acme Lawn · 1 Main St, Radford, VA, 24141");
+    expect(message.html).toContain("Acme Lawn · 1 Main St, Radford, VA, 24141 · <a href=\"https://ops.example.com/u/");
     expect(writes(calls, "POST", "messages").map((c) => [c.body.channel, c.body.subject, c.body.related_type, c.body.related_id])).toEqual([["email", "Referral ask", "referral_ask", "ra-1"]]);
     expect(writes(calls, "PATCH", "referral_asks")).toEqual([]);
   });
