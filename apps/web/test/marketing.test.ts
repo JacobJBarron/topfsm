@@ -15,7 +15,26 @@ import { ASK_CONDITIONS, DEFAULT_REFERRAL_MESSAGE, referralSettings } from "@cre
 import { ROLES, STAFF } from "@crewtavo/core/roles";
 import { describe, expect, it } from "vitest";
 import { NAV_GROUPS, navVisible } from "../src/components/shell/nav";
-import { APP_INFO } from "../src/features/apps/catalog";
+import { APP_INFO, CATEGORY_LABELS, MORE_LABELS } from "../src/features/apps/catalog";
+import {
+  canReply,
+  canSync,
+  countHint,
+  filterReviews,
+  filtersOn,
+  hasNumbers,
+  initials,
+  locationSavedWords,
+  NO_FILTERS,
+  problemCopy,
+  progressWords,
+  rankSuggestions,
+  repliedWords,
+  showsList,
+  tooSoon,
+  type GoogleState,
+} from "../src/features/marketing/googleReviewData";
+import { ApiError } from "../src/lib/errors";
 import { askBody, askRules, daysInOrder, type AskRuleRow } from "../src/features/marketing/askForm";
 import {
   automatedBody,
@@ -542,5 +561,293 @@ describe("the Referrals tab's credit, offer and email", () => {
     const tab = source("../src/features/marketing/Referrals.tsx");
     expect(tab).toContain("<EntityStatus kind={pill.kind} status={pill.status} />");
     expect(source("../src/components/ui/StatusPill.tsx")).toContain('credit: { pending: "Pending", earned: "Earned", applied: "Applied", issued: "Given", none: "No credit" }');
+  });
+});
+
+describe("Google Business Profile in Apps", () => {
+  it("is a Marketing app that shows reviews in Marketing, and says what it can't do", () => {
+    const info = APP_INFO.google_business!;
+    expect([CATEGORY_LABELS.Marketing, MORE_LABELS.Marketing]).toEqual(["Marketing", "More marketing apps"]);
+    expect(info.tagline).toBe("Your Google reviews in Crewtavo");
+    expect(info.open).toBe("/marketing?tab=reviews");
+    expect(info.highlights.map((h) => h.title)).toEqual(["Reviews in Marketing", "Reply with a suggestion", "Asks stop once they've reviewed"]);
+    expect(info.access).toEqual(expect.arrayContaining([
+      "Post, change and delete the replies you write here, publicly on Google",
+      "It can't change or remove your reviews",
+      "Needs Crewtavo - Marketing",
+      "Uninstalling stops bringing reviews in and keeps the ones already here",
+    ]));
+    // Google's own pages until Crewtavo's docs page is written.
+    expect(info.website).toBe("https://www.google.com/business/");
+    expect(source("../src/features/apps/AppIcon.tsx")).toContain("google_business: googleBusinessLogo");
+    expect(APPS.keywords).toContain("google reviews google business profile");
+  });
+
+  it("waits for Marketing, and never signs in straight from Install: Google's access request comes first", () => {
+    const page = source("../src/features/apps/AppDetailPage.tsx");
+    expect(page).toContain("Install Crewtavo - Marketing first: your Google reviews show in Marketing → Reviews.");
+    expect(page).toContain('app.id !== "google_calendar" && app.id !== "google_business" && !keysFirst(app)');
+    expect(page).toContain('{ label: "Waiting on Google", tone: "warning" }');
+    expect(page).toContain('{ label: "Paused", tone: "warning" }');
+    expect(page).toContain("Also remove the {count.toLocaleString(\"en-US\")} {count === 1 ? \"review\" : \"reviews\"} brought in (asks start again for clients they matched)");
+    const panel = source("../src/features/apps/GoogleBusinessPanel.tsx");
+    const before = panel.slice(panel.indexOf("export function GoogleBeforeSignIn"));
+    expect(before.indexOf("GOOGLE_ACCESS_FORM")).toBeLessThan(before.indexOf("Sign in with Google"));
+    expect(panel).toContain("Marketing is off, so reviews aren't brought in and replies can't be posted. Reviews already here are kept.");
+    expect(panel).toContain("Crewtavo brings in one location's reviews.");
+    expect(panel).toContain("asks start again for the clients they matched");
+    // Signed in with no location in use, the picker shows: also after reconnecting to an account
+    // without the location the kept reviews came from, or one with no Business Profile at all.
+    expect(panel).toContain('const pick = listable && (picking || problem === "pick" || !g.location);');
+    expect(panel).toContain("if (kept && kept !== chosen.location && reviewCount > 0)");
+    expect(panel).toContain("Sign in with another Google account");
+    expect(page).toContain('(pending === "pick" && app.google_business?.problem_detail === "none")');
+    // A business's own Google app: Google's form comes before the keys, and its own approval is said.
+    const keys = source("../src/features/apps/AppKeysCard.tsx");
+    const steps = keys.slice(keys.indexOf("export function GoogleSteps"));
+    expect(steps.indexOf("GOOGLE_ACCESS_FORM")).toBeLessThan(steps.indexOf("Client secret"));
+    expect(keys).toContain("even if this server's project is approved already");
+    expect(steps).toContain("In production");
+    // With no Google app of the server's, the own-app card is the only way in and says so.
+    const intro = keys.slice(keys.indexOf("function googleIntro"), keys.indexOf("function IntuitSteps"));
+    expect(intro).toContain("if (app.available && !app.app_keys)");
+    expect(intro).toContain("Google Business Profile connects through a Google Cloud project you make for your business.");
+  });
+
+  it("has one setup anchor, says the wait one way, and doesn't repeat the callout when back from signing in", () => {
+    const page = source("../src/features/apps/AppDetailPage.tsx");
+    expect(page).toContain("connecting={connect.isPending} anchor={false} />");
+    expect(page).toContain('anchor={app.id !== "google_business"}');
+    expect(source("../src/features/apps/AppKeysCard.tsx")).toContain('const setupId = anchor ? "app-setup" : undefined;');
+    for (const file of ["../src/features/apps/GoogleBusinessPanel.tsx", "../src/features/apps/AppKeysCard.tsx", "../src/features/apps/catalog.ts", "../src/features/marketing/GoogleReviews.tsx", "../src/features/marketing/googleReviewData.ts"]) {
+      expect(source(file), file).not.toMatch(/about (two weeks|14 days)/);
+    }
+    expect(source("../src/features/apps/GoogleBusinessPanel.tsx")).toContain("You can sign in before Google approves");
+    expect(page).toContain('if (pending === "approval") return "Reviews start coming in once Google approves access.";');
+    expect(page).not.toContain("Signed in. Google hasn't approved");
+  });
+
+  it("offers nothing that can't work yet: no Open while paused, no location or link offer while signed out, a status while Google errs", () => {
+    const page = source("../src/features/apps/AppDetailPage.tsx");
+    expect(page).toContain('const opens = !(app.id === "google_business" && app.google_business?.marketing_on === false);');
+    expect(page).toContain('{ label: "Not syncing", tone: "warning" }');
+    const panel = source("../src/features/apps/GoogleBusinessPanel.tsx");
+    expect(panel).toContain('{listable && <Button size="sm" onClick={() => setPicking(true)}>Change location</Button>}');
+    expect(panel).toContain('{g.review_url?.suggested && g.location && app.status === "connected" && <ReviewLinkOffer');
+    expect(panel).toContain("{g.review_count && g.marketing_on ?");
+    expect(panel).toContain("{!waiting && <Button");
+  });
+
+  it("says Google hasn't approved access the same way on the app page and the Reviews tab, with Google's form", () => {
+    const panel = source("../src/features/apps/GoogleBusinessPanel.tsx");
+    expect(panel).toContain("APPROVAL_MESSAGE");
+    expect(panel).toContain('href={GOOGLE_ACCESS_FORM}');
+    expect(panel).toContain("Project number:");
+    expect(source("../src/features/marketing/GoogleReviews.tsx")).toContain("<ApprovalCallout");
+  });
+});
+
+describe("Google reviews on the Reviews tab", () => {
+  const g = (over: Partial<GoogleState> = {}): GoogleState => ({
+    state: "ok", marketing_on: true, can_connect: true, available: true, location: { id: "locations/9", title: "Radford Lawn Care", address: null, maps_uri: null },
+    problem_detail: null, problem_message: null, next_sync_at: null, last_synced_at: null, first_synced_at: "2026-10-01T00:00:00Z", syncing: false, progress: null,
+    google: { average_rating: 4.7, total_reviews: 120 }, reviews: 118, review_link: { current: null, suggested: null }, own_app: false, project_number: "123456789012", ...over,
+  });
+
+  it("filters the list the way the query reads it", () => {
+    const calls: string[] = [];
+    const builder = { eq: (c: string, v: unknown) => (calls.push(`eq ${c} ${v}`), builder), is: (c: string, v: unknown) => (calls.push(`is ${c} ${v}`), builder), not: (c: string, o: string, v: unknown) => (calls.push(`not ${c} ${o} ${v}`), builder) };
+    filterReviews(builder, { needsReply: true, stars: 2, matched: "unmatched", client: null });
+    expect(calls).toEqual(["is reply_comment null", "eq rating 2", "is client_id null"]);
+    calls.length = 0;
+    filterReviews(builder, { ...NO_FILTERS, matched: "matched", client: "c1" });
+    expect(calls).toEqual(["not client_id is null", "eq client_id c1"]);
+    expect([filtersOn(NO_FILTERS), filtersOn({ ...NO_FILTERS, stars: 5 })]).toEqual([false, true]);
+  });
+
+  it("tells office staff who can act, and admins what to do", () => {
+    const waiting = g({ state: "approval", problem_message: "Google hasn't approved this server's access to reviews yet." });
+    expect(problemCopy(waiting, "UTC")!.body).toContain("Whoever owns this server's Google Cloud project");
+    expect(problemCopy({ ...waiting, own_app: true }, "UTC")!.body).toContain("your Google app's Google Cloud project");
+    expect(problemCopy({ ...waiting, can_connect: false }, "UTC")!.body).toBe("Review asks keep working meanwhile. An owner or admin can request access in Apps.");
+    expect(problemCopy(g({ state: "signin", can_connect: false }), "UTC")!.body).toBe("An owner or admin can reconnect it in Apps.");
+    expect(problemCopy(g({ state: "error", problem_message: "Reviews couldn't be brought in: Internal error.", next_sync_at: "2026-10-31T19:30:00Z" }), "America/New_York")!.body).toBe("Crewtavo tries again at 3:30 PM.");
+    expect(problemCopy(g(), "UTC")).toBeNull();
+  });
+
+  it("gives owners and admins a way back to Apps for each problem, and says who can act otherwise", () => {
+    expect(problemCopy(g({ state: "location", problem_message: "x" }), "UTC")!.link).toBe("Open in Apps");
+    expect(problemCopy(g({ state: "location", problem_message: "x", can_connect: false }), "UTC")!.link).toBeNull();
+    // Disconnected with the reviews kept: connecting again, or who can.
+    const off = g({ state: "disconnected" });
+    expect(problemCopy(off, "UTC")).toMatchObject({ link: "Connect Google Business Profile", body: "The reviews already here stay, and keep their clients from being asked again." });
+    expect(problemCopy({ ...off, can_connect: false }, "UTC")).toMatchObject({ link: null, body: "The reviews already here stay, and keep their clients from being asked again. Ask an owner or admin to connect it in Apps." });
+    // A Google account with no Business Profile has nothing to pick: another account signs in.
+    const none = g({ state: "pick", problem_detail: "none", problem_message: "The Google account signed in doesn't manage a Business Profile." });
+    expect(problemCopy(none, "UTC")).toMatchObject({ tone: "warning", body: "Sign in with the Google account that manages it, in Apps → Google Business Profile.", link: "Open in Apps" });
+    expect(problemCopy({ ...none, can_connect: false }, "UTC")!.body).toBe("An owner or admin can sign in with the Google account that manages it, in Apps.");
+    expect(problemCopy(g({ state: "pick" }), "UTC")!.body).toBe("Pick it in Apps → Google Business Profile.");
+    const tab = source("../src/features/marketing/GoogleReviews.tsx");
+    expect(tab).toContain('{copy.link && <Link to="/apps/google_business" style={{ fontWeight: 400 }}>{copy.link}</Link>}');
+  });
+
+  it("shows the numbers only once there's something to count, and says where the count is from", () => {
+    const waiting = g({ state: "approval", first_synced_at: null, google: { average_rating: null, total_reviews: null }, reviews: 0 });
+    expect([hasNumbers(waiting), hasNumbers(g({ state: "not_connected" })), hasNumbers(undefined)]).toEqual([false, false, false]);
+    expect([hasNumbers(g()), hasNumbers({ ...waiting, reviews: 3 }), hasNumbers({ ...waiting, google: { average_rating: 4.8, total_reviews: 130 } })]).toEqual([true, true, true]);
+    expect(countHint(g(), 0)).toBe("On Google");
+    expect(countHint(g({ google: { average_rating: null, total_reviews: null } }), 0)).toBe("Brought in from Google");
+    expect(countHint(g(), 4)).toBe("4 not matched to a client");
+  });
+
+  it("checks back often only while a sync runs, not while it waits on Google or a person", () => {
+    // The server gives no progress while something's in the way (apps/api/test/googleReviews.test.ts).
+    expect(source("../src/features/marketing/GoogleReviews.tsx")).toContain("refetchInterval: (q) => (q.state.data?.syncing ? 5000 : q.state.data?.progress ? 30_000 : false)");
+  });
+
+  it("says reviews are on their way only when they are", () => {
+    expect(locationSavedWords({ syncing: true })).toBe("Location saved. Your reviews are on their way.");
+    expect(locationSavedWords({ syncing: false })).toBe("Location saved.");
+    expect(source("../src/features/apps/GoogleBusinessPanel.tsx")).toContain("meta: { inline: true, success: locationSavedWords }");
+  });
+
+  it("says how far the first sync has got, who replied, and whose names fit", () => {
+    expect(progressWords({ seen: 250, total: 1240 })).toBe("Bringing in your reviews: 250 of 1,240");
+    expect(progressWords({ seen: 50, total: null })).toBe("Bringing in your reviews: 50 so far");
+    expect(repliedWords({ reply_updated_at: new Date().toISOString(), replied_by: null }, new Map())).toBe("Replied on Google just now");
+    expect(repliedWords({ reply_updated_at: new Date().toISOString(), replied_by: "u1" }, new Map([["u1", "Mia"]]))).toBe("Replied just now by Mia");
+    expect(initials("Ana Smith")).toBe("AS");
+    const clients = [{ id: "1", display_name: "Ana Stone" }, { id: "2", display_name: "Anabel Ruiz" }, { id: "3", display_name: "Ana Smith" }];
+    expect(rankSuggestions({ name: "Ana Smith", anonymous: false }, clients).map((c) => c.id)).toEqual(["3", "1", "2"]);
+    expect(rankSuggestions({ name: "Ana S.", anonymous: false }, clients).map((c) => c.id)).toEqual(["1", "3", "2"]);
+  });
+
+  it("keeps the ask settings first, and the list under them, whether or not Google is connected", () => {
+    const tab = source("../src/features/marketing/Reviews.tsx");
+    const body = tab.slice(tab.indexOf("export function Reviews()"), tab.indexOf("/** A starter rule changed"));
+    expect(body.indexOf("<AskAutomatically")).toBeLessThan(body.indexOf("<GoogleReviewList"));
+    expect(body).toContain("<ReviewLink google={g} />");
+    expect(body).toContain("<AskNow />");
+    expect(body).toContain("{showsList(g) && <GoogleReviewList g={g!} />}");
+    expect(body).toContain("const numbers = hasNumbers(g) && <GoogleNumbers g={g!} stats={stats} />;");
+    // Across the top on a wide screen; on a phone, under the forms and just above the list.
+    expect(body.indexOf("{!stacked && numbers}")).toBeLessThan(body.indexOf("<AskAutomatically"));
+    expect(body.indexOf("{stacked && numbers}")).toBeGreaterThan(body.indexOf("<AskNow />"));
+    expect(body.indexOf("{stacked && numbers}")).toBeLessThan(body.indexOf("<GoogleReviewList"));
+    expect(tab).toContain('const STACKED = "(max-width: 900px)";');
+    expect(source("../src/features/marketing/GoogleReviews.tsx")).toContain("Ask an owner or admin to connect it in Apps.");
+  });
+
+  it("shows one average, Google's, and charts only counts", () => {
+    const reviews = source("../src/features/marketing/GoogleReviews.tsx");
+    expect(reviews).toContain("const average = g.google.average_rating ?? s.average;");
+    expect(source("../src/features/marketing/ReviewTrend.tsx")).toContain("values={trend.map((m) => m.count)}");
+  });
+
+  it("confirms a reply before it goes on Google, an edit too, and counts its characters", () => {
+    const reviews = source("../src/features/marketing/GoogleReviews.tsx");
+    expect(reviews).toContain('updating ? "Update your reply on Google?" : "Post this reply on Google?"');
+    expect(reviews).toContain("Everyone can read it on Google");
+    expect(reviews).toContain("REPLY_MAX.toLocaleString");
+    expect(reviews).toContain("An admin can add a Claude key on the Apps page to draft replies.");
+    expect(reviews).toContain('referrerPolicy="no-referrer"');
+  });
+
+  it("opens the review a notification links to, and one client's reviews from their page", () => {
+    const reviews = source("../src/features/marketing/GoogleReviews.tsx");
+    expect(reviews).toContain('params.get("review")');
+    expect(reviews).toContain('params.get("client")');
+    expect(reviews).toContain("Show all reviews");
+    expect(source("../src/features/clients/ClientPage.tsx")).toContain("/marketing?tab=reviews&client=${clientId}");
+    // The reply opens when the notification's review turns up after the list, a cached one too.
+    const reply = reviews.slice(reviews.indexOf("function Reply("));
+    expect(reply).toMatch(/useEffect\(\(\) => \{\s+if \(open\) setEditing\(true\);\s+\}, \[open\]\);/);
+    // See their review on the Reviews tab itself changes the list: ?client= follows the address.
+    const list = reviews.slice(reviews.indexOf("export function GoogleReviewList"));
+    expect(list).toMatch(/setFilters\(\{ \.\.\.NO_FILTERS, client: forClientParam \}\);[\s\S]*\}, \[forClientParam\]\);/);
+  });
+
+  it("gives a review's words and reply the row's whole width beside the photo, on a phone too", () => {
+    const reviews = source("../src/features/marketing/GoogleReviews.tsx");
+    const row = reviews.slice(reviews.indexOf("function ReviewRow("), reviews.indexOf("function Reply("));
+    // The status and the menu are on the name's line, inside the column, not columns of their own.
+    expect(row.indexOf("<EntityStatus")).toBeGreaterThan(row.indexOf("<strong>{name}</strong>"));
+    expect(row.indexOf("<Menu")).toBeLessThan(row.indexOf("{text && ("));
+    expect(row.lastIndexOf("</div>\n    </div>\n  );")).toBeGreaterThan(row.indexOf("<Reply"));
+  });
+
+  it("never calls a reviewer Google sent without a name null", () => {
+    const reviews = source("../src/features/marketing/GoogleReviews.tsx");
+    expect(reviews).not.toContain("${r.reviewer_name}'s review");
+    expect(reviews).not.toContain("${review.reviewer_name}'s review");
+    expect(reviews).toContain('under {reviewer ? `${reviewer}\'s review` : "the review"}');
+    expect(reviews).toContain('`Who left ${reviewer ? `${reviewer}\'s review` : "this review"}?');
+  });
+
+  it("reads whether a client already left a review wherever asks are offered", () => {
+    for (const page of ["../src/features/jobs/JobPage.tsx", "../src/features/clients/ClientPage.tsx", "../src/features/marketing/Reviews.tsx"]) {
+      expect(source(page), page).toContain("sms_opt_out_at, reviewed_at");
+    }
+    expect(source("../src/features/marketing/Reviews.tsx")).toContain("reminder_error, reviewed_at, client:clients");
+  });
+
+  it("offers the Google reviews notification to everyone it reaches, while Marketing is on", () => {
+    // Who that is: packages/core/test/subOffers.test.ts (reviewNoticesFor).
+    const settings = source("../src/features/settings/NotificationSettings.tsx");
+    expect(settings).toContain('(t.key !== "reviews" || reviews)');
+    expect(settings).toContain("reviewNoticesFor(session, marketingOn(session.company.settings))");
+    expect(settings).toContain('t.key === "reviews" && reviews === "access" ? { ...t, hint: REVIEW_ACCESS_HINT }');
+  });
+
+  it("offers Sync now and replies only when they can work, and says a second Sync now is too soon as news", () => {
+    for (const state of ["approval", "not_enabled", "signin", "disconnected"] as const) {
+      expect([canSync(g({ state })), canReply(g({ state }))], state).toEqual([false, false]);
+    }
+    for (const state of ["ok", "error", "location", "pick"] as const) expect([canSync(g({ state })), canReply(g({ state }))], state).toEqual([true, true]);
+    expect([tooSoon(new ApiError("Google was checked a moment ago.", 429)), tooSoon(new ApiError("Marketing is off", 409)), tooSoon(new Error("x"))]).toEqual([true, false, false]);
+    const panel = source("../src/features/apps/GoogleBusinessPanel.tsx");
+    expect(panel).toContain('meta: { inline: true, success: "Checking Google for new reviews" }');
+    expect(panel).toContain("if (tooSoon(error)) toast.info((error as Error).message);");
+    const reviews = source("../src/features/marketing/GoogleReviews.tsx");
+    expect(reviews).toContain("{canSync(g) && <Button");
+    expect(reviews).toContain("<FormError error={tooSoon(sync.error) ? null : sync.error} />");
+    expect(reviews).not.toContain("Bringing in your reviews\")");
+  });
+
+  it("lists reviews once there are some or they're on their way, and filters only what's there", () => {
+    const waiting = g({ state: "approval", first_synced_at: null, google: { average_rating: null, total_reviews: null }, reviews: 0, progress: null });
+    expect([showsList(waiting), showsList(g({ state: "not_connected" })), showsList(undefined)]).toEqual([false, false, false]);
+    expect([showsList({ ...waiting, reviews: 12 }), showsList(g({ state: "ok", first_synced_at: null, reviews: 0 })), showsList(g({ state: "disconnected" }))]).toEqual([true, true, true]);
+    expect(source("../src/features/marketing/GoogleReviews.tsx")).toContain('{g.reviews > 0 && <div className="row wrap" style={{ gap: 6 }} role="group" aria-label="Show">');
+  });
+
+  it("gives Check again on the tab to owners and admins, keeps the trend under what's in the way, and says replies wait only when they can post", () => {
+    const side = source("../src/features/marketing/GoogleReviews.tsx").slice(source("../src/features/marketing/GoogleReviews.tsx").indexOf("export function GoogleSide"));
+    expect(side).toContain("onCheck={g.can_connect ? () => check.mutate() : undefined}");
+    expect(side.indexOf("<ApprovalCallout")).toBeLessThan(side.indexOf("Reviews each month"));
+    expect(side).not.toMatch(/if \(g\.state === "approval" \|\| g\.state === "not_enabled"\) \{\s+return/);
+    expect(side).toContain("{s.needs_reply > 0 && canReply(g) &&");
+  });
+
+  it("keeps the reply's character count on one line, and gives a reviewer without a name an icon, not initials", () => {
+    const reviews = source("../src/features/marketing/GoogleReviews.tsx");
+    expect(reviews).toContain('style={{ textAlign: "right", whiteSpace: "nowrap" }}');
+    expect(reviews).toContain(': known ? initials(known) : <Icon name="user" size={16} />}');
+  });
+
+  it("says a client who already reviewed isn't asked, once, with the way to undo it on the tab itself", () => {
+    const ask = source("../src/features/marketing/Reviews.tsx").slice(source("../src/features/marketing/Reviews.tsx").indexOf("function AskNow()"));
+    expect(ask).toContain("already left a Google review, so they aren't asked again. Not them?");
+    expect(ask).toContain("See their review</Link> and undo the match.");
+    // The last-asked line and the button are in the other branch.
+    expect(ask.indexOf("{reviewed ? (")).toBeLessThan(ask.indexOf("Last asked"));
+    expect(ask.indexOf("{reviewed ? (")).toBeLessThan(ask.indexOf("Ask for a review</Button>"));
+    const client = source("../src/features/clients/ClientPage.tsx");
+    expect(client).toContain("checked={!c.review_opt_out && !c.marketing_opt_out && !c.reviewed_at}");
+    expect(client).toContain("Left a Google review, so not asked");
+  });
+
+  it("names a review's reply status in the glossary's words", () => {
+    expect(source("../src/components/ui/StatusPill.tsx")).toContain('review: { needs_reply: "Needs a reply", replied: "Replied" }');
   });
 });

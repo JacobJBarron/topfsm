@@ -12,7 +12,7 @@ import { can, hasRole, useSession } from "@/lib/session";
 export interface AppRow {
   id: string;
   name: string;
-  category: "Team" | "Calendar" | "AI" | "Accounting" | "Payments" | "Pricing" | "Messaging" | "Website";
+  category: "Team" | "Marketing" | "Calendar" | "AI" | "Accounting" | "Payments" | "Pricing" | "Messaging" | "Website";
   description: string;
   /** builtin: part of Crewtavo, turned on or off here (team chat). site: the website's editor, by its address (Sveltia CMS). */
   auth: "oauth" | "api_key" | "link" | "connector" | "builtin" | "site";
@@ -36,6 +36,30 @@ export interface AppRow {
   website?: WebsiteSite | null;
   /** ABC Supply, once it's connected: the account and branch prices come from, and the others to pick. */
   supplier?: SupplierSettings | null;
+  /** Google Business Profile: the location reviews come from and what's in the way (routes/apps.ts). */
+  google_business?: GoogleBusinessState;
+}
+
+export interface GoogleBusinessState {
+  location: { id: string; title: string | null; address: string | null; maps_uri: string | null } | null;
+  /** The location the reviews here came from, kept from before disconnecting too: picking another removes them. */
+  kept_location?: string | null;
+  /** review_syncs.problem: approval, not_enabled, signin, pick, location or error. */
+  problem: string | null;
+  problem_detail?: string | null;
+  problem_message?: string | null;
+  last_synced_at?: string | null;
+  next_sync_at?: string | null;
+  first_synced_at?: string | null;
+  progress?: { seen: number; total: number | null } | null;
+  /** Reviews brought in and still on Google. */
+  review_count: number;
+  review_url?: { current: string | null; suggested: string | null };
+  /** Signed in with the company's own Google app, which needs Google's approval of its own. */
+  own_app: boolean;
+  /** The Google Cloud project's number, which Google's access form asks for. */
+  project_number: string | null;
+  marketing_on: boolean;
 }
 
 export interface SupplierSettings {
@@ -80,6 +104,7 @@ export function useApps() {
 
 export const CATEGORY_LABELS: Record<AppRow["category"], string> = {
   Team: "Built into Crewtavo",
+  Marketing: "Marketing",
   Calendar: "Calendars",
   AI: "AI",
   Accounting: "Accounting",
@@ -95,6 +120,7 @@ export const categoryName = (category: AppRow["category"]) => (category === "Tea
 /** The row of related apps at the bottom of an app's page. */
 export const MORE_LABELS: Record<AppRow["category"], string> = {
   Team: "More built-in apps",
+  Marketing: "More marketing apps",
   Calendar: "More calendars",
   AI: "More AI apps",
   Accounting: "More accounting apps",
@@ -258,6 +284,29 @@ export const APP_INFO: Record<string, AppInfo> = {
     connectsWith: "Your email and Twilio",
     website: "https://crewtavo.com/docs/connections/marketing/",
     open: "/marketing",
+  },
+  google_business: {
+    developer: "Google",
+    tagline: "Your Google reviews in Crewtavo",
+    about:
+      "See every Google review of your business in Marketing → Reviews: your rating and how it's trending, how many you've answered and how fast, and which review asks led to a review. Reply right from Crewtavo, starting from a suggestion Claude drafts from what the client wrote, and the office hears about new reviews, low ratings first. Each review is matched to the client who left it when only one fits, and that client isn't asked for a review again. Google approves each Crewtavo server's access to reviews first, which takes about 2 weeks, and review asks keep working meanwhile.",
+    highlights: [
+      { icon: "star", title: "Reviews in Marketing", text: "Your rating, a monthly trend, response rate and time to reply, with every review and its reply." },
+      { icon: "sparkle", title: "Reply with a suggestion", text: "Claude drafts a short reply from what they wrote. Read it, change it, then post it on Google." },
+      { icon: "check", title: "Asks stop once they've reviewed", text: "A client matched to their review isn't asked again, and their reminders stop." },
+    ],
+    access: [
+      "See your business's locations",
+      "Read your reviews",
+      "Post, change and delete the replies you write here, publicly on Google",
+      "It can't change or remove your reviews",
+      "Needs Crewtavo - Marketing",
+      "Uninstalling stops bringing reviews in and keeps the ones already here",
+    ],
+    connectsWith: "Google sign-in",
+    // Google's own page until Crewtavo's docs page for it is written (docs/marketing-plan.md).
+    website: "https://www.google.com/business/",
+    open: "/marketing?tab=reviews",
   },
   google_calendar: {
     developer: "Google",

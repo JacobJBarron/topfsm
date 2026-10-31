@@ -13,6 +13,7 @@
  */
 import { triggerDef, type Action, type Condition } from "./automations";
 import { toUnits, type Amount } from "./money";
+import { REVIEW_STOP_NOTE } from "./reviews";
 import { addDays, localDate, localTime, zonedTimeToUtc } from "./time";
 
 type Settings = Record<string, unknown> | null | undefined;
@@ -213,14 +214,23 @@ export interface AskClient {
   review_opt_out?: boolean | null;
   marketing_opt_out?: boolean | null;
   sms_opt_out_at?: string | null;
+  /** When they left a Google review the office knows about (clients.reviewed_at, phase D). */
+  reviewed_at?: string | null;
 }
 
-/** Why a client isn't asked at all, by hand or automatically: they opted out, or they're archived. Null when they can be. */
+/** "Ana Smith already left a Google review…": the end says how to fix a wrong match. */
+export const alreadyReviewed = (name: string) => `${name} already left a Google review, so they aren't asked again. Not them? Undo the match in Marketing → Reviews.`;
+
+/**
+ * Why a client isn't asked at all, by hand or automatically: they opted out, they're archived, or
+ * they already left a Google review (matched to them in Marketing → Reviews). Null when they can be.
+ */
 export function notAsked(client: AskClient): string | null {
   const name = client.display_name;
   if (client.review_opt_out) return `${name} asked not to get review requests. You can change that on their page.`;
   if (client.marketing_opt_out) return `${name} unsubscribed from marketing, so they aren't asked for reviews.`;
   if (client.status === "archived") return `${name} is archived. Restore them to ask for a review.`;
+  if (client.reviewed_at) return alreadyReviewed(name);
   return null;
 }
 
@@ -262,6 +272,7 @@ export interface ReminderClient {
   review_opt_out: boolean;
   marketing_opt_out: boolean;
   sms_opt_out_at: string | null;
+  reviewed_at?: string | null;
 }
 
 export type ReminderPlan =
@@ -293,6 +304,7 @@ export function reminderPlan(input: {
   if (client.status === "archived") return { kind: "stop", why: "The client was archived" };
   if (client.review_opt_out) return { kind: "stop", why: "They asked not to get review requests" };
   if (client.marketing_opt_out) return { kind: "stop", why: "They unsubscribed from marketing" };
+  if (client.reviewed_at) return { kind: "stop", why: REVIEW_STOP_NOTE };
   if (!input.marketingOn) return { kind: "stop", why: "Marketing was uninstalled" };
   if (!input.hasReviewUrl) return { kind: "stop", why: "The review link was removed" };
   const { reminderDays } = reviewSettings(input.settings);
@@ -361,8 +373,9 @@ export function askError(ask: { channel: string; status: string; error: string |
   return `By ${ask.channel === "sms" ? "text" : "email"} only: ${ask.error}`;
 }
 
-/** The pill for an ask: opened, failed, a copied link nobody opened yet, or sent. */
-export function askStatus(ask: { channel: string; status: string }): { label: string; tone: "good" | "danger" | "muted" } {
+/** The pill for an ask: it led to a Google review, opened, failed, a copied link nobody opened yet, or sent. */
+export function askStatus(ask: { channel: string; status: string; reviewed_at?: string | null }): { label: string; tone: "good" | "danger" | "muted" } {
+  if (ask.reviewed_at) return { label: "Left a review", tone: "good" };
   if (ask.status === "clicked") return { label: "Opened link", tone: "good" };
   if (ask.status === "failed") return { label: "Failed", tone: "danger" };
   return { label: ask.channel === "link" ? "Link copied" : "Sent", tone: "muted" };

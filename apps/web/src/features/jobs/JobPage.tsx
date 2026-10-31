@@ -76,7 +76,7 @@ export function JobPage() {
       unwrapOne(
         await supabase()
           .from("jobs")
-          .select("*, financials:job_financials(contract_total), client:clients(id, display_name, phone, email, status, review_opt_out, marketing_opt_out, sms_opt_out_at), property:properties(id, line1, city, region, postal_code, lat, lng), quote:quotes!jobs_company_id_quote_id_fkey(id, number, deposit_amount), crew:crews(name), lines:job_line_items(id, name, description, quantity, unit, unit_price, unit_cost, unit_labor_cost, taxable, sort, service_id), visits(id, title, kind, status, scheduled_on, starts_at, ends_at, crew_id, notes, hold_reason, invoice_id, completed_at, crew:crews(name, color), assignees:visit_assignees(user_id))")
+          .select("*, financials:job_financials(contract_total), client:clients(id, display_name, phone, email, status, review_opt_out, marketing_opt_out, sms_opt_out_at, reviewed_at), property:properties(id, line1, city, region, postal_code, lat, lng), quote:quotes!jobs_company_id_quote_id_fkey(id, number, deposit_amount), crew:crews(name), lines:job_line_items(id, name, description, quantity, unit, unit_price, unit_cost, unit_labor_cost, taxable, sort, service_id), visits(id, title, kind, status, scheduled_on, starts_at, ends_at, crew_id, notes, hold_reason, invoice_id, completed_at, crew:crews(name, color), assignees:visit_assignees(user_id))")
           .eq("id", id)
           .order("sort", { referencedTable: "job_line_items" })
           .order("scheduled_on", { referencedTable: "visits" })
@@ -202,7 +202,7 @@ export function JobPage() {
                   { label: "Edit details and schedule", icon: "edit", onSelect: () => setDialog("details") },
                   { label: "New change order", icon: "quote", hidden: !["active", "requires_invoicing"].includes(j.status) || !j.client, onSelect: () => changeOrder.mutate() },
                   {
-                    label: reviewBy === "sms" ? "Ask for a review by text" : "Ask for a review", icon: "star",
+                    label: j.client?.reviewed_at ? "Already left a Google review" : reviewBy === "sms" ? "Ask for a review by text" : "Ask for a review", icon: "star",
                     hidden: !marketingOn(session.company.settings) || !j.client, disabled: !reviewBy, onSelect: () => review.mutate(reviewBy!),
                   },
                   { separator: true },

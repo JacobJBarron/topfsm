@@ -15,6 +15,9 @@ export function MarketingPanel() {
         referrals, in <strong>Referrals</strong>. In <strong>Campaigns</strong>, turn on the automated campaigns (re-engage past clients, win back
         lost quotes, close pending quotes), write one-off emails, and see the opens, clicks and work each brings in.
       </span>
+      <span className="muted">
+        Connect <Link to="/apps/google_business">Google Business Profile</Link> to bring your Google reviews into Reviews, reply to them, and stop asking clients who already left one.
+      </span>
       <div className="row wrap" style={{ gap: 8 }}>
         <Link className="btn" to="/marketing?tab=reviews"><Icon name="star" size={16} />Reviews</Link>
         <Link className="btn" to="/marketing?tab=referrals"><Icon name="gift" size={16} />Referrals</Link>

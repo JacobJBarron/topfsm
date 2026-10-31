@@ -4,7 +4,8 @@
  * installing Crewtavo as an app on this device (lib/install.ts).
  */
 import { isPlaceholderEmail } from "@crewtavo/core/email";
-import { DEFAULT_NOTIFICATION_PREFS, NOTIFICATION_TOPICS, type NotificationChannel, type NotificationTopic } from "@crewtavo/core/notifications";
+import { marketingOn } from "@crewtavo/core/marketing";
+import { DEFAULT_NOTIFICATION_PREFS, NOTIFICATION_TOPICS, REVIEW_ACCESS_HINT, reviewNoticesFor, type NotificationChannel, type NotificationTopic } from "@crewtavo/core/notifications";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/Button";
 import { FormError } from "@/components/ui/Field";
@@ -30,6 +31,12 @@ const hostingWarnings = (session: Session) => hasRole(session, "admin");
 const OFF_RAILWAY_HOSTING = { label: "Storage", hint: "When the company's files near the storage limit" };
 
 /**
+ * Google reviews go to owners, admins and office staff with the marketing area, and Google Business
+ * Profile needing someone to owners and admins who connect apps, while Marketing is installed.
+ */
+const reviewNotices = (session: Session) => reviewNoticesFor(session, marketingOn(session.company.settings));
+
+/**
  * The kinds this person hears about. A sub hears about their visits, their job offers and pay, and
  * their own paperwork, and their clock only if the office keeps their hours. The team never gets a
  * sub's job offers.
@@ -40,8 +47,9 @@ function topicsFor(session: Session) {
       t.key === "subs" ? { ...t, label: "My paperwork", hint: "When your insurance is about to run out" } : t,
     );
   }
-  return NOTIFICATION_TOPICS.filter((t) => t.key !== "jobs" && (t.key !== "chat" || chatOn(session)) && (t.key !== "hosting" || hostingWarnings(session)) && (t.key !== "subs" || managesSubs(session))).map((t) =>
-    t.key === "hosting" && session.config.platform !== "railway" ? { ...t, ...OFF_RAILWAY_HOSTING } : t,
+  const reviews = reviewNotices(session);
+  return NOTIFICATION_TOPICS.filter((t) => t.key !== "jobs" && (t.key !== "chat" || chatOn(session)) && (t.key !== "hosting" || hostingWarnings(session)) && (t.key !== "subs" || managesSubs(session)) && (t.key !== "reviews" || reviews)).map((t) =>
+    t.key === "hosting" && session.config.platform !== "railway" ? { ...t, ...OFF_RAILWAY_HOSTING } : t.key === "reviews" && reviews === "access" ? { ...t, hint: REVIEW_ACCESS_HINT } : t,
   );
 }
 

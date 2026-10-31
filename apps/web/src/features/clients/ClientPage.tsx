@@ -52,7 +52,7 @@ export function ClientPage() {
       unwrapOne(
         await supabase()
           .from("clients")
-          .select("id, display_name, company_name, email, phone, status, tags, lead_source, notes, created_at, billing_address, marketing_opt_out, review_opt_out, sms_opt_out_at, referred_by, properties(id, label, line1, line2, city, region, postal_code, lat, lng, notes)")
+          .select("id, display_name, company_name, email, phone, status, tags, lead_source, notes, created_at, billing_address, marketing_opt_out, review_opt_out, sms_opt_out_at, reviewed_at, referred_by, properties(id, label, line1, line2, city, region, postal_code, lat, lng, notes)")
           .eq("id", id)
           .maybeSingle(),
         "This client",
@@ -237,9 +237,11 @@ export function ClientPage() {
                   { label: "Edit client", icon: "edit", onSelect: () => setDialog("edit") },
                   { label: "Copy Client Hub link", icon: "link", onSelect: () => hubLink.mutate() },
                   { separator: true, hidden: !marketing },
-                  { label: "Ask for a review by email", icon: "star", onSelect: () => review.mutate("email"), disabled: cannotAsk("email"), hidden: !marketing },
-                  { label: "Ask for a review by text", icon: "star", onSelect: () => review.mutate("sms"), disabled: cannotAsk("sms"), hidden: !marketing },
-                  { label: "Ask for a review by text and email", icon: "star", onSelect: () => review.mutate("both"), disabled: !bothWays, hidden: !marketing },
+                  // A client who already left a Google review isn't asked again: the one line says so.
+                  { label: "Already left a Google review", icon: "star", onSelect: () => undefined, disabled: true, hidden: !marketing || !c.reviewed_at },
+                  { label: "Ask for a review by email", icon: "star", onSelect: () => review.mutate("email"), disabled: cannotAsk("email"), hidden: !marketing || Boolean(c.reviewed_at) },
+                  { label: "Ask for a review by text", icon: "star", onSelect: () => review.mutate("sms"), disabled: cannotAsk("sms"), hidden: !marketing || Boolean(c.reviewed_at) },
+                  { label: "Ask for a review by text and email", icon: "star", onSelect: () => review.mutate("both"), disabled: !bothWays, hidden: !marketing || Boolean(c.reviewed_at) },
                   { label: "Ask for referrals by email", icon: "gift", onSelect: () => referralAsk.mutate(), hidden: !marketing,
                     disabled: !referralsReady(session.company.settings) || Boolean(referralAskRefusal(c, session.config.features.email)) },
                   { label: "Copy referral link", icon: "link", onSelect: () => referralLink.mutate(), hidden: !marketing },
@@ -258,6 +260,7 @@ export function ClientPage() {
         {c.tags.map((t) => <span key={t} className="tag">{t}</span>)}
         {c.marketing_opt_out && <span className="chip chip-amber">Unsubscribed from marketing</span>}
         {c.review_opt_out && <span className="chip chip-amber">No review asks</span>}
+        {c.reviewed_at && <ReviewedChip clientId={c.id} />}
         {stopped && <span className="chip chip-amber">Texts off</span>}
       </div>
       {c.status === "archived" && (
@@ -425,10 +428,14 @@ export function ClientPage() {
                   <dt>Reviews</dt>
                   <dd>
                     <label className="switch-row" style={{ fontWeight: 400 }}>
-                      <input type="checkbox" className="switch" checked={!c.review_opt_out && !c.marketing_opt_out} disabled={c.marketing_opt_out} onChange={(e) => update.mutate({ review_opt_out: !e.target.checked })} />
+                      <input type="checkbox" className="switch" checked={!c.review_opt_out && !c.marketing_opt_out && !c.reviewed_at} disabled={c.marketing_opt_out || Boolean(c.reviewed_at)} onChange={(e) => update.mutate({ review_opt_out: !e.target.checked })} />
                       Gets review asks
                     </label>
-                    {c.marketing_opt_out && <span className="muted small" style={{ display: "block" }}>Off while they're unsubscribed from marketing</span>}
+                    {c.marketing_opt_out ? (
+                      <span className="muted small" style={{ display: "block" }}>Off while they're unsubscribed from marketing</span>
+                    ) : c.reviewed_at ? (
+                      <span className="muted small" style={{ display: "block" }}>Left a Google review, so not asked</span>
+                    ) : null}
                   </dd>
                 </>
               )}
@@ -462,4 +469,21 @@ function WorkList({ rows, empty }: { rows: Array<{ to: string; number: number | 
       ))}
     </>
   );
+}
+
+/**
+ * A client matched to a Google review: they aren't asked for reviews again. Its stars, and a link to
+ * their review in Marketing → Reviews (where a wrong match is undone), for those who can open it.
+ */
+function ReviewedChip({ clientId }: { clientId: string }) {
+  const session = useSession();
+  const sees = hasRole(session, "admin", "office") && can(session, "marketing") && marketingOn(session.company.settings);
+  const review = useQuery({
+    queryKey: ["client-review", clientId],
+    enabled: sees,
+    queryFn: async () => unwrap(await supabase().from("reviews").select("rating").eq("client_id", clientId).is("deleted_at", null).order("posted_at").limit(1)),
+  });
+  const rating = review.data?.[0]?.rating;
+  const words = rating ? `Left a ${rating}-star Google review` : "Left a Google review";
+  return sees ? <Link className="chip chip-green" to={`/marketing?tab=reviews&client=${clientId}`}>{words}</Link> : <span className="chip chip-green">{words}</span>;
 }

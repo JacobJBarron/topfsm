@@ -520,14 +520,14 @@ isOneToOne: false
                   ]
                 },"clients": {
                   Row: {
-                    "billing_address": NonNullable<Json>,"company_id": string,"company_name": string | null,"created_at": string,"custom_fields": NonNullable<Json>,"display_name": string,"email": string | null,"id": string,"lead_source": string | null,"marketing_opt_out": boolean,"notes": string | null,"phone": string | null,"referred_by": string | null,"review_opt_out": boolean,"search": unknown,"sms_opt_out_at": string | null,"status": string,"tags": (string)[],"updated_at": string
+                    "billing_address": NonNullable<Json>,"company_id": string,"company_name": string | null,"created_at": string,"custom_fields": NonNullable<Json>,"display_name": string,"email": string | null,"id": string,"lead_source": string | null,"marketing_opt_out": boolean,"name_key": string | null,"name_short": string | null,"notes": string | null,"phone": string | null,"referred_by": string | null,"review_opt_out": boolean,"reviewed_at": string | null,"search": unknown,"sms_opt_out_at": string | null,"status": string,"tags": (string)[],"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "billing_address"?: NonNullable<Json>,"company_id": string,"company_name"?: string | null,"created_at"?: string,"custom_fields"?: NonNullable<Json>,"display_name": string,"email"?: string | null,"id"?: string,"lead_source"?: string | null,"marketing_opt_out"?: boolean,"notes"?: string | null,"phone"?: string | null,"referred_by"?: string | null,"review_opt_out"?: boolean,"search"?: never,"sms_opt_out_at"?: string | null,"status"?: string,"tags"?: (string)[],"updated_at"?: string
+                    "billing_address"?: NonNullable<Json>,"company_id": string,"company_name"?: string | null,"created_at"?: string,"custom_fields"?: NonNullable<Json>,"display_name": string,"email"?: string | null,"id"?: string,"lead_source"?: string | null,"marketing_opt_out"?: boolean,"name_key"?: never,"name_short"?: never,"notes"?: string | null,"phone"?: string | null,"referred_by"?: string | null,"review_opt_out"?: boolean,"reviewed_at"?: string | null,"search"?: never,"sms_opt_out_at"?: string | null,"status"?: string,"tags"?: (string)[],"updated_at"?: string
                   }
                   Update: {
-                    "billing_address"?: NonNullable<Json>,"company_id"?: string,"company_name"?: string | null,"created_at"?: string,"custom_fields"?: NonNullable<Json>,"display_name"?: string,"email"?: string | null,"id"?: string,"lead_source"?: string | null,"marketing_opt_out"?: boolean,"notes"?: string | null,"phone"?: string | null,"referred_by"?: string | null,"review_opt_out"?: boolean,"search"?: never,"sms_opt_out_at"?: string | null,"status"?: string,"tags"?: (string)[],"updated_at"?: string
+                    "billing_address"?: NonNullable<Json>,"company_id"?: string,"company_name"?: string | null,"created_at"?: string,"custom_fields"?: NonNullable<Json>,"display_name"?: string,"email"?: string | null,"id"?: string,"lead_source"?: string | null,"marketing_opt_out"?: boolean,"name_key"?: never,"name_short"?: never,"notes"?: string | null,"phone"?: string | null,"referred_by"?: string | null,"review_opt_out"?: boolean,"reviewed_at"?: string | null,"search"?: never,"sms_opt_out_at"?: string | null,"status"?: string,"tags"?: (string)[],"updated_at"?: string
                   }
                   Relationships: [
                     {
@@ -2024,16 +2024,42 @@ isOneToOne: false
       referencedColumns: ["company_id","id"]
     }
                   ]
-                },"review_requests": {
+                },"review_match_choices": {
                   Row: {
-                    "channel": string,"clicked_at": string | null,"client_id": string,"company_id": string,"created_by": string | null,"error": string | null,"id": string,"job_id": string | null,"last_reminder_at": string | null,"next_reminder_at": string | null,"reminder_claim": string | null,"reminder_error": string | null,"reminder_locked_until": string | null,"reminder_note": string | null,"reminders_failed": number,"reminders_sent": number,"sent_at": string,"status": string
+                    "chosen_at": string,"chosen_by": string | null,"client_id": string | null,"company_id": string,"location_id": string,"review_id": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "channel"?: string,"clicked_at"?: string | null,"client_id": string,"company_id": string,"created_by"?: string | null,"error"?: string | null,"id"?: string,"job_id"?: string | null,"last_reminder_at"?: string | null,"next_reminder_at"?: string | null,"reminder_claim"?: string | null,"reminder_error"?: string | null,"reminder_locked_until"?: string | null,"reminder_note"?: string | null,"reminders_failed"?: number,"reminders_sent"?: number,"sent_at"?: string,"status"?: string
+                    "chosen_at"?: string,"chosen_by"?: string | null,"client_id"?: string | null,"company_id": string,"location_id": string,"review_id": string
                   }
                   Update: {
-                    "channel"?: string,"clicked_at"?: string | null,"client_id"?: string,"company_id"?: string,"created_by"?: string | null,"error"?: string | null,"id"?: string,"job_id"?: string | null,"last_reminder_at"?: string | null,"next_reminder_at"?: string | null,"reminder_claim"?: string | null,"reminder_error"?: string | null,"reminder_locked_until"?: string | null,"reminder_note"?: string | null,"reminders_failed"?: number,"reminders_sent"?: number,"sent_at"?: string,"status"?: string
+                    "chosen_at"?: string,"chosen_by"?: string | null,"client_id"?: string | null,"company_id"?: string,"location_id"?: string,"review_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "review_match_choices_company_id_client_id_fkey"
+      columns: ["company_id","client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["company_id","id"]
+    },{
+      foreignKeyName: "review_match_choices_company_id_fkey"
+      columns: ["company_id"]
+isOneToOne: false
+      referencedRelation: "companies"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"review_requests": {
+                  Row: {
+                    "channel": string,"clicked_at": string | null,"client_id": string,"company_id": string,"created_by": string | null,"error": string | null,"id": string,"job_id": string | null,"last_reminder_at": string | null,"next_reminder_at": string | null,"reminder_claim": string | null,"reminder_error": string | null,"reminder_locked_until": string | null,"reminder_note": string | null,"reminders_failed": number,"reminders_sent": number,"reviewed_at": string | null,"sent_at": string,"status": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "channel"?: string,"clicked_at"?: string | null,"client_id": string,"company_id": string,"created_by"?: string | null,"error"?: string | null,"id"?: string,"job_id"?: string | null,"last_reminder_at"?: string | null,"next_reminder_at"?: string | null,"reminder_claim"?: string | null,"reminder_error"?: string | null,"reminder_locked_until"?: string | null,"reminder_note"?: string | null,"reminders_failed"?: number,"reminders_sent"?: number,"reviewed_at"?: string | null,"sent_at"?: string,"status"?: string
+                  }
+                  Update: {
+                    "channel"?: string,"clicked_at"?: string | null,"client_id"?: string,"company_id"?: string,"created_by"?: string | null,"error"?: string | null,"id"?: string,"job_id"?: string | null,"last_reminder_at"?: string | null,"next_reminder_at"?: string | null,"reminder_claim"?: string | null,"reminder_error"?: string | null,"reminder_locked_until"?: string | null,"reminder_note"?: string | null,"reminders_failed"?: number,"reminders_sent"?: number,"reviewed_at"?: string | null,"sent_at"?: string,"status"?: string
                   }
                   Relationships: [
                     {
@@ -2053,6 +2079,58 @@ isOneToOne: false
       columns: ["company_id","job_id"]
 isOneToOne: false
       referencedRelation: "jobs"
+      referencedColumns: ["company_id","id"]
+    }
+                  ]
+                },"review_syncs": {
+                  Row: {
+                    "access_notice": string | null,"account": string | null,"average_rating": number | null,"claim": string | null,"company_id": string,"failures": number,"first_synced_at": string | null,"full_page_token": string | null,"full_seen": number,"full_started_at": string | null,"full_synced_at": string | null,"last_synced_at": string | null,"location_id": string | null,"locked_until": string | null,"next_sync_at": string | null,"problem": string | null,"problem_detail": string | null,"problem_since": string | null,"provider": string,"total_reviews": number | null,"updated_at": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "access_notice"?: string | null,"account"?: string | null,"average_rating"?: number | null,"claim"?: string | null,"company_id": string,"failures"?: number,"first_synced_at"?: string | null,"full_page_token"?: string | null,"full_seen"?: number,"full_started_at"?: string | null,"full_synced_at"?: string | null,"last_synced_at"?: string | null,"location_id"?: string | null,"locked_until"?: string | null,"next_sync_at"?: string | null,"problem"?: string | null,"problem_detail"?: string | null,"problem_since"?: string | null,"provider"?: string,"total_reviews"?: number | null,"updated_at"?: string
+                  }
+                  Update: {
+                    "access_notice"?: string | null,"account"?: string | null,"average_rating"?: number | null,"claim"?: string | null,"company_id"?: string,"failures"?: number,"first_synced_at"?: string | null,"full_page_token"?: string | null,"full_seen"?: number,"full_started_at"?: string | null,"full_synced_at"?: string | null,"last_synced_at"?: string | null,"location_id"?: string | null,"locked_until"?: string | null,"next_sync_at"?: string | null,"problem"?: string | null,"problem_detail"?: string | null,"problem_since"?: string | null,"provider"?: string,"total_reviews"?: number | null,"updated_at"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "review_syncs_company_id_fkey"
+      columns: ["company_id"]
+isOneToOne: true
+      referencedRelation: "companies"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"reviews": {
+                  Row: {
+                    "client_id": string | null,"comment": string | null,"company_id": string,"created_at": string,"deleted_at": string | null,"external_name": string,"first_replied_at": string | null,"google_updated_at": string,"id": string,"location_id": string,"match": string,"match_cleared_at": string | null,"matched_at": string | null,"matched_by": string | null,"notified_at": string | null,"notified_rating": number | null,"notify": string | null,"posted_at": string,"provider": string,"rating": number | null,"replied_by": string | null,"reply_comment": string | null,"reply_updated_at": string | null,"reply_written_at": string | null,"review_id": string,"review_request_id": string | null,"reviewer_anonymous": boolean,"reviewer_name": string | null,"reviewer_photo_url": string | null,"seen_at": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "client_id"?: string | null,"comment"?: string | null,"company_id": string,"created_at"?: string,"deleted_at"?: string | null,"external_name": string,"first_replied_at"?: string | null,"google_updated_at": string,"id"?: string,"location_id": string,"match"?: string,"match_cleared_at"?: string | null,"matched_at"?: string | null,"matched_by"?: string | null,"notified_at"?: string | null,"notified_rating"?: number | null,"notify"?: string | null,"posted_at": string,"provider"?: string,"rating"?: number | null,"replied_by"?: string | null,"reply_comment"?: string | null,"reply_updated_at"?: string | null,"reply_written_at"?: string | null,"review_id": string,"review_request_id"?: string | null,"reviewer_anonymous"?: boolean,"reviewer_name"?: string | null,"reviewer_photo_url"?: string | null,"seen_at"?: string
+                  }
+                  Update: {
+                    "client_id"?: string | null,"comment"?: string | null,"company_id"?: string,"created_at"?: string,"deleted_at"?: string | null,"external_name"?: string,"first_replied_at"?: string | null,"google_updated_at"?: string,"id"?: string,"location_id"?: string,"match"?: string,"match_cleared_at"?: string | null,"matched_at"?: string | null,"matched_by"?: string | null,"notified_at"?: string | null,"notified_rating"?: number | null,"notify"?: string | null,"posted_at"?: string,"provider"?: string,"rating"?: number | null,"replied_by"?: string | null,"reply_comment"?: string | null,"reply_updated_at"?: string | null,"reply_written_at"?: string | null,"review_id"?: string,"review_request_id"?: string | null,"reviewer_anonymous"?: boolean,"reviewer_name"?: string | null,"reviewer_photo_url"?: string | null,"seen_at"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "reviews_company_id_client_id_fkey"
+      columns: ["company_id","client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["company_id","id"]
+    },{
+      foreignKeyName: "reviews_company_id_fkey"
+      columns: ["company_id"]
+isOneToOne: false
+      referencedRelation: "companies"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "reviews_company_id_review_request_id_fkey"
+      columns: ["company_id","review_request_id"]
+isOneToOne: false
+      referencedRelation: "review_requests"
       referencedColumns: ["company_id","id"]
     }
                   ]
@@ -2890,6 +2968,9 @@ isOneToOne: false
         isOneToOne: false
         isSetofReturn: true
       } },
+"claim_review_notices":
+{ Args: { "p_claim": string,"p_company": string }; Returns: number
+                           },
 "claim_review_reminders":
 { Args: { "p_limit"?: number }; Returns: {
               "channel": string,
@@ -2908,6 +2989,7 @@ isOneToOne: false
 "reminder_note": string | null,
 "reminders_failed": number,
 "reminders_sent": number,
+"reviewed_at": string | null,
 "sent_at": string,
 "status": string
             }[]
@@ -2917,6 +2999,9 @@ isOneToOne: false
         isOneToOne: false
         isSetofReturn: true
       } },
+"claim_review_sync":
+{ Args: { "p_company": string,"p_hold_seconds"?: number }; Returns: string
+                           },
 "clock_upkeep":
 { Args: Record<PropertyKey, never>; Returns: Json
                            },
@@ -2991,6 +3076,9 @@ isOneToOne: false
                            },
 "emit_visit_reminders":
 { Args: Record<PropertyKey, never>; Returns: number
+                           },
+"end_review_sync":
+{ Args: { "p_company": string,"p_remove": boolean }; Returns: Json
                            },
 "end_sessions":
 { Args: { "p_user": string }; Returns: number
@@ -3248,6 +3336,9 @@ isOneToOne: false
 "last_review_ask":
 { Args: { "p_client": string,"p_company": string }; Returns: string
                            },
+"mark_deleted_reviews":
+{ Args: { "p_claim": string,"p_company": string,"p_ids": (string)[],"p_location_id": string }; Returns: Json
+                           },
 "mark_overdue_invoices":
 { Args: Record<PropertyKey, never>; Returns: number
                            },
@@ -3275,6 +3366,9 @@ isOneToOne: false
               "counted": number,"owed": number,"owed_jobs": number,"paid": number,"payments": number,"year": number
             }[]
                            },
+"note_review_access":
+{ Args: { "p_body"?: string,"p_claim": string,"p_company": string,"p_kind": string,"p_title"?: string }; Returns: boolean
+                           },
 "postpone_automation_run":
 { Args: { "p_id": number,"p_note"?: string,"p_result": Json,"p_token": string,"p_until": string }; Returns: boolean
                            },
@@ -3291,6 +3385,9 @@ isOneToOne: false
                            },
 "record_referral":
 { Args: { "p_address"?: Json,"p_company": string,"p_details"?: string,"p_email"?: string,"p_name": string,"p_phone"?: string,"p_referrer": string }; Returns: Json
+                           },
+"record_reviews":
+{ Args: { "p_claim": string,"p_company": string,"p_fetched_at"?: string,"p_location_id": string,"p_reviews": Json }; Returns: (string)[]
                            },
 "referral_auto_apply":
 { Args: { "p_on"?: boolean,"p_referral": string }; Returns: number
@@ -3336,6 +3433,12 @@ isOneToOne: false
 "renew_campaign_recipient":
 { Args: { "p_id": number,"p_links"?: (string)[],"p_token": string }; Returns: boolean
                            },
+"review_stats":
+{ Args: { "p_company": string }; Returns: Json
+                           },
+"review_syncs_due":
+{ Args: { "p_limit"?: number }; Returns: string[]
+                           },
 "search_sops":
 { Args: { "p_any"?: boolean,"p_company": string,"p_limit"?: number,"p_query": string }; Returns: {
               "acknowledged": boolean,"body_text": string,"category": string,"id": string,"rank": number,"required": boolean,"revision": number,"snippet": string,"title": string
@@ -3378,6 +3481,12 @@ isOneToOne: false
         isOneToOne: true
         isSetofReturn: false
       } },
+"set_review_client":
+{ Args: { "p_by": string,"p_client": string,"p_company": string,"p_review": string }; Returns: Json
+                           },
+"set_review_location":
+{ Args: { "p_account": string,"p_company": string,"p_location_id": string }; Returns: Json
+                           },
 "set_sub_reminders":
 { Args: { "p_company": string,"p_remind_subs": boolean }; Returns: undefined
                            },

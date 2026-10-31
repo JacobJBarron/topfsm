@@ -11,11 +11,13 @@
  *               routes/drive.ts; marketing: companies.settings.marketing, routes/marketing.ts)
  *   site      - the company's website editor, by its address (Sveltia CMS: companies.settings.website, integrations/website.ts)
  * ABC Supply is an api_key app with two keys: its own app's Client ID and secret (integrations/abcSupply.ts).
+ * Google Business Profile signs in like Google Calendar, with the same Google app, and brings the
+ * business's reviews into Marketing → Reviews while Marketing is installed (services/googleReviews.ts).
  */
 import type { Env } from "../env";
 
 /** Apps with a row in integrations (and maybe integration_secrets). */
-export type Provider = "quickbooks" | "zoho_books" | "google_calendar" | "stripe" | "twilio" | "anthropic" | "fal" | "railway" | "abc_supply";
+export type Provider = "quickbooks" | "zoho_books" | "google_calendar" | "google_business" | "stripe" | "twilio" | "anthropic" | "fal" | "railway" | "abc_supply";
 /** Apps whose calendars are added by link. They're also the calendar_sources.app values (with google_calendar). */
 export type LinkApp = "zoho_calendar" | "outlook_calendar" | "apple_calendar" | "ics_calendar";
 export type AppId = Provider | LinkApp | "chatgpt" | "team_chat" | "website_analytics" | "website_forms" | "careers" | "drive" | "marketing" | "sveltia";
@@ -25,7 +27,7 @@ export const CALENDAR_APPS: readonly CalendarApp[] = ["google_calendar", "zoho_c
 export interface CatalogEntry {
   id: AppId;
   name: string;
-  category: "Team" | "Calendar" | "AI" | "Accounting" | "Payments" | "Pricing" | "Messaging" | "Website";
+  category: "Team" | "Marketing" | "Calendar" | "AI" | "Accounting" | "Payments" | "Pricing" | "Messaging" | "Website";
   description: string;
   auth: "oauth" | "api_key" | "link" | "connector" | "builtin" | "site";
   docs: string;
@@ -92,6 +94,17 @@ export const CATALOG: CatalogEntry[] = [
     auth: "builtin",
     docs: "https://crewtavo.com/docs/connections/marketing/",
     available: () => true,
+  },
+  {
+    id: "google_business",
+    name: "Google Business Profile",
+    category: "Marketing",
+    description: "Bring your Google reviews into Marketing → Reviews: your rating and trend, replies with a suggestion to start from, and no more review asks to clients who already left one.",
+    auth: "oauth",
+    // Google's prerequisites until Crewtavo's own page for it is written (docs/marketing-plan.md).
+    docs: "https://developers.google.com/my-business/content/prereqs",
+    available: (env) => Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
+    appKeys: true,
   },
   {
     id: "google_calendar",
@@ -332,5 +345,18 @@ export const OAUTH: Partial<Record<Provider, OAuthConfig>> = {
     clientSecret: (env) => env.GOOGLE_CLIENT_SECRET,
     clientAuth: "body",
     extraParams: { access_type: "offline", prompt: "consent" },
+  },
+  google_business: {
+    authorizeUrl: () => "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenUrl: () => "https://oauth2.googleapis.com/token",
+    revokeUrl: () => "https://oauth2.googleapis.com/revoke",
+    // The one scope the Business Profile APIs take: see the locations and their reviews, and reply.
+    scope: "https://www.googleapis.com/auth/business.manage",
+    clientId: (env) => env.GOOGLE_CLIENT_ID,
+    clientSecret: (env) => env.GOOGLE_CLIENT_SECRET,
+    clientAuth: "body",
+    // Google's account chooser every time: the account that manages the Business Profile is often
+    // not the one signed in to the browser, and Reconnect is how someone picks another.
+    extraParams: { access_type: "offline", prompt: "select_account consent" },
   },
 };

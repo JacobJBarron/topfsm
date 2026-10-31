@@ -29,6 +29,7 @@ export * from "./paving";
 export * from "./presets";
 export * from "./privacy";
 export * from "./recurrence";
+export * from "./reviews";
 export * from "./reports";
 export * from "./roofing";
 export * from "./roles";

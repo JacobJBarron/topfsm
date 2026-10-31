@@ -218,6 +218,14 @@ describe("who's asked by hand", () => {
     expect(askRefusal({ ...ana, review_opt_out: true }, "both", ready)).toBe(notAsked({ ...ana, review_opt_out: true }));
   });
 
+  it("not a client who already left a Google review, saying how to undo a wrong match", () => {
+    const reviewed = { ...ana, reviewed_at: "2026-10-20T12:00:00Z" };
+    expect(notAsked(reviewed)).toBe("Ana already left a Google review, so they aren't asked again. Not them? Undo the match in Marketing → Reviews.");
+    expect(askRefusal(reviewed, "email", ready)).toBe(notAsked(reviewed));
+    // Opting out still says so first.
+    expect(notAsked({ ...reviewed, review_opt_out: true })).toBe("Ana asked not to get review requests. You can change that on their page.");
+  });
+
   it("by a way that reaches them, right away", () => {
     expect(askRefusal(ana, "sms", ready)).toBeNull();
     expect(askRefusal(ana, "sms", { email: true, sms: false })).toBe(TEXTS_NOT_SET_UP);
@@ -255,6 +263,7 @@ describe("a reminder that's due", () => {
     ["the client is archived", { client: client({ status: "archived" }) }, "The client was archived"],
     ["they don't want review asks", { client: client({ review_opt_out: true }) }, "They asked not to get review requests"],
     ["they unsubscribed from marketing", { client: client({ marketing_opt_out: true }) }, "They unsubscribed from marketing"],
+    ["they left a Google review", { client: client({ reviewed_at: "2026-10-30T12:00:00Z" }) }, "Left a Google review"],
     ["Marketing is off", { marketingOn: false }, "Marketing was uninstalled"],
     ["there's no review link", { hasReviewUrl: false }, "The review link was removed"],
     ["reminders were turned off", { settings: { reviews: { reminders: [] } } }, "No more reminders are set"],
@@ -314,6 +323,9 @@ describe("Recent requests", () => {
     expect(askStatus({ channel: "link", status: "clicked" })).toEqual({ label: "Opened link", tone: "good" });
     expect(askStatus({ channel: "both", status: "sent" })).toEqual({ label: "Sent", tone: "muted" });
     expect(askStatus({ channel: "sms", status: "failed" })).toEqual({ label: "Failed", tone: "danger" });
+    // An ask that led to a Google review says so, whatever happened to its link.
+    expect(askStatus({ channel: "email", status: "clicked", reviewed_at: "2026-10-30T12:00:00Z" })).toEqual({ label: "Left a review", tone: "good" });
+    expect(reminderStopNote("Left a Google review")).toBe("Reminders stopped: left a Google review");
     expect(askError({ channel: "email", status: "sent", error: "The text provider refused it (400)." })).toBe("By email only: The text provider refused it (400).");
     expect(askError({ channel: "sms", status: "failed", error: "Ana has no phone number." })).toBe("Ana has no phone number.");
     expect(askError({ channel: "sms", status: "sent", error: null })).toBeNull();

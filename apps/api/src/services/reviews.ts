@@ -7,8 +7,9 @@
  * An ask sent by an automation (`automatic`) holds to more than one sent by hand: it skips clients
  * asked in the last 6 months, and between 9pm and 9am in the company's time zone it goes by email
  * only, or waits for 9am when a text is the only way (WaitUntil: the engine puts the run back). Asks
- * by hand go right away. Neither goes to clients who opted out or are archived, and nothing goes
- * while Marketing is uninstalled. A link copied by hand isn't an ask until it's opened.
+ * by hand go right away. Neither goes to clients who opted out, are archived or already left a
+ * Google review (matched in Marketing → Reviews, services/googleReviews.ts), and nothing goes while
+ * Marketing is uninstalled. A link copied by hand isn't an ask until it's opened.
  *
  * Reminders (sendDueReminders, every five minutes) go at 1:30pm on the chosen days, by the ask's own
  * channels, with the same tracked link. Each one lands in the client's messages like the ask. When
@@ -16,6 +17,7 @@
  */
 import { renderTemplate } from "@crewtavo/core";
 import {
+  alreadyReviewed,
   askChannels,
   DEFAULT_REVIEW_MESSAGE,
   inQuietHours,
@@ -62,6 +64,7 @@ export interface ReviewClient {
   review_opt_out?: boolean | null;
   marketing_opt_out?: boolean | null;
   sms_opt_out_at?: string | null;
+  reviewed_at?: string | null;
 }
 
 interface ReviewArgs {
@@ -96,6 +99,12 @@ interface Company {
   address?: unknown;
 }
 
+/** Why an automatic ask skipped a client notAsked turns down, as the run's result says it. */
+const skipReason = (client: ReviewClient) =>
+  client.review_opt_out ? `${client.display_name} asked not to get review requests`
+  : client.marketing_opt_out ? `${client.display_name} unsubscribed from marketing`
+  : client.status === "archived" ? `${client.display_name} is archived`
+  : `${client.display_name} already left a Google review`;
 const recentlyAsked = (days: number) => `Already asked in the last ${days === REVIEW_GAP_DAYS ? "6 months" : `${days} days`}`;
 const channelWords = (channels: SendChannel[]) => (channels.length === 2 ? "text and email" : channels[0] === "sms" ? "text" : "email");
 const vars = (company: Company, client: ReviewClient, link: string) => ({
@@ -151,11 +160,11 @@ export async function sendReviewRequest(env: Env, admin: Db, args: ReviewArgs): 
     if (automatic) return skipped("Marketing is off");
     throw new Error("Marketing is off, so review requests can't be sent. An owner or admin can install it again in Apps.");
   }
-  // Opted out or archived: someone asking by hand is told why, as the pages that offer it say.
+  // Opted out, archived or already reviewed: someone asking by hand is told why, as the pages that offer it say.
   const refusal = notAsked(client);
   if (refusal) {
     if (!automatic) throw new Error(refusal);
-    return skipped(client.review_opt_out ? `${name} asked not to get review requests` : client.marketing_opt_out ? `${name} unsubscribed from marketing` : `${name} is archived`);
+    return skipped(skipReason(client));
   }
   const timeZone = company.timezone || "UTC";
   const now = new Date();
@@ -196,7 +205,15 @@ export async function sendReviewRequest(env: Env, admin: Db, args: ReviewArgs): 
     p_created_by: args.createdBy ?? undefined,
   });
   if (error) throw new Error(error.message);
-  if (!id) return skipped(recentlyAsked(args.skipIfRecentDays ?? REVIEW_GAP_DAYS));
+  if (!id) {
+    // Refused: asked lately, or matched to a Google review meanwhile, which says so instead.
+    const { data: now } = await admin.from("clients").select("reviewed_at").eq("company_id", args.companyId).eq("id", client.id).maybeSingle();
+    if (now?.reviewed_at) {
+      if (!automatic) throw new Error(alreadyReviewed(name));
+      return skipped(skipReason({ ...client, reviewed_at: now.reviewed_at }));
+    }
+    return skipped(recentlyAsked(args.skipIfRecentDays ?? REVIEW_GAP_DAYS));
+  }
 
   const link = await clientLink(env, args.baseUrl, { c: args.companyId, t: "review", id });
   if (args.channel === "link") return { sent: false, link, detail: "Link created", id };
@@ -248,7 +265,7 @@ export async function sendDueReminders(env: Env) {
 
   const [companies, clients] = await Promise.all([
     admin.from("companies").select("id, name, phone, email, address, timezone, settings").in("id", [...new Set(claimed.map((r) => r.company_id))]),
-    admin.from("clients").select("id, display_name, email, phone, status, review_opt_out, marketing_opt_out, sms_opt_out_at").in("id", [...new Set(claimed.map((r) => r.client_id))]),
+    admin.from("clients").select("id, display_name, email, phone, status, review_opt_out, marketing_opt_out, sms_opt_out_at, reviewed_at").in("id", [...new Set(claimed.map((r) => r.client_id))]),
   ]);
   if (companies.error) throw new Error(companies.error.message);
   if (clients.error) throw new Error(clients.error.message);

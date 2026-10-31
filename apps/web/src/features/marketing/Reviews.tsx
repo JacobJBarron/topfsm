@@ -1,7 +1,11 @@
 /**
  * Marketing → Reviews, Jobber's way: when clients are asked for a Google review automatically, by
  * which channels, after which recurring visit, and the reminders that follow every ask; the review
- * link and its two messages; asking a client now; and recent asks.
+ * link and its two messages; asking a client now; and recent asks. With Google Business Profile
+ * connected in Apps, the reviews themselves too (GoogleReviews.tsx): their numbers across the top,
+ * the trend beside Ask a client now, and the list under the ask settings, so on a phone the form
+ * people use comes before a long list. On a phone the numbers wait under the forms too: Marketing's
+ * own numbers are already above the tabs.
  *
  * "Ask automatically" edits the two starter rules (review_after_job, review_recurring) through PUT
  * /api/reviews/asks, so they're still where asking is set and still show in Automations. A rule
@@ -28,7 +32,7 @@ import {
   type AskWhen,
 } from "@crewtavo/core/marketing";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { Button, useJustDone } from "@/components/ui/Button";
 import { Field, FormError } from "@/components/ui/Field";
@@ -43,7 +47,10 @@ import { can, hasRole, useSession } from "@/lib/session";
 import { toast } from "@/lib/toast";
 import { ClientPicker, type PickedClient } from "../clients/ClientForm";
 import { ConnectEmailHint } from "../settings/ConnectEmailHint";
+import { ReviewLinkOffer } from "../apps/GoogleBusinessPanel";
 import { askBody, askRules, daysInOrder, type AskForm, type AskRuleRow } from "./askForm";
+import { GoogleNumbers, GoogleReviewList, GoogleSide, useGoogleState, useReviewStats } from "./GoogleReviews";
+import { hasNumbers, hasReviews, showsList, type GoogleState } from "./googleReviewData";
 import { useSettingsSaver } from "./useSettingsSaver";
 
 /** Email, Text, Both: the same order wherever a review ask's channel is picked. */
@@ -58,6 +65,21 @@ const WHEN_HINTS: Record<AskWhen, string> = {
   "invoice.paid": "Not deposits or progress billing: the work isn't done yet.",
 };
 const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);
+
+/** Where the two columns stack (base.css .two-col), and a phone's numbers move under the forms. */
+const STACKED = "(max-width: 900px)";
+
+/** Whether the columns are stacked, following the window as it turns or resizes. */
+function useStacked() {
+  const [stacked, setStacked] = useState(() => window.matchMedia(STACKED).matches);
+  useEffect(() => {
+    const query = window.matchMedia(STACKED);
+    const change = () => setStacked(query.matches);
+    query.addEventListener("change", change);
+    return () => query.removeEventListener("change", change);
+  }, []);
+  return stacked;
+}
 
 export function Reviews() {
   const session = useSession();
@@ -75,9 +97,17 @@ export function Reviews() {
       ) as unknown as AskRuleRow[],
   });
 
-  // Recent requests run the full width under the rest, so on a phone Ask a client now comes before a long list.
+  const google = useGoogleState();
+  const g = google.data;
+  const connected = hasReviews(g);
+  const stats = useReviewStats(connected);
+  const stacked = useStacked();
+  const numbers = hasNumbers(g) && <GoogleNumbers g={g!} stats={stats} />;
+
+  // The lists run the full width under the rest, so on a phone Ask a client now comes before a long list.
   return (
     <div className="stack">
+      {!stacked && numbers}
       <div className="two-col">
         <div className="wide stack">
           {!can(session, "automations") ? (
@@ -90,15 +120,21 @@ export function Reviews() {
           ) : rules.error ? (
             <div className="card"><ErrorState compact error={rules.error} onRetry={() => rules.refetch()} /></div>
           ) : (
-            <AskAutomatically rules={rules.data} />
+            <AskAutomatically rules={rules.data} google={g} />
           )}
-          <ReviewLink />
+          <ReviewLink google={g} />
         </div>
         <aside className="narrow stack">
           <AskNow />
+          {google.error ? <div className="card"><ErrorState compact error={google.error} onRetry={() => google.refetch()} /></div> : <GoogleSide g={g} stats={stats} />}
         </aside>
       </div>
-      <RecentRequests />
+      {stacked && numbers}
+      {showsList(g) && <GoogleReviewList g={g!} />}
+      <section className="stack" aria-labelledby="recent-requests">
+        <h2 id="recent-requests" className="section-title">Recent requests</h2>
+        <RecentRequests />
+      </section>
     </div>
   );
 }
@@ -116,7 +152,7 @@ function CustomRule({ rule }: { rule: AskRuleRow }) {
   );
 }
 
-function AskAutomatically({ rules }: { rules: AskRuleRow[] }) {
+function AskAutomatically({ rules, google }: { rules: AskRuleRow[]; google: GoogleState | undefined }) {
   const session = useSession();
   const queryClient = useQueryClient();
   const settings = session.company.settings as { review_url?: string };
@@ -160,7 +196,10 @@ function AskAutomatically({ rules }: { rules: AskRuleRow[] }) {
         </label>
       </div>
       {!settings.review_url && (
-        <div className="callout callout-warning"><Icon name="alert" size={18} /><div className="grow">Add your Google review link below first. Until then there's nothing to send.</div></div>
+        <div className="callout callout-warning">
+          <Icon name="alert" size={18} />
+          <div className="grow">{google?.review_link.suggested ? "Use the link Google gives below first." : "Add your Google review link below first."} Until then there's nothing to send.</div>
+        </div>
       )}
       {form.enabled && onlyRecurring && !afterCustom && (
         <p className="muted small" style={{ margin: 0 }}>Only recurring work is asked right now. Saving with this on asks after {lowerFirst(whenLabel)} too.</p>
@@ -257,11 +296,14 @@ function AskAutomatically({ rules }: { rules: AskRuleRow[] }) {
   );
 }
 
-function ReviewLink() {
+function ReviewLink({ google }: { google: GoogleState | undefined }) {
   const session = useSession();
   const settings = session.company.settings as { review_url?: string; review_message?: string };
   const canSave = hasRole(session, "admin");
   const [url, setUrl] = useState(settings.review_url ?? "");
+  // Google's own link for the location, when it would change this one: offered, never used without asking.
+  const offer = canSave ? google?.review_link.suggested : null;
+  const saveLink = useSettingsSaver();
   const [message, setMessage] = useState(settings.review_message ?? DEFAULT_REVIEW_MESSAGE);
   const [reminder, setReminder] = useState(reviewSettings(session.company.settings).reminderMessage);
   const save = useSettingsSaver();
@@ -283,6 +325,16 @@ function ReviewLink() {
       }}
     >
       <strong>Your review link</strong>
+      {offer && (
+        <ReviewLinkOffer
+          link={offer}
+          title={google?.location?.title ?? null}
+          onUse={async () => {
+            await saveLink.mutateAsync({ review_url: offer });
+            setUrl(offer);
+          }}
+        />
+      )}
       <Field label="Google review URL" error={url && !validUrl ? "Paste the full link, starting with https://" : null} hint={<a href="https://support.google.com/business/answer/3474122" target="_blank" rel="noreferrer">Where to find it</a>}>
         <input className="input" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://g.page/r/…/review" disabled={!canSave} />
       </Field>
@@ -322,7 +374,7 @@ function RecentRequests() {
       unwrap(
         await supabase()
           .from("review_requests")
-          .select("id, channel, status, sent_at, clicked_at, error, reminders_sent, reminders_failed, next_reminder_at, reminder_note, reminder_error, client:clients(id, display_name)")
+          .select("id, channel, status, sent_at, clicked_at, error, reminders_sent, reminders_failed, next_reminder_at, reminder_note, reminder_error, reviewed_at, client:clients(id, display_name)")
           .eq("company_id", session.company.id)
           .order("sent_at", { ascending: false })
           .limit(50),
@@ -333,7 +385,6 @@ function RecentRequests() {
   const rows = requests.data ?? [];
   return (
     <div className="card">
-      <div className="card-head"><strong>Recent requests</strong></div>
       {requests.isPending && <div className="card-pad"><CardSkeleton lines={2} title={false} /></div>}
       {requests.error && <ErrorState compact error={requests.error} onRetry={() => requests.refetch()} />}
       {requests.data?.length === 0 && <EmptyState inline title="No review requests yet" />}
@@ -379,7 +430,7 @@ function AskNow() {
     enabled: Boolean(client),
     queryFn: async () => {
       const [who, last] = await Promise.all([
-        supabase().from("clients").select("display_name, email, phone, status, review_opt_out, marketing_opt_out, sms_opt_out_at").eq("id", client!.id).maybeSingle(),
+        supabase().from("clients").select("display_name, email, phone, status, review_opt_out, marketing_opt_out, sms_opt_out_at, reviewed_at").eq("id", client!.id).maybeSingle(),
         supabase().rpc("last_review_ask", { p_company: session.company.id, p_client: client!.id }),
       ]);
       return { client: unwrap(who), last: unwrap(last) ?? null };
@@ -409,30 +460,42 @@ function AskNow() {
   const last = picked.data?.last;
   const waitsUntil = last ? new Date(Date.parse(last) + REVIEW_GAP_DAYS * 86_400_000) : null;
 
+  // A client who already left a Google review isn't asked at all, so the rest of the form is moot.
+  const reviewed = Boolean(client && who?.reviewed_at);
+
   return (
-    <form className="card card-pad stack-sm" onSubmit={(e: FormEvent) => { e.preventDefault(); if (client && !refusal) ask.mutate(); }}>
+    <form className="card card-pad stack-sm" onSubmit={(e: FormEvent) => { e.preventDefault(); if (client && !refusal && !reviewed) ask.mutate(); }}>
       <strong>Ask a client now</strong>
       <ClientPicker value={client} onChange={setClient} allowCreate={false} />
-      {client && picked.data && (
-        <span className="muted small">
-          {last ? `Last asked ${timeAgo(last)}` : "Not asked yet"}
-          {waitsUntil && waitsUntil > new Date() ? `, so automatic asks wait until ${formatDate(waitsUntil)}.` : "."}
+      {reviewed ? (
+        <span className="small" style={{ color: "var(--warning)", fontWeight: 600 }}>
+          {who!.display_name} already left a Google review, so they aren't asked again. Not them?{" "}
+          <Link to={`/marketing?tab=reviews&client=${client!.id}`}>See their review</Link> and undo the match.
         </span>
+      ) : (
+        <>
+          {client && picked.data && (
+            <span className="muted small">
+              {last ? `Last asked ${timeAgo(last)}` : "Not asked yet"}
+              {waitsUntil && waitsUntil > new Date() ? `, so automatic asks wait until ${formatDate(waitsUntil)}.` : "."}
+            </span>
+          )}
+          <div className="segmented" role="group" aria-label="Send by">
+            {CHANNELS.map((c) => (
+              <button key={c.value} type="button" aria-pressed={channel === c.value} disabled={c.value === "both" ? !ready.email && !ready.sms : !ready[c.value]} onClick={() => setChannel(c.value)}>{c.label}</button>
+            ))}
+            <button type="button" aria-pressed={channel === "link"} onClick={() => setChannel("link")}>Copy link</button>
+          </div>
+          {!ready.sms && <span className="muted small">Texting isn't set up on this Crewtavo.</span>}
+          {!ready.email && <span className="muted small">Email isn't connected yet.<ConnectEmailHint /></span>}
+          {!settings.review_url && <span className="small" style={{ color: "var(--warning)", fontWeight: 600 }}>Save your Google review link first.</span>}
+          {refusal && <span className="small" style={{ color: "var(--warning)", fontWeight: 600 }}>{refusal}</span>}
+          {only && <span className="muted small">Goes by {only === "email" ? "email" : "text"} only. {askRefusal(who!, only === "email" ? "sms" : "email", ready)}</span>}
+          {channel === "link" && !refusal && <span className="muted small">Automatic asks don't count it until the link is opened.</span>}
+          {!refusal && channel !== "link" && remindersOn && <span className="muted small">Reminders follow if they don't open it.</span>}
+          <Button type="submit" variant="primary" icon="star" loading={ask.isPending} disabled={!client || !settings.review_url || Boolean(refusal)}>Ask for a review</Button>
+        </>
       )}
-      <div className="segmented" role="group" aria-label="Send by">
-        {CHANNELS.map((c) => (
-          <button key={c.value} type="button" aria-pressed={channel === c.value} disabled={c.value === "both" ? !ready.email && !ready.sms : !ready[c.value]} onClick={() => setChannel(c.value)}>{c.label}</button>
-        ))}
-        <button type="button" aria-pressed={channel === "link"} onClick={() => setChannel("link")}>Copy link</button>
-      </div>
-      {!ready.sms && <span className="muted small">Texting isn't set up on this Crewtavo.</span>}
-      {!ready.email && <span className="muted small">Email isn't connected yet.<ConnectEmailHint /></span>}
-      {!settings.review_url && <span className="small" style={{ color: "var(--warning)", fontWeight: 600 }}>Save your Google review link first.</span>}
-      {refusal && <span className="small" style={{ color: "var(--warning)", fontWeight: 600 }}>{refusal}</span>}
-      {only && <span className="muted small">Goes by {only === "email" ? "email" : "text"} only. {askRefusal(who!, only === "email" ? "sms" : "email", ready)}</span>}
-      {channel === "link" && !refusal && <span className="muted small">Automatic asks don't count it until the link is opened.</span>}
-      {!refusal && channel !== "link" && remindersOn && <span className="muted small">Reminders follow if they don't open it.</span>}
-      <Button type="submit" variant="primary" icon="star" loading={ask.isPending} disabled={!client || !settings.review_url || Boolean(refusal)}>Ask for a review</Button>
     </form>
   );
 }

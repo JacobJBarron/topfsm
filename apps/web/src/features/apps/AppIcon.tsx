@@ -6,6 +6,7 @@ import chatgptLogo from "@/assets/apps/chatgpt.svg";
 import claudeLogo from "@/assets/apps/claude.svg";
 import crewtavoLogo from "@/assets/apps/crewtavo.svg";
 import falLogo from "@/assets/apps/fal.svg";
+import googleBusinessLogo from "@/assets/apps/google-business.svg";
 import googleCalendarLogo from "@/assets/apps/google-calendar.svg";
 import outlookLogo from "@/assets/apps/outlook.svg";
 import quickbooksLogo from "@/assets/apps/quickbooks.svg";
@@ -22,6 +23,7 @@ const LOGOS: Record<string, string> = {
   careers: crewtavoLogo,
   drive: crewtavoLogo,
   marketing: crewtavoLogo,
+  google_business: googleBusinessLogo,
   google_calendar: googleCalendarLogo,
   zoho_calendar: zohoLogo,
   outlook_calendar: outlookLogo,

@@ -1,8 +1,10 @@
 /**
- * QuickBooks and Zoho Books with the business's own app at Intuit or Zoho: step by step to make one
- * (every address it asks for, ready to copy), then its Client ID and secret pasted here. Nobody has
- * to set up the server, and the keys stay on this business's own server, encrypted.
+ * QuickBooks, Zoho Books and Google Business Profile with the business's own app at Intuit, Zoho or
+ * Google: step by step to make one (every address it asks for, ready to copy), then its Client ID and
+ * secret pasted here. Nobody has to set up the server, and the keys stay on this business's own
+ * server, encrypted.
  */
+import { GOOGLE_ACCESS_FORM } from "@crewtavo/core/reviews";
 import { useMutation } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/Button";
@@ -14,6 +16,14 @@ import { copyText } from "@/lib/clipboard";
 import type { AppRow } from "./catalog";
 
 const INTUIT_DEVELOPER = "https://developer.intuit.com/";
+const GOOGLE_CLOUD = "https://console.cloud.google.com/";
+/** The three APIs Google Business Profile's reviews need turned on in the project. */
+const GOOGLE_APIS = [
+  { name: "My Business Account Management API", href: "https://console.cloud.google.com/apis/library/mybusinessaccountmanagement.googleapis.com" },
+  { name: "My Business Business Information API", href: "https://console.cloud.google.com/apis/library/mybusinessbusinessinformation.googleapis.com" },
+  { name: "Google My Business API", href: "https://console.cloud.google.com/apis/library/mybusiness.googleapis.com" },
+];
+export const BUSINESS_SCOPE = "https://www.googleapis.com/auth/business.manage";
 
 /** Zoho's data centers: an app made in one only signs in accounts there (registry.ts keeps the same list). */
 const ZOHO_REGIONS = [
@@ -31,7 +41,7 @@ const accountsOf = (tld: string) => `https://accounts.${tld}`;
 const regionOf = (accountsServer: string | null | undefined) => ZOHO_REGIONS.find((r) => accountsOf(r.tld) === accountsServer) ?? ZOHO_REGIONS[0]!;
 
 /** One value to copy into the provider's form, with the name that form gives it. */
-function CopyRow({ label, value }: { label: string; value: string }) {
+export function CopyRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="app-copy">
       <span>{label}</span>
@@ -41,37 +51,45 @@ function CopyRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function AppKeysCard({ app, onChanged, onConnect, connecting }: { app: AppRow; onChanged: () => void; onConnect: () => void; connecting: boolean }) {
+/**
+ * `anchor` makes it the page's #app-setup; off when another card on the page already is (Google
+ * Business Profile's Before you sign in, or its panel once installed).
+ */
+export function AppKeysCard({ app, onChanged, onConnect, connecting, anchor = true }: { app: AppRow; onChanged: () => void; onConnect: () => void; connecting: boolean; anchor?: boolean }) {
   const keys = app.app_keys ?? null;
+  const setupId = anchor ? "app-setup" : undefined;
   const [editing, setEditing] = useState(false);
   const qbo = app.id === "quickbooks";
-  const provider = qbo ? "Intuit" : "Zoho";
+  const google = app.id === "google_business";
+  const provider = qbo ? "Intuit" : google ? "Google" : "Zoho";
   const remove = useMutation({
     meta: { success: `${provider} app keys removed` },
     mutationFn: () => api.delete(`/apps/${app.id}/app-keys`),
     onSettled: onChanged,
   });
   const askRemove = async () => {
-    const body = `${app.name} is uninstalled, and installing it again needs your ${provider} app's keys. Nothing already synced is deleted.`;
+    const body = google
+      ? `${app.name} is uninstalled, and installing it again uses this server's Google app, if it has one. The reviews already here stay.`
+      : `${app.name} is uninstalled, and installing it again needs your ${provider} app's keys. Nothing already synced is deleted.`;
     if (await confirm({ title: `Remove your ${provider} app keys?`, body, confirmLabel: "Remove keys", danger: true })) remove.mutate();
   };
 
   if (keys && !editing) {
     const end = keys.client_id.slice(-4);
     return (
-      <section id="app-setup" className="card card-pad stack-sm" aria-labelledby="app-keys-title" style={{ gap: 8 }}>
+      <section id={setupId} className="card card-pad stack-sm" aria-labelledby="app-keys-title" style={{ gap: 8 }}>
         <h2 id="app-keys-title" className="section-title" style={{ fontSize: 16 }}>Your {provider} app</h2>
         <span className="muted small">
           Client ID ending in <strong>{end}</strong>
-          {qbo ? (keys.sandbox ? " · Development keys, for a sandbox company" : " · Production keys") : ` · ${regionOf(keys.accounts_server).label}`}
+          {qbo ? (keys.sandbox ? " · Development keys, for a sandbox company" : " · Production keys") : google ? null : ` · ${regionOf(keys.accounts_server).label}`}
           . The secret is stored encrypted on your server and never shown again.
         </span>
         {app.status === "disconnected" && (
           <div className="callout" style={{ marginTop: 4 }}>
             <Icon name="info" size={20} />
             <div className="grow stack-sm" style={{ gap: 8 }}>
-              <span>Last step: sign in to {app.name} and pick your company.</span>
-              <Button variant="primary" style={{ justifySelf: "start" }} loading={connecting} onClick={onConnect}>Sign in to {app.name}</Button>
+              <span>Last step: {google ? "sign in with Google and pick your location." : `sign in to ${app.name} and pick your company.`}</span>
+              <Button variant="primary" style={{ justifySelf: "start" }} loading={connecting} onClick={onConnect}>{google ? "Sign in with Google" : `Sign in to ${app.name}`}</Button>
             </div>
           </div>
         )}
@@ -84,19 +102,32 @@ export function AppKeysCard({ app, onChanged, onConnect, connecting }: { app: Ap
   }
 
   return (
-    <section id="app-setup" className="card card-pad stack" aria-labelledby="app-keys-title">
+    <section id={setupId} className="card card-pad stack" aria-labelledby="app-keys-title">
       <div className="stack-sm" style={{ gap: 4 }}>
         <h2 id="app-keys-title" className="section-title" style={{ fontSize: 16 }}>{keys ? `Change your ${provider} app keys` : `Set up ${app.name}`}</h2>
         <span className="muted small">
           {qbo
             ? "QuickBooks connects through an app you make at Intuit, for your business only. It's free, and these steps give you everything Intuit asks for."
-            : "Zoho Books connects through an app you make in Zoho's API Console, for your business only. It's free and takes about five minutes."}
+            : google
+              ? googleIntro(app)
+              : "Zoho Books connects through an app you make in Zoho's API Console, for your business only. It's free and takes about five minutes."}
         </span>
       </div>
-      {qbo ? <IntuitSteps app={app} /> : null}
+      {qbo ? <IntuitSteps app={app} /> : google ? <GoogleSteps app={app} /> : null}
       <KeysForm app={app} initial={keys} onSaved={() => { setEditing(false); onChanged(); }} onCancel={keys ? () => setEditing(false) : undefined} />
     </section>
   );
+}
+
+/**
+ * Google Business Profile's own app: beside this server's when it has one (signed in with no keys of
+ * the company's), otherwise the only way in, so it doesn't speak of a server's project there isn't.
+ */
+function googleIntro(app: AppRow): string {
+  if (app.available && !app.app_keys) {
+    return "Use your own Google Cloud project instead of this server's. It's free, but Google approves each project's access to reviews on its own, which takes about 2 weeks, even if this server's project is approved already.";
+  }
+  return "Google Business Profile connects through a Google Cloud project you make for your business. It's free, but Google approves each project's access to reviews first, which takes about 2 weeks.";
 }
 
 function IntuitSteps({ app }: { app: AppRow }) {
@@ -127,8 +158,42 @@ function IntuitSteps({ app }: { app: AppRow }) {
   );
 }
 
+/** A Google Cloud project for the business's own Google app: Google's access request comes early, since it's the step that takes weeks. */
+export function GoogleSteps({ app }: { app: AppRow }) {
+  return (
+    <ol className="app-steps" style={{ gap: 14 }}>
+      <li><div className="stack-sm" style={{ gap: 8 }}>
+        <span>In Google Cloud, create a project for Crewtavo, signed in with a Google account that manages your Business Profile.</span>
+        <a className="btn btn-sm" style={{ justifySelf: "start" }} href={GOOGLE_CLOUD} target="_blank" rel="noreferrer">Open Google Cloud <Icon name="external" size={12} /></a>
+      </div></li>
+      <li><div className="stack-sm" style={{ gap: 8 }}>
+        <span>
+          Ask Google for access to the Business Profile APIs now: it takes about 2 weeks. Google's form asks for the project number (on the project's
+          dashboard) and an email that manages your profile, which must have been verified for 60 days or more.
+        </span>
+        <a className="btn btn-sm" style={{ justifySelf: "start" }} href={GOOGLE_ACCESS_FORM} target="_blank" rel="noreferrer">Google's access request form <Icon name="external" size={12} /></a>
+      </div></li>
+      <li><div className="stack-sm" style={{ gap: 8 }}>
+        <span>Turn on these three APIs in the project:</span>
+        <ul className="app-access">{GOOGLE_APIS.map((a) => <li key={a.name}><a href={a.href} target="_blank" rel="noreferrer">{a.name} <Icon name="external" size={12} /></a></li>)}</ul>
+      </div></li>
+      <li><div className="stack-sm" style={{ gap: 8 }}>
+        <span>Under <strong>Google Auth Platform</strong>, set up the consent screen as <strong>External</strong>, add this scope under <strong>Data access</strong>, and publish the app so it says <strong>In production</strong>. An app left in Testing signs out after 7 days.</span>
+        <CopyRow label="Scope" value={BUSINESS_SCOPE} />
+        <span className="small">Google shows an "unverified app" screen at sign-in until it reviews the app. That's fine for your own business: click <strong>Advanced</strong>, then continue.</span>
+      </div></li>
+      <li><div className="stack-sm" style={{ gap: 8 }}>
+        <span>Under <strong>Clients</strong>, create an OAuth client of type <strong>Web application</strong> with this redirect URI:</span>
+        {app.redirect_uri && <CopyRow label="Authorized redirect URI" value={app.redirect_uri} />}
+      </div></li>
+      <li>Copy the <strong>Client ID</strong> and <strong>Client secret</strong> Google shows, and paste them below.</li>
+    </ol>
+  );
+}
+
 function KeysForm({ app, initial, onSaved, onCancel }: { app: AppRow; initial: NonNullable<AppRow["app_keys"]> | null; onSaved: () => void; onCancel?: () => void }) {
   const qbo = app.id === "quickbooks";
+  const zohoBooks = app.id === "zoho_books";
   const [clientId, setClientId] = useState(initial?.client_id ?? "");
   const [secret, setSecret] = useState("");
   const [show, setShow] = useState(false);
@@ -137,8 +202,8 @@ function KeysForm({ app, initial, onSaved, onCancel }: { app: AppRow; initial: N
   const zoho = ZOHO_REGIONS.find((r) => r.tld === region)!;
   const origin = app.redirect_uri ? new URL(app.redirect_uri).origin : window.location.origin;
   const save = useMutation({
-    meta: { inline: true, success: `${qbo ? "Intuit" : "Zoho"} app keys saved` },
-    mutationFn: () => api.put(`/apps/${app.id}/app-keys`, { client_id: clientId.trim(), client_secret: secret.trim(), ...(qbo ? { sandbox } : { accounts_server: accountsOf(region) }) }),
+    meta: { inline: true, success: `${qbo ? "Intuit" : zohoBooks ? "Zoho" : "Google"} app keys saved` },
+    mutationFn: () => api.put(`/apps/${app.id}/app-keys`, { client_id: clientId.trim(), client_secret: secret.trim(), ...(qbo ? { sandbox } : zohoBooks ? { accounts_server: accountsOf(region) } : {}) }),
     onSuccess: () => {
       setSecret("");
       onSaved();
@@ -155,7 +220,7 @@ function KeysForm({ app, initial, onSaved, onCancel }: { app: AppRow; initial: N
 
   return (
     <form className="stack" onSubmit={submit}>
-      {!qbo && (
+      {zohoBooks && (
         <ol className="app-steps" style={{ gap: 14 }}>
           <li><div className="stack-sm" style={{ gap: 8 }}>
             <span>Pick where your Zoho account is. When you're in Zoho Books, the address shows it: <strong>books.zoho.eu</strong> is Europe.</span>

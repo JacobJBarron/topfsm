@@ -269,6 +269,11 @@ insert into public.invoice_line_items (company_id, invoice_id, name, quantity, u
 insert into public.referral_credit_skips (company_id, referral_id, invoice_id) values (:'co', :'earned_ref', :'roof_invoice');
 insert into public.referral_asks (company_id, client_id) values (:'co', :'c1');
 insert into public.review_requests (company_id, client_id) values (:'co', :'c1');
+-- A Google review of Ann's, and the company's review sync.
+insert into public.review_syncs (company_id, account, location_id) values (:'co', 'accounts/1070', 'locations/1070');
+insert into public.reviews (company_id, location_id, review_id, external_name, reviewer_name, rating, posted_at, google_updated_at, client_id, match)
+values (:'co', 'locations/1070', 'r1070', 'accounts/1070/locations/1070/reviews/r1070', 'Ann C.', 5, now(), now(), :'c1', 'hand');
+insert into public.review_match_choices (company_id, location_id, review_id, client_id) values (:'co', 'locations/1070', 'r1070', :'c1');
 insert into public.roof_packages (company_id, name) values (:'co', 'Good') returning id as roof_package \gset
 insert into public.roof_package_items (company_id, package_id, service_id, kind) values (:'co', :'roof_package', :'shingles_service', 'included');
 insert into public.service_materials (company_id, service_id, item_number, name, uom, per_unit) values (:'co', :'shingles_service', 'ABC-1', 'Shingle bundle', 'BD', 3);
@@ -502,7 +507,7 @@ select t1070.check(array(
   'promo_code_usage(uuid)', 'put_quote_package(uuid, uuid, jsonb, boolean)',
   'referral_auto_apply(uuid, boolean)', 'referral_credits_for(uuid, uuid)', 'referral_give_credit(uuid)', 'referral_no_reward(uuid)', 'referral_set_given(uuid)',
   'referral_stats(uuid, timestamp with time zone, timestamp with time zone)',
-  'remove_promo_code(text, uuid)', 'remove_quote_option(uuid, uuid)', 'remove_referral_credit(uuid)',
+  'remove_promo_code(text, uuid)', 'remove_quote_option(uuid, uuid)', 'remove_referral_credit(uuid)', 'review_stats(uuid)',
   'search_sops(uuid, text, integer, boolean)', 'send_sub_offer(uuid, timestamp with time zone)', 'set_sub_reminders(uuid, boolean)',
   'set_sub_sign_in_countries(uuid, text[])', 'sign_quote(uuid, jsonb, uuid, numeric)',
   'storage_overview(uuid)', 'storage_set_allowance(uuid, uuid, text, bigint)', 'storage_set_limit(uuid, text, bigint)', 'sub_1099_totals(uuid, integer)', 'sub_wc_audit(uuid, date, date)', 'time_entry_places(uuid, uuid[])',
@@ -616,6 +621,8 @@ select t1070.check((select (public.marketing_summary(:'co') ->> 'opted_out')::in
   and (public.dashboard(:'co') -> 'workflow' -> 'quotes' ->> 'draft')::int = 0
   and coalesce((public.dashboard(:'co') -> 'today' ->> 'total')::int, 0) = 0),
   'the dashboard, marketing summary and when a client was last asked count nothing (they run as the person, who can''t read the company)');
+select t1070.check((select (s ->> 'count')::int = 0 and (s ->> 'asks_12m')::int = 0 and s -> 'average' = 'null'::jsonb from (select public.review_stats(:'co') as s) x),
+  'Google reviews'' numbers count nothing either');
 select t1070.check((select array_agg(visit_id) from public.equipment_conflicts(:'co', array[:'e1', :'e2']::uuid[], private.company_today(:'co') + 1, null, null)) is null
   and (select array_agg(visit_id) from public.equipment_conflicts(:'co', array[:'e1']::uuid[], private.company_today(:'co'), null, null)) = array[:'v1']::uuid[],
   'equipment_conflicts only sees their own visits');

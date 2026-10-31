@@ -348,7 +348,7 @@ marketing.post("/reviews/request", requireUser, requireCompany(SALES), async (c)
   const client = must(
     await c.var.db
       .from("clients")
-      .select("id, display_name, email, phone, status, review_opt_out, marketing_opt_out, sms_opt_out_at")
+      .select("id, display_name, email, phone, status, review_opt_out, marketing_opt_out, sms_opt_out_at, reviewed_at")
       .eq("id", body.client_id)
       .eq("company_id", c.var.companyId)
       .maybeSingle(),

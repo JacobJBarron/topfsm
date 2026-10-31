@@ -8,7 +8,10 @@ referral credits and asks, is built (`20261031000100_referral_credits.sql`,
 Marketing → Referrals, the invoice page's credit rows). Phase C, automated campaigns, more audiences and
 results, is built (`20261031000200_automated_campaigns.sql`, `20261031000210_campaign_audiences.sql`,
 `20261031000220_campaign_results.sql`, `20261031000230_automated_campaign_fixes.sql`, `apps/api/src/services/automatedCampaigns.ts`,
-`packages/core/src/campaigns.ts`, Marketing → Campaigns). Phases D and E aren't. This is the plan.
+`packages/core/src/campaigns.ts`, Marketing → Campaigns). Phase D, Google reviews, is built
+(`20261031000300_google_reviews.sql`, `20261031000310_review_notifications.sql`, `20261031000320_review_stats.sql`,
+`20261031000330_google_review_fixes.sql`, `20261031000340_review_match_choices.sql`, `packages/core/src/reviews.ts`, `apps/api/src/integrations/googleBusiness.ts`, `apps/api/src/services/googleReviews.ts`,
+`apps/api/src/routes/googleReviews.ts`, Apps → Google Business Profile, Marketing → Reviews). Phase E isn't. This is the plan.
 
 The goal: Crewtavo's own version of Jobber's Marketing Suite (Reviews, Referrals, Campaigns and
 social posting), following how Jobber does each one, shipped as one built-in app in Apps that owns
@@ -401,18 +404,171 @@ counted.
   them on is refused. Uninstalling says how many win-back emails are waiting, since they're cancelled
   for good; past clients still due a re-engage email get it once Marketing is back.
 
-### 4. Google reviews inside Crewtavo (phase D)
+### 4. Google reviews inside Crewtavo (phase D, built)
 
-- **A Google Business Profile app** brings in the business's reviews.
-  - The **Reviews** tab adds the reviews with rating, count and trend, and **Suggest a reply**,
-    drafted with the company's Anthropic key the way message rewrite is.
-  - New reviews reach the office through a **Reviews** notification topic.
-  - A client's review, matched by name, stops their reminders and future asks.
+- **A Google Business Profile app** in Apps, under a new **Marketing** category, brings in one
+  location's reviews. It signs in like Google Calendar, with the server's Google app
+  (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) or the company's own (its keys pasted on the app's
+  page), with the one scope `business.manage`.
 - **This is the one big difference from Jobber.** Jobber has one Google app that's already
-  approved. Every Crewtavo instance needs its own approval:
+  approved. Every Crewtavo instance's Google Cloud project needs its own approval of the Business
+  Profile APIs, and so does a company's own Google app:
   - The business's Google profile has to be verified for 60+ days.
-  - Approval takes about 14 days.
-  - Until it's approved, everything in phases A to C still works.
+  - Approval takes about 2 weeks (Google says 14 days), said the same way everywhere.
+  - Until then Google answers with zero quota (429 `RESOURCE_EXHAUSTED`, or 403 on a list), which
+    is told apart from APIs not turned on (`SERVICE_DISABLED`), a sign-in to reconnect (401, a
+    missing scope, `invalid_grant`), a lost or unverified location, Google being busy, and other
+    errors (`googleProblem`). Access refused on one location is approval while the location is
+    still listed, and a lost location once it isn't. Only a call about the location can say it's
+    suspended: a suspended Google Cloud project (`CONSUMER_SUSPENDED`, "Consumer 'projects/…' has
+    been suspended") is the project's problem, said as such and tried again later.
+  - Signing in still works and finishes as installed, waiting on Google: the page says so (**Waiting
+    on Google**), with Google's form, the project number it asks for (the start of the OAuth client
+    ID) and who fills it in. Crewtavo asks again every 6 hours, and **Check again** asks now, on the app
+    page and, for owners and admins who connect apps, on the Reviews tab; it says what Google answered
+    either way. Everything in phases A to C keeps working. Back from signing in, the page says it's
+    installed and when reviews start, and leaves the wait itself to the callout below it.
+  - **Nothing that can't work yet is offered while it waits:** no **Sync now** (the server refuses it
+    too), no replies or **Suggest a reply**, and no filters over an empty list: the list shows once
+    there are reviews here or they're on their way.
+  - **Other errors are said plainly** ("Reviews couldn't be brought in from Google just now."), with
+    when Crewtavo tries again; Google's own words stay in `problem_detail`. The app's status says
+    **Not syncing** meanwhile. A reply Google doesn't take says so the same way.
+- **Marketing is a requirement.** While Marketing is off, Install is disabled ("Install Crewtavo -
+  Marketing first: your Google reviews show in Marketing → Reviews."). Installed, and Marketing
+  uninstalled later, the page shows **Paused**: nothing is brought in, no notifications, replies,
+  suggestions and Sync now answer "Marketing is off", and the reviews, matches and stops stay. It has
+  no **Open** then, and doesn't point at Marketing → Reviews, which isn't there.
+- **Sign-in expired:** the page is about **Reconnect**: no **Change location** (it lists through the
+  sign-in) and no review link offer until it's back.
+- **Install never signs in straight away.** It opens **Before you sign in**: Google's access request
+  first (it's the step that takes weeks), then this app's redirect address, the scope and the three
+  APIs for the Google Cloud project, then **Sign in with Google**. Instances that already use Google
+  Calendar sign-in have to add the new redirect address (`/api/apps/google_business/callback`) and
+  the scope to their project.
+- **Google's account chooser shows on every sign-in** (`prompt=select_account consent`): the account
+  that manages the Business Profile often isn't the one signed in to the browser. Signed in with a
+  Google account that manages no Business Profile, the page says so and offers **Sign in with another
+  Google account**, which the location picker offers too.
+- **One location per company.** With only one, it's picked by itself; otherwise the office picks it,
+  read again from Google (nothing the browser sends about it is kept). **Change location** removes
+  the old location's reviews after a confirm that says how many, and asks start again for their
+  clients, reminders included. Reviews are kept by Google's location and review ids, so the same
+  location reached through another account path keeps its reviews and matches.
+- **Reconnecting after Uninstall kept the reviews** takes their location up again when the new
+  sign-in still reaches it. When it doesn't (another Google account, or the profile moved or was made
+  again), that's a location to pick, not a lost one, and nobody is notified: the person who signed in
+  is on the page, which shows the locations to pick from. Picking another asks first, since the kept
+  reviews are removed, even when it's the account's only location. Whenever the app is signed in with
+  no location in use, the picker shows, so there's always a way on.
+- **Google's review link** (`metadata.newReviewUri`) is offered on the app page and in Reviews →
+  Your review link when the company's is empty or different: **Use this link** or **Keep mine**,
+  never used without asking. **Keep mine** holds for that location.
+- **Syncing**, every 30 minutes (`review_sync`, and **Sync now**, at most once every two minutes),
+  one worker per company (`claim_review_sync`, renewed each page):
+  - **Bringing in your reviews: 250 of 1,240** shows only while they're coming in: the location in
+    use, nothing in the way and Marketing on. The tab checks every 5 seconds while a sync runs, and
+    every 30 between the first sync's runs; never while it's waiting on Google or a person.
+  - **Sync now** says "Checking Google for new reviews". Pressed again within two minutes, "Google was
+    checked a moment ago. Try again in a couple of minutes." comes as a note, not an error.
+  - From the top, newest changes first, stopping at the first review already here unchanged.
+  - Once a day, and on the first sync, a full pass through every review (up to 10,000), saved page
+    by page so a pass cut short carries on, finds replies made in Google's own app (they may not
+    change a review's update time) and reviews deleted there. A page token Google turns down starts
+    the pass again.
+  - **Deleted on Google means marked, not deleted,** and only for a review a complete pass didn't
+    see and Google then answers 404 for, one by one (25 a run): a review the list skipped as it
+    shifted isn't marked, and its client isn't asked again by mistake. A marked review is hidden,
+    left out of the numbers and stops nobody's asks; if it comes back it's restored without a
+    notification.
+  - **A reply Google answers 404 for** isn't proof the review is gone (deleting a reply already
+    deleted in Google's own app does that), so Google is asked about the review itself: only a review
+    Google no longer has is marked, and deleting a reply Google no longer has clears it here too.
+  - **A reply written here wins over an older page** (`reviews.reply_written_at`, passed the time the
+    page was fetched): a page Google gave before a reply was posted, changed or deleted in Crewtavo, or
+    up to a minute after (Google's list can take a moment), doesn't put the old reply back or lose who
+    wrote it. A later page is Google's word, as before.
+- **Matching, Jobber's stop.** A review is matched to a client by name (folded the same way in the
+  database and the browser: case, accents in either case whatever the database's locale,
+  apostrophes, punctuation and spaces):
+  - The whole name can match without an ask; Google's "First L." form needs a review ask in the 180
+    days before the review (one that counts as `last_review_ask` counts it).
+  - The asked client wins; two asked, or two of the same name with none asked, leaves it for the
+    office. A client already matched to another review isn't matched again, and anonymous reviewers
+    never are. Couples and business names stay unmatched for the office to match by hand.
+  - **Match to a client…** and **Not this client** on each review. An undo sticks: that review is
+    never matched automatically again. Both are kept apart from the review (`review_match_choices`),
+    so they hold when its row is removed (**Change location** away and back, or disconnecting with the
+    reviews removed) and the review comes in again: matched by hand to the same client, or left alone.
+  - The ask a review answers is recorded (`review_requests.reviewed_at`), shown as **Left a review**
+    and counted as **Asks that led to a review**.
+- **A matched review stops every review ask** for that client: their reminders still to come stop
+  with "Left a Google review", and `begin_review_request` refuses new ones, automatic and by hand,
+  copied links too. The refusal says how to fix a wrong match ("Not them? Undo the match in
+  Marketing → Reviews.") and the client's page shows "Left a 4-star Google review", linking to it,
+  with its **Reviews** switch off and "Left a Google review, so not asked". **Ask a client now** says
+  only that, with **See their review** to undo a wrong match, and no button or last-asked line.
+  Undoing the match lifts the stop: the client's newest stopped ask gets its next reminder back,
+  timed as changing the reminder days would, but not while Marketing is off or for an ask from
+  before it was last installed (uninstalling stops reminders for good). The same happens whichever way
+  a client's last review goes: deleted on Google, removed by **Change location**, or removed on
+  disconnecting (the database says whose stop it lifted, `lifted_clients`, and the server gives the
+  reminders back). Reviews kept after disconnecting still stop their clients' asks: the client did
+  leave a review.
+- **Referral asks keep going after a review.** A happy reviewer is the best referrer, and stopping
+  their review reminders even lets an automatic referral ask go sooner, since it waits on them.
+- **The Reviews tab**, laid out like Referrals: the numbers across the top (Google's own average and
+  count, so they match what customers see, then the response rate, time to the first reply and asks
+  that led to a review, over 12 months), the ask settings and **Ask a client now** as before, the
+  monthly trend in the narrow column (counts charted, averages as plain figures under it, "—" for an
+  empty month), then **Your Google reviews** at full width, then **Recent requests**.
+  - On a phone (where the columns stack) the numbers come after the ask settings and **Ask a client
+    now**, just above the list: Marketing's own numbers are above the tabs already, and the form comes
+    before long content. Time to reply is short ("2 days") so it stays on one line.
+  - The trend shows whenever there are reviews here, also under what's in the way, and "N reviews need
+    a reply" only while replies can be posted.
+  - Filters: **Needs a reply**, stars, **Matched** / **Not matched**, 25 at a time. A notification's
+    link (`?review=`) shows that review first with its reply open; a client's page (`?client=`) shows
+    only theirs.
+  - The numbers show once there's something to count (the first sync done, Google's own count, or
+    reviews here), so waiting on Google's approval doesn't say "0 reviews on Google".
+  - Each review: stars, the reviewer's photo or initials, the date and its reply status on one line
+    with the menu, so on a phone the words and the reply editor get the row's width; then the words
+    with **More**, the client it's matched to ("Matched by name" for an automatic match), and its
+    reply. A reviewer Google sent without a name is "A Google user" (a person icon, not initials), and
+    "the review" in the confirms.
+  - **See their review** (from Ask a client now, on the tab itself, or a client's page) shows that
+    client's reviews and brings the list into view.
+  - **Replies post publicly on Google**: posting and editing are confirmed with the text shown.
+    "Replied 2 days ago by Mia", or "Replied on Google…" for one made in Google's app. **Suggest a
+    reply** and **Rewrite** draft one with the company's Claude key (or the server's), never adding
+    prices, dates, promises, offers or names not in the review, by first name only when it looks like
+    one, in the review's own language, and for 1 or 2 stars an apology and the company's own phone or
+    email from Settings, none made up. The phone goes in as the app shows it ("(540) 555-0100"), since
+    it may end up in a public reply. Nothing posts without a person.
+  - Not connected: a small card in the narrow column says what it adds and that Google approves each
+    server first; waiting on Google, the same spot shows that, and office staff are told an owner or
+    admin can act. Disconnected with the reviews kept, the same spot offers owners and admins **Connect
+    Google Business Profile**, and tells office staff to ask one. The ask settings stay first either way.
+- **Notifications:** a **Google reviews** topic ("New reviews, low ratings first. Email only for 1 and
+  2 stars"), by push and email by default for everyone (only people with the marketing area get
+  them). A review tells the office once, when it's first brought in after the first full sync and
+  was posted in the last 14 days, so connecting doesn't announce every old review, nor the two
+  weeks spent waiting on Google. The first full sync sends one "Your Google reviews are in: 132
+  reviews, 4.8 average" instead. A review changed from 3 stars or more to 1 or 2 tells it again. A
+  sign-in that needs Reconnect, a lost location, or a location to pick once Google lets Crewtavo in on
+  a later try (nobody's looking then), tells owners and admins who connect apps once each time. None
+  of these go while Marketing is uninstalled, and a problem isn't recorded as told then, so it tells
+  them once Marketing is back. Owners and admins who connect apps without the marketing area see the
+  topic too ("When Google Business Profile needs signing in again or a location picked"), so they can
+  turn it off (`reviewNoticesFor`). Low ratings come first, and several at once lead to Marketing →
+  Reviews.
+- **Disconnecting** keeps the reviews already brought in (the confirm says so) with a box to remove
+  them, and signs out at Google, except when Google Calendar uses the same Google app: Google
+  revokes the whole sign-in, so then it's left, and the page says where to remove it.
+- **Docs:** the app's Setup guide and Website point at Google's pages
+  (`https://developers.google.com/my-business/content/prereqs`, `https://www.google.com/business/`)
+  until `crewtavo.com/docs/connections/google-business-profile/` is written in crewtavo-website.
 - **No competitor comparison** (Google's Places API charges per lookup).
 
 ### 5. Social posting (phase E)
@@ -474,7 +630,27 @@ counted.
   - the recurring-visit count read from settings
   - fourteen starter rules, with `referral_after_job`, `reengage_past_clients` and
     `win_back_lost_quotes`
-- Phase D adds `reviews`. Phase E adds `social_posts` and `attachments.shareable`.
+- `reviews` (phase D): one location's Google reviews, each once by Google's location and review ids
+  (`external_name` is what the v4 API is called with), the reviewer, stars (null for none), words,
+  the reply and when it first appeared (`first_replied_at`, for time to reply), the matched client
+  and how (`match`: auto, hand, none; `match_cleared_at` after **Not this client**), the ask it
+  answers, whether the office is to be told (`notify`: new or lowered) and when it was, and
+  `deleted_at`, and `reply_written_at` (a reply posted, changed or deleted from Crewtavo). Office staff
+  with the marketing area read them; only the server writes them. `mark_deleted_reviews`,
+  `set_review_location` and `end_review_sync` say how many and whose stop they lifted (`lifted_clients`).
+- `review_match_choices` (phase D): the office's match by hand, or "Not this client" (no client), for
+  each Google review by its location and review ids, kept when the review's row is removed and taken up
+  when it comes back. The server's alone, written by `set_review_client`.
+- `review_syncs`: each company's sync, the server's alone: the claim, the location (the one source
+  of truth for which location's reviews are kept), the full pass's place, the first and last
+  passes, what's in the way (`problem`: approval, not_enabled, signin, pick, location, error, with
+  `problem_detail`), the access notice last sent (signin, location, pick), and Google's own average and
+  count. The location is kept on disconnecting with the reviews, and is in use again only once the
+  app is set to it.
+- `clients.name_key`, `name_short` (generated from the name), `clients.reviewed_at` (set only by
+  the reviews table) and `review_requests.reviewed_at`. `review_stats` gives the Reviews tab's
+  numbers as the person asking; `notification_prefs` takes `reviews`.
+- Phase E adds `social_posts` and `attachments.shareable`.
 
 ## Build order
 
@@ -483,7 +659,7 @@ counted.
 | A. The app and review reminders | **Crewtavo - Marketing** in Apps, the sidebar switch, the Reviews form, reminders, quiet hours, 6-month limit, invoice-paid and visit-completed asks, the recurring visit count, per-client opt-out, STOP | The recurring-work fix, committed |
 | B. Referral credits | Credits earned and applied, the automatic referral ask, lost, the Referrals numbers | A |
 | C. Automated campaigns | The three automated campaigns, the daily inactive-client trigger, new audiences, opens, clicks and revenue | A |
-| D. Google reviews | The Google Business Profile app, reviews in Crewtavo, suggested replies, alerts, stopping asks once reviewed | A, and Google's approval |
+| D. Google reviews (built) | The Google Business Profile app, reviews in Crewtavo, suggested replies, alerts, stopping asks once reviewed | A, and Google's approval |
 | E. Social posting | The Facebook & Instagram app, OK to share, posts and scheduling, posting to Google | A (better with D) |
 
 - **B and C can be built at the same time in separate sessions, and so can D and E.**
@@ -542,6 +718,34 @@ counted.
   many clients have each.
 - **A changed wait moves follow-ups still waiting,** on any automation rule.
 - **Uninstalling Marketing** stops automated campaigns too; links and images already sent keep working.
+
+## Release notes for phase D
+
+- **Google reviews in Crewtavo,** with the new **Google Business Profile** app in Apps (it needs
+  Crewtavo - Marketing). Google approves each Crewtavo server's access to reviews first: your
+  Business Profile has to have been verified for 60 days or more, and Google takes about 2 weeks.
+  Sign in any time: the app waits on Google, says so, and starts once Google approves. Review asks
+  keep working meanwhile. Apply early for crm.brrhi.com's Google Cloud project.
+- **Servers that already use Google Calendar sign-in** add the new redirect address
+  (`…/api/apps/google_business/callback`), the `business.manage` scope and the three Business Profile
+  APIs to their Google Cloud project before signing in. The app's **Before you sign in** lists them.
+- **Marketing → Reviews** shows your reviews: Google's average and count, the response rate, time to
+  reply, a monthly trend and asks that led to a review, then every review with its stars, words,
+  matched client and reply.
+- **Reply from Crewtavo,** posted publicly on Google after you confirm, with **Suggest a reply** to
+  start from (it needs a Claude key).
+- **Google reviews notifications:** new reviews by push and email, low ratings first; the email
+  carries only 1 and 2 stars. Your Google reviews' first sync sends one "Your Google reviews are in"
+  instead of a notification for every old review.
+- **Asks stop for clients who already left a Google review,** matched by name, reminders included.
+  **Not this client** undoes a wrong match and asks can go again, with their reminders; so does a
+  review deleted on Google or removed. A match you made or undid holds if the review is removed and
+  comes back.
+- **Disconnecting keeps the reviews** already brought in, unless you tick the box to remove them.
+  Installing it again picks up where it was, or asks you to pick a location when the Google account
+  you sign in with doesn't have that one.
+- **Sign in with another Google account** from the app page, for a Google account that doesn't manage
+  your Business Profile.
 
 ## Decisions on the open questions (30 October 2026)
 

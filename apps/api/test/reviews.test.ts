@@ -160,6 +160,7 @@ describe("an automatic first ask", () => {
     [{ review_opt_out: true }, "Ana Smith asked not to get review requests"],
     [{ marketing_opt_out: true }, "Ana Smith unsubscribed from marketing"],
     [{ status: "archived" }, "Ana Smith is archived"],
+    [{ reviewed_at: "2026-10-20T12:00:00Z" }, "Ana Smith already left a Google review"],
   ])("skips a client with %j", async (over, detail) => {
     const calls = asking();
     expect(await ask({ client: { ...ANA, ...over } as never })).toMatchObject({ sent: false, skipped: true, detail });
@@ -253,11 +254,23 @@ describe("an ask by hand", () => {
     [{ sms_opt_out_at: "2026-10-01T12:00:00Z" }, "sms", "Ana Smith texted STOP, so texts to them are off. Ask by email instead."],
     [{ status: "archived" }, "email", "Ana Smith is archived. Restore them to ask for a review."],
     [{ marketing_opt_out: true }, "link", "Ana Smith unsubscribed from marketing, so they aren't asked for reviews."],
+    [{ reviewed_at: "2026-10-20T12:00:00Z" }, "email", "Ana Smith already left a Google review, so they aren't asked again. Not them? Undo the match in Marketing → Reviews."],
   ] as const)("refuses a client with %j", async (over, channel, message) => {
     asking();
     await expect(ask({ automatic: false, skipIfRecentDays: undefined, channel, client: { ...ANA, ...over } as never })).rejects.toThrow(message);
     expect(sendEmail).not.toHaveBeenCalled();
     expect(sendSms).not.toHaveBeenCalled();
+  });
+
+  it("says a client matched to a Google review meanwhile already left one, not that they were asked lately", async () => {
+    // begin_review_request turns the ask down; the client's review came in after the page was read.
+    serve({ tables: { companies: [companyRow()], clients: [{ ...ANA, reviewed_at: "2026-10-27T14:59:00Z" }] }, rpc: { begin_review_request: () => null } });
+    await expect(ask({ automatic: false, skipIfRecentDays: undefined })).rejects.toThrow("Ana Smith already left a Google review, so they aren't asked again.");
+    serve({ tables: { companies: [companyRow()], clients: [{ ...ANA, reviewed_at: "2026-10-27T14:59:00Z" }] }, rpc: { begin_review_request: () => null, last_review_ask: () => null } });
+    expect(await ask()).toMatchObject({ skipped: true, detail: "Ana Smith already left a Google review" });
+    serve({ tables: { companies: [companyRow()], clients: [ANA] }, rpc: { begin_review_request: () => null, last_review_ask: () => null } });
+    expect(await ask()).toMatchObject({ skipped: true, detail: "Already asked in the last 6 months" });
+    expect(sendEmail).not.toHaveBeenCalled();
   });
 
   it("texts right away at 10:30pm", async () => {

@@ -162,6 +162,25 @@ describe("review reminders", () => {
   });
 });
 
+describe("Google reviews", () => {
+  it("come in every 30 minutes for each company that's due (services/googleReviews.ts), with a tally", async () => {
+    expect(TASKS).toContain("review_sync");
+    expect(CRON_TASKS["12,42 * * * *"]).toEqual(["review_sync"]);
+    expect([12, 42].every((m) => cronMatches("12,42 * * * *", new Date(Date.UTC(2026, 9, 27, 14, m, 0, 250))))).toBe(true);
+    expect([0, 11, 30, 43].some((m) => cronMatches("12,42 * * * *", new Date(Date.UTC(2026, 9, 27, 14, m))))).toBe(false);
+    const calls = serve((call) => {
+      if (call.path === "rpc/review_syncs_due") return ["co-1", "co-2"];
+      // co-1 is being synced by another worker; co-2 has Marketing uninstalled since.
+      if (call.path === "rpc/claim_review_sync") return call.body.p_company === "co-1" ? null : "claim-2";
+      if (call.path === "companies") return [{ settings: { marketing: { enabled: false } } }];
+      return [];
+    });
+    expect(await runTask("review_sync", env)).toEqual({ due: 2, synced: 0, waiting: 2, problems: 0, errors: 0 });
+    expect(calls.find((c) => c.path === "rpc/review_syncs_due")!.body).toEqual({ p_limit: 25 });
+    expect(calls.some((c) => c.url.host !== "example.supabase.co")).toBe(false);
+  });
+});
+
 describe("clients who haven't had a visit in a while", () => {
   it("are queued hourly, for each company that can email them, at most 100 a day for each rule (services/automatedCampaigns.ts)", async () => {
     expect(TASKS).toContain("inactive");

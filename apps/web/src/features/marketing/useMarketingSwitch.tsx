@@ -43,10 +43,11 @@ export function UninstallSummary({ winBacks, followUp }: { winBacks: number | nu
         <li>Referral asks</li>
         <li>Campaigns: scheduled ones go back to drafts, and one that's sending stops where it is</li>
         <li>Automated campaigns. {waitingWords(winBacks)}</li>
+        <li>Bringing in Google reviews, and replying to them</li>
       </ul>
       <p style={{ margin: 0 }}>These keep working:</p>
       <ul className="app-steps">{keeps.map((k) => <li key={k}>{k}</li>)}</ul>
-      <p style={{ margin: 0 }}>Your campaigns, promo codes, review requests and referrals are kept, and come back if you install it again.</p>
+      <p style={{ margin: 0 }}>Your campaigns, promo codes, review requests, referrals and Google reviews are kept, and come back if you install it again.</p>
     </div>
   );
 }

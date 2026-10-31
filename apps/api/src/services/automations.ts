@@ -90,6 +90,7 @@ export interface RunContext {
     review_opt_out: boolean;
     marketing_opt_out: boolean;
     sms_opt_out_at: string | null;
+    reviewed_at: string | null;
   } | null;
   facts: Facts;
   vars: TemplateVars;
@@ -285,7 +286,7 @@ export async function loadContext(admin: Db, companyId: string, subjectType: str
   if (clientId) {
     const { data } = await admin
       .from("clients")
-      .select("id, display_name, email, phone, tags, status, lead_source, review_opt_out, marketing_opt_out, sms_opt_out_at")
+      .select("id, display_name, email, phone, tags, status, lead_source, review_opt_out, marketing_opt_out, sms_opt_out_at, reviewed_at")
       .eq("company_id", companyId)
       .eq("id", clientId)
       .maybeSingle();

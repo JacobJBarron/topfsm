@@ -49,7 +49,7 @@ export const NAV_GROUPS: NavItem[][] = [
     { to: "/subs", label: "Subcontractors", icon: "users", roles: ["admin", "office"], perm: "subs", keywords: "subs contractors 1099 w-9 w9 insurance certificates coi liability workers comp audit paperwork vendors" },
     { to: "/equipment", label: "Equipment", icon: "truck", keywords: "trucks mowers trailers tools fleet maintenance" },
     { to: "/kb", label: "Knowledge base", icon: "book", keywords: "sop procedures training how to guides" },
-    { to: "/apps", label: "Apps", icon: "apps", roles: ["admin"], perm: "apps", keywords: "integrations connect app store team chat website forms formspree contact form careers job applications hiring drive files documents google drive marketing reviews referrals campaigns quickbooks zoho books stripe payments google calendar outlook twilio texts sms claude chatgpt ai assistant sveltia cms website" },
+    { to: "/apps", label: "Apps", icon: "apps", roles: ["admin"], perm: "apps", keywords: "integrations connect app store team chat website forms formspree contact form careers job applications hiring drive files documents google drive marketing reviews referrals campaigns google reviews google business profile quickbooks zoho books stripe payments google calendar outlook twilio texts sms claude chatgpt ai assistant sveltia cms website" },
   ],
 ];
 

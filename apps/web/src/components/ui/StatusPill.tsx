@@ -21,6 +21,7 @@
  *            automated "Automated" (one that sends by itself, Marketing → Campaigns)
  *   Recipient pending "Queued" · sending "Sending" · sent "Sent" · failed "Failed" · skipped "Skipped" ·
  *            opened "Opened" · clicked "Clicked" (a campaign email, and what was done with it)
+ *   Review   needs_reply "Needs a reply" · replied "Replied" (a Google review, Marketing → Reviews)
  *
  * Money that's late is "Past due", never "Overdue" or "Waiting on payment". "Overdue" is kept for work
  * that's late: a new request nobody has answered in two days (Home's workflow), a visit past its day,
@@ -64,6 +65,7 @@ const STATUS_TEXT = {
   credit: { pending: "Pending", earned: "Earned", applied: "Applied", issued: "Given", none: "No credit" },
   campaign: { draft: "Draft", scheduled: "Scheduled", sending: "Sending", sent: "Sent", cancelled: "Stopped", automated: "Automated" },
   recipient: { pending: "Queued", sending: "Sending", sent: "Sent", failed: "Failed", skipped: "Skipped", opened: "Opened", clicked: "Clicked" },
+  review: { needs_reply: "Needs a reply", replied: "Replied" },
 } satisfies Record<string, Record<string, string>>;
 
 export type StatusKind = keyof typeof STATUS_TEXT;
@@ -94,6 +96,7 @@ const ENTITY_TONES: Record<StatusKind, Record<string, Tone>> = {
   campaign: { draft: "muted", scheduled: "info", sending: "info", sent: "good", cancelled: "danger", automated: "info" },
   // Each step further reads stronger: sent, then opened, then clicked.
   recipient: { pending: "muted", sending: "info", sent: "muted", failed: "danger", skipped: "muted", opened: "info", clicked: "good" },
+  review: { needs_reply: "warning", replied: "good" },
 };
 
 /** Pill for a record's status, e.g. <EntityStatus kind="quote" status="sent" />. */

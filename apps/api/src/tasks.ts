@@ -19,13 +19,14 @@ import { checkStorage } from "./services/storageUsage";
 import { emitInactiveClients } from "./services/automatedCampaigns";
 import { processAutomations } from "./services/automations";
 import { processCampaigns } from "./services/campaigns";
+import { syncDueReviews } from "./services/googleReviews";
 import { sendDueReminders } from "./services/reviews";
 import { deliverNotifications } from "./services/delivery";
 import { remindSubs } from "./services/subs";
 import { dailyOutlook } from "./services/external";
 import { autoRoutes } from "./services/routes";
 
-export const TASKS = ["automations", "campaigns", "notify", "outbox", "calendars", "recurrence", "followups", "weather", "address", "railway", "hosting", "plans", "trash", "storage", "routes", "website", "reviews", "inactive"] as const;
+export const TASKS = ["automations", "campaigns", "notify", "outbox", "calendars", "recurrence", "followups", "weather", "address", "railway", "hosting", "plans", "trash", "storage", "routes", "website", "reviews", "inactive", "review_sync"] as const;
 export type TaskName = (typeof TASKS)[number];
 
 /** Cron expressions -> tasks, run by server.ts's scheduler. */
@@ -35,6 +36,9 @@ export const CRON_TASKS: Record<string, TaskName[]> = {
   // Review reminders go at 1:30pm in each company's time zone (services/reviews.ts).
   "*/5 * * * *": ["outbox", "reviews"],
   "*/15 * * * *": ["calendars"],
+  // Google reviews come in every 30 minutes for each company with Google Business Profile connected
+  // (services/googleReviews.ts); review_syncs_due says which are due.
+  "12,42 * * * *": ["review_sync"],
   "0 * * * *": ["followups"],
   // Clients who haven't had a visit in a while: hourly, so each company's own 10am is met; at most
   // 100 a day for each rule (services/automatedCampaigns.ts). The automations task sends them.
@@ -98,6 +102,8 @@ export async function runTask(name: TaskName, env: Env): Promise<Record<string, 
       return sendDueReminders(env);
     case "inactive":
       return emitInactiveClients(env);
+    case "review_sync":
+      return syncDueReviews(env);
   }
 }
 
