@@ -93,8 +93,10 @@ test("with no signal, My day and the visit's own screen agree, and the visit end
   const page = await as("employee", PHONE);
   await page.goto("/field");
   const card = page.getByRole("article").filter({ hasText: visit.title });
-  // Opened once with signal, so the phone has the visit.
+  // Opened once with signal, so the phone has the visit. (The visit's screen loads on its own, so My
+  // day, with its own "On my way" buttons, stays up until it has.)
   await card.getByRole("link", { name: new RegExp(visit.title) }).click();
+  await expect(page.getByRole("heading", { level: 1, name: visit.title })).toBeVisible();
   await expect(page.getByRole("button", { name: "On my way" })).toBeVisible();
   await page.getByRole("link", { name: "My day" }).first().click();
 
