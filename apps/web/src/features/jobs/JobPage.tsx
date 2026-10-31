@@ -1,4 +1,5 @@
 import type { TablesUpdate } from "@crewtavo/core/database";
+import { askRefusal, marketingOn } from "@crewtavo/core/marketing";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -75,7 +76,7 @@ export function JobPage() {
       unwrapOne(
         await supabase()
           .from("jobs")
-          .select("*, financials:job_financials(contract_total), client:clients(id, display_name, phone, email), property:properties(id, line1, city, region, postal_code, lat, lng), quote:quotes!jobs_company_id_quote_id_fkey(id, number, deposit_amount), crew:crews(name), lines:job_line_items(id, name, description, quantity, unit, unit_price, unit_cost, unit_labor_cost, taxable, sort, service_id), visits(id, title, kind, status, scheduled_on, starts_at, ends_at, crew_id, notes, hold_reason, invoice_id, completed_at, crew:crews(name, color), assignees:visit_assignees(user_id))")
+          .select("*, financials:job_financials(contract_total), client:clients(id, display_name, phone, email, status, review_opt_out, marketing_opt_out, sms_opt_out_at), property:properties(id, line1, city, region, postal_code, lat, lng), quote:quotes!jobs_company_id_quote_id_fkey(id, number, deposit_amount), crew:crews(name), lines:job_line_items(id, name, description, quantity, unit, unit_price, unit_cost, unit_labor_cost, taxable, sort, service_id), visits(id, title, kind, status, scheduled_on, starts_at, ends_at, crew_id, notes, hold_reason, invoice_id, completed_at, crew:crews(name, color), assignees:visit_assignees(user_id))")
           .eq("id", id)
           .order("sort", { referencedTable: "job_line_items" })
           .order("scheduled_on", { referencedTable: "visits" })
@@ -134,8 +135,9 @@ export function JobPage() {
     },
   });
   const review = useMutation({
-    mutationFn: () => api.post<{ detail: string }>("/reviews/request", { client_id: j!.client!.id, job_id: id, channel: "email" }),
+    mutationFn: (channel: "email" | "sms") => api.post<{ detail: string }>("/reviews/request", { client_id: j!.client!.id, job_id: id, channel }),
     onSuccess: (r) => toast.success(r.detail),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["review-requests", session.company.id] }),
   });
 
   const changeOrder = useStartChangeOrder({ id, title: j?.title ?? "", client: j?.client ?? null, property: j?.property ?? null });
@@ -158,6 +160,10 @@ export function JobPage() {
     live.filter((i) => i.kind !== "retainage").reduce((s, i) => s + Number(i.retainage_amount), 0) -
     live.filter((i) => i.kind === "retainage").reduce((s, i) => s + Number(i.subtotal), 0);
   const finalInvoice = j.kind !== "recurring" ? live.find((i) => i.kind === "standard")?.number ?? null : null;
+  // By email, or by text when email can't reach them, as the client's page offers it: not to a client
+  // who opted out or is archived. Marketing uninstalled, nobody's asked.
+  const ready = { email: session.config.features.email, sms: session.config.features.sms };
+  const reviewBy = j.client ? (["email", "sms"] as const).find((channel) => !askRefusal(j.client!, channel, ready)) ?? null : null;
   const newVisit = (): VisitInput => ({ job_id: j.id, property_id: j.property?.id ?? null, title: j.title, crew_id: j.default_crew_id, kind: "job", context: { label: `Job #${j.number} · ${j.client?.display_name ?? ""}`, to: `/jobs/${j.id}` } });
 
   // Materials, expenses and sub pay take no room until they have something (or failed to load, to
@@ -195,7 +201,10 @@ export function JobPage() {
                 items={[
                   { label: "Edit details and schedule", icon: "edit", onSelect: () => setDialog("details") },
                   { label: "New change order", icon: "quote", hidden: !["active", "requires_invoicing"].includes(j.status) || !j.client, onSelect: () => changeOrder.mutate() },
-                  { label: "Ask for a review", icon: "star", hidden: !j.client?.email, onSelect: () => review.mutate() },
+                  {
+                    label: reviewBy === "sms" ? "Ask for a review by text" : "Ask for a review", icon: "star",
+                    hidden: !marketingOn(session.company.settings) || !j.client, disabled: !reviewBy, onSelect: () => review.mutate(reviewBy!),
+                  },
                   { separator: true },
                   { label: "Mark work complete", icon: "check", hidden: j.status !== "active" || j.kind === "one_off", onSelect: () => update.mutate({ status: "requires_invoicing" }) },
                   { label: "Close job", icon: "check", hidden: !["requires_invoicing"].includes(j.status), onSelect: () => update.mutate({ status: "completed" }) },

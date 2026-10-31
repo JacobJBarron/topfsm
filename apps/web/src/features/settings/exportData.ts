@@ -66,7 +66,7 @@ export async function exportEverything(session: Session, step: (what: string) =>
 
   step("Reading clients…");
   const [clients, contacts, properties, requests, members] = await Promise.all([
-    everyRow((from, to) => db.from("clients").select("id, display_name, company_name, email, phone, status, lead_source, referred_by, tags, notes, billing_address, marketing_opt_out, created_at").eq("company_id", companyId).order("id").range(from, to)),
+    everyRow((from, to) => db.from("clients").select("id, display_name, company_name, email, phone, status, lead_source, referred_by, tags, notes, billing_address, marketing_opt_out, review_opt_out, sms_opt_out_at, created_at").eq("company_id", companyId).order("id").range(from, to)),
     everyRow((from, to) => db.from("client_contacts").select("id, client_id, name, role, email, phone, is_primary, notify_email, notify_sms").eq("company_id", companyId).order("id").range(from, to)),
     everyRow((from, to) => db.from("properties").select("id, client_id, label, line1, line2, city, region, postal_code, country, lot_size_sqft, tags, notes, lat, lng, created_at").eq("company_id", companyId).order("id").range(from, to)),
     everyRow((from, to) => db.from("requests").select("id, number, title, client_id, property_id, status, source, details, created_at").eq("company_id", companyId).order("id").range(from, to)),
@@ -150,7 +150,7 @@ export async function exportEverything(session: Session, step: (what: string) =>
       ["Status", (c) => words(c.status)], ["Lead source", (c) => c.lead_source], ["Referred by", (c) => clientName(c.referred_by)], ["Tags", (c) => c.tags.join("; ")],
       ["Notes", (c) => c.notes], ["Billing street", (c) => billing(c)?.line1], ["Billing street 2", (c) => billing(c)?.line2], ["Billing city", (c) => billing(c)?.city],
       ["Billing state", (c) => billing(c)?.region], ["Billing ZIP", (c) => billing(c)?.postal_code], ["No marketing", (c) => yes(c.marketing_opt_out)],
-      ["Added", (c) => day(c.created_at)], ["Client ID", (c) => c.id],
+      ["No review asks", (c) => yes(c.review_opt_out)], ["Texts off since", (c) => day(c.sms_opt_out_at)], ["Added", (c) => day(c.created_at)], ["Client ID", (c) => c.id],
     ]),
     sheet("client-contacts.csv", [...contacts].sort((a, b) => clientName(a.client_id).localeCompare(clientName(b.client_id))), [
       ["Client", (c) => clientName(c.client_id)], ["Name", (c) => c.name], ["Role", (c) => c.role], ["Email", (c) => c.email], ["Phone", (c) => c.phone],

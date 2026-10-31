@@ -52,7 +52,8 @@
     "./subs": "./src/subs.ts",
     "./jobPay": "./src/jobPay.ts",
     "./subOffers": "./src/subOffers.ts",
-    "./phone": "./src/phone.ts"
+    "./phone": "./src/phone.ts",
+    "./marketing": "./src/marketing.ts"
   },
   "scripts": {
     "test": "vitest run",

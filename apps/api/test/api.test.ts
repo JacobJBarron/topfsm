@@ -162,6 +162,24 @@ describe("setting up a business", () => {
     expect(rpcs[0]).toEqual({ name: "create_company", body: { p_name: "Acme Lawn", p_trade_preset: "lawn_exterior", p_timezone: "America/Chicago" } });
   });
 
+  it("loads the preset into the settings the company started with, so Marketing stays installed", async () => {
+    const writes: Array<{ path: string; body: any }> = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/auth/v1/user") return Response.json({ id: "user-1", aud: "authenticated", role: "authenticated" });
+      if ((init?.method ?? "GET") === "PATCH") writes.push({ path: url.pathname, body: JSON.parse(String(init?.body)) });
+      if (url.pathname === "/rest/v1/companies" && (init?.method ?? "GET") === "GET") return Response.json([{ settings: { marketing: { enabled: true } } }]);
+      return Response.json(url.pathname === "/rest/v1/rpc/create_company" ? "company-1" : []);
+    });
+    const body = { name: "Acme Lawn", trade_preset: "lawn_exterior", timezone: "America/Chicago", terms_version: TERMS_VERSION };
+    const res = await request("/api/companies", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    expect(res.status).toBe(201);
+    const settings = writes.find((w) => w.path === "/rest/v1/companies")!.body.settings;
+    expect(settings.marketing).toEqual({ enabled: true });
+    expect(settings.payment_terms_days).toBe(30);
+    expect(Array.isArray(settings.job_types)).toBe(true);
+  });
+
   it("refuses offsets, which Postgres reads with the sign reversed, and made-up zones", async () => {
     for (const timezone of ["+05:00", "-0500", "Not/AZone"]) {
       const { rpcs, res } = create(timezone);
@@ -255,6 +273,79 @@ describe("texting", () => {
     expect(bad.status).toBe(403);
     const missing = await app.request("/api/webhooks/twilio", { method: "POST", body: form() }, withTwilio);
     expect(missing.status).toBe(403);
+  });
+
+  describe("STOP and START", () => {
+    const withTwilio = { ...env, TWILIO_AUTH_TOKEN: "twilio-token" };
+    const url = "https://ops.example.com/api/webhooks/twilio";
+    /** A text from +1 540-555-0163, who's a client in two companies; `changes` is whether the client's texts setting changes. */
+    async function text(body: string, extra: Record<string, string> = {}, changes = true) {
+      const calls: Array<{ method: string; path: string; params: URLSearchParams; body: any }> = [];
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+        const u = new URL(String(input));
+        const path = u.pathname.replace(/^\/rest\/v1\//, "");
+        const method = (init?.method ?? "GET").toUpperCase();
+        calls.push({ method, path, params: u.searchParams, body: typeof init?.body === "string" && init.body ? JSON.parse(init.body) : undefined });
+        if (method === "GET" && path === "clients") {
+          return Response.json([
+            { id: "client-1", company_id: "co-1", phone: "(540) 555-0163", display_name: "Ana Smith" },
+            { id: "client-2", company_id: "co-2", phone: "+1 540 555 0163", display_name: "Ana S." },
+            { id: "client-3", company_id: "co-1", phone: "(540) 555-0199", display_name: "Bo Other" },
+          ]);
+        }
+        if (method === "PATCH" && path === "clients") return Response.json(changes ? [{ id: u.searchParams.get("id")!.slice(3) }] : []);
+        if (method === "GET" && path === "memberships") return Response.json([{ user_id: "owner-1" }]);
+        return Response.json([]);
+      });
+      const params = { From: "+15405550163", Body: body, MessageSid: "SM1", ...extra };
+      const signature = await twilioSignature("twilio-token", url, params);
+      const res = await app.request("/api/webhooks/twilio", { method: "POST", headers: { "x-twilio-signature": signature }, body: new URLSearchParams(params) }, withTwilio);
+      expect(res.status).toBe(200);
+      const optOuts = calls.filter((c) => c.method === "PATCH" && c.path === "clients");
+      return {
+        optOuts: optOuts.map((c) => ({ id: c.params.get("id"), when: c.params.get("sms_opt_out_at"), set: c.body.sms_opt_out_at === null ? null : typeof c.body.sms_opt_out_at })),
+        messages: calls.filter((c) => c.method === "POST" && c.path === "messages").map((c) => [c.body.client_id, c.body.body]),
+        notices: calls.filter((c) => c.method === "POST" && c.path === "notifications").flatMap((c) => c.body.map((n: { title: string }) => n.title)),
+      };
+    }
+
+    it.each(["STOP", "stop ", "Stop.", "STOPALL", "unsubscribe", "opt out", "Revoke"])("turns texts off for every client with the number on %j", async (body) => {
+      const { optOuts, messages, notices } = await text(body);
+      expect(optOuts).toEqual([
+        { id: "eq.client-1", when: "is.null", set: "string" },
+        { id: "eq.client-2", when: "is.null", set: "string" },
+      ]);
+      expect(messages).toEqual([["client-1", body], ["client-2", body]]);
+      expect(notices).toEqual(["Ana Smith turned off texts", "Ana S. turned off texts"]);
+    });
+
+    it("files an ordinary text as one", async () => {
+      const { optOuts, messages, notices } = await text("Please stop by Tuesday");
+      expect(optOuts).toEqual([]);
+      expect(messages).toHaveLength(2);
+      expect(notices).toEqual(["New text from a client", "New text from a client"]);
+    });
+
+    it.each(["START", "yes", "Unstop!"])("turns texts back on with %j", async (body) => {
+      const { optOuts, notices } = await text(body);
+      expect(optOuts).toEqual([
+        { id: "eq.client-1", when: "not.is.null", set: null },
+        { id: "eq.client-2", when: "not.is.null", set: null },
+      ]);
+      expect(notices).toEqual(["Ana Smith turned texts back on", "Ana S. turned texts back on"]);
+    });
+
+    it("says nothing new when YES is an ordinary reply from someone with texts on", async () => {
+      const { notices } = await text("Yes", {}, false);
+      expect(notices).toEqual(["New text from a client", "New text from a client"]);
+    });
+
+    it("goes by what Twilio acted on when it says, whatever the words", async () => {
+      expect((await text("Arrêtez", { OptOutType: "STOP" })).optOuts.map((o) => o.set)).toEqual(["string", "string"]);
+      expect((await text("Recommencer", { OptOutType: "START" })).optOuts.map((o) => o.set)).toEqual([null, null]);
+      // HELP is Twilio's too: a STOP-looking word with it changes nothing.
+      expect((await text("STOP", { OptOutType: "HELP" })).optOuts).toEqual([]);
+    });
   });
 
   it("requires sign-in to send messages", async () => {
@@ -372,6 +463,12 @@ describe("validation messages", () => {
     expect(issue(z.object({ lines: z.array(z.object({ qty: z.number() })) }), { lines: [{ qty: "x" }] })).toBe("Qty doesn't look right.");
     expect(issue(z.array(z.string()), [1])).toBe("Something in the form isn't right. Check it and try again.");
   });
+  it("uses a refine's own words, and the field's name when it has none", () => {
+    const days = z.object({ days: z.array(z.number()) });
+    expect(issue(days.refine((b) => b.days[1]! > b.days[0]!, { message: "The second reminder comes after the first.", path: ["days"] }), { days: [5, 3] }))
+      .toBe("The second reminder comes after the first.");
+    expect(issue(z.object({ kind: z.string().refine((k) => k === "a") }), { kind: "b" })).toBe("Check the kind and try again.");
+  });
 });
 
 describe("built-in scheduler", () => {
@@ -396,6 +493,10 @@ describe("built-in scheduler", () => {
   });
   it("covers every task's schedule", () => {
     for (const expression of Object.keys(CRON_TASKS)) expect(expression.split(" ")).toHaveLength(5);
+  });
+  it("sends review reminders every five minutes", () => {
+    expect(TASKS).toContain("reviews");
+    expect(CRON_TASKS["*/5 * * * *"]).toContain("reviews");
   });
 });
 

@@ -5,7 +5,7 @@
 import { addDays } from "@crewtavo/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env";
-import { CRON_TASKS, runTask } from "../src/tasks";
+import { CRON_TASKS, runTask, TASKS } from "../src/tasks";
 
 const env: Env = {
   SUPABASE_URL: "https://example.supabase.co",
@@ -148,6 +148,16 @@ describe("the Trash", () => {
     // Crewtavo); nothing is removed when nothing is.
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST rpc/trash_purge"]);
     expect(calls[0]!.body).toEqual({ p_cutoff: expect.stringMatching(/^\d{4}-\d\d-\d\dT/), p_limit: 1000 });
+  });
+});
+
+describe("review reminders", () => {
+  it("are sent every five minutes, at 1:30pm in each company's time zone (services/reviews.ts)", async () => {
+    expect(TASKS).toContain("reviews");
+    expect(CRON_TASKS["*/5 * * * *"]).toContain("reviews");
+    const calls = serve(() => []);
+    expect(await runTask("reviews", { ...env, APP_URL: "https://ops.example.com" })).toEqual({ claimed: 0, sent: 0, failed: 0, stopped: 0, waiting: 0, lost: 0, errors: 0 });
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST rpc/claim_review_reminders"]);
   });
 });
 

@@ -8,7 +8,7 @@
  *               website analytics: companies.settings.website_analytics, routes/analytics.ts; website
  *               forms: companies.settings.website_forms, routes/websiteForms.ts; careers:
  *               companies.settings.careers, the same routes; drive: companies.settings.drive,
- *               routes/drive.ts)
+ *               routes/drive.ts; marketing: companies.settings.marketing, routes/marketing.ts)
  *   site      - the company's website editor, by its address (Sveltia CMS: companies.settings.website, integrations/website.ts)
  * ABC Supply is an api_key app with two keys: its own app's Client ID and secret (integrations/abcSupply.ts).
  */
@@ -18,7 +18,7 @@ import type { Env } from "../env";
 export type Provider = "quickbooks" | "zoho_books" | "google_calendar" | "stripe" | "twilio" | "anthropic" | "fal" | "railway" | "abc_supply";
 /** Apps whose calendars are added by link. They're also the calendar_sources.app values (with google_calendar). */
 export type LinkApp = "zoho_calendar" | "outlook_calendar" | "apple_calendar" | "ics_calendar";
-export type AppId = Provider | LinkApp | "chatgpt" | "team_chat" | "website_analytics" | "website_forms" | "careers" | "drive" | "sveltia";
+export type AppId = Provider | LinkApp | "chatgpt" | "team_chat" | "website_analytics" | "website_forms" | "careers" | "drive" | "marketing" | "sveltia";
 export type CalendarApp = LinkApp | "google_calendar";
 export const CALENDAR_APPS: readonly CalendarApp[] = ["google_calendar", "zoho_calendar", "outlook_calendar", "apple_calendar", "ics_calendar"];
 
@@ -82,6 +82,15 @@ export const CATALOG: CatalogEntry[] = [
     description: "Every file in one place: company folders, files on each client and job, Word and PDF editing, versions, a 30-day Trash and import from Google Drive.",
     auth: "builtin",
     docs: "https://crewtavo.com/docs/connections/drive/",
+    available: () => true,
+  },
+  {
+    id: "marketing",
+    name: "Crewtavo - Marketing",
+    category: "Team",
+    description: "Ask happy clients for Google reviews with reminders, track referrals and send email campaigns.",
+    auth: "builtin",
+    docs: "https://crewtavo.com/docs/connections/marketing/",
     available: () => true,
   },
   {

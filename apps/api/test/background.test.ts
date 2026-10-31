@@ -564,7 +564,7 @@ describe("automation runs", () => {
       (fn, args) =>
         fn === "claim_automation_runs" ? { data: runs } : fn === "start_automation_run" ? { data: args.p_id === 1 } : fn === "finish_automation_run" ? { data: true } : {},
     );
-    expect(await processAutomations(env, { limit: 50 })).toEqual({ claimed: 2, done: 0, skipped: 1, failed: 0, lost: 1 });
+    expect(await processAutomations(env, { limit: 50 })).toEqual({ claimed: 2, done: 0, skipped: 1, failed: 0, waiting: 0, lost: 1 });
 
     expect(rpcs.filter((r) => r.fn === "start_automation_run").map((r) => r.args)).toEqual([
       { p_id: 1, p_token: "claim-1" },
@@ -605,7 +605,7 @@ describe("automation runs", () => {
       // By the time it's done, another worker has claimed the run.
       (fn) => (fn === "claim_automation_runs" ? { data: [run(1)] } : fn === "start_automation_run" ? { data: true } : { data: false }),
     );
-    expect(await processAutomations(env, { limit: 50 })).toEqual({ claimed: 1, done: 0, skipped: 0, failed: 0, lost: 1 });
+    expect(await processAutomations(env, { limit: 50 })).toEqual({ claimed: 1, done: 0, skipped: 0, failed: 0, waiting: 0, lost: 1 });
     expect(rpcs.filter((r) => r.fn === "finish_automation_run").map((r) => r.args.p_status)).toEqual(["done"]);
     expect(queries.filter((q) => q.table === "automation_rules" && verb(q) === "update")).toEqual([]);
   });

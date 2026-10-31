@@ -68,7 +68,7 @@ export function AutomationsPage() {
 
   const active = rules.data?.filter((r) => r.enabled).length ?? 0;
   const usesEmail = rules.data?.some((r) => r.enabled && r.actions.some((a) => a.type === "send_email" || a.type === "request_review"));
-  const usesSms = rules.data?.some((r) => r.enabled && r.actions.some((a) => a.type === "send_sms"));
+  const usesSms = rules.data?.some((r) => r.enabled && r.actions.some((a) => a.type === "send_sms" || (a.type === "request_review" && a.channel !== "email")));
 
   return (
     <>
@@ -191,11 +191,18 @@ function RuleList({ rules }: { rules: ReturnType<typeof useQuery<RuleRow[]>> }) 
 }
 
 const SUBJECT_PATH: Record<string, string> = { client: "/clients/", request: "/requests/", quote: "/quotes/", job: "/jobs/", invoice: "/invoices/" };
+type RunFilter = "all" | "failed" | "pending" | "skipped";
+const RUN_FILTERS: Array<{ value: RunFilter; label: string; empty: string }> = [
+  { value: "all", label: "All", empty: "Nothing has run yet" },
+  { value: "failed", label: "Failed", empty: "No failures" },
+  { value: "pending", label: "Waiting", empty: "Nothing waiting" },
+  { value: "skipped", label: "Skipped", empty: "Nothing skipped" },
+];
 
 export function RunHistory({ ruleId }: { ruleId?: string }) {
   const session = useSession();
   const queryClient = useQueryClient();
-  const [filter, setFilter] = useState<"all" | "failed" | "pending">("all");
+  const [filter, setFilter] = useState<RunFilter>("all");
   const key = ["automation-runs", session.company.id, ruleId ?? "all", filter];
   const runs = useQuery({
     queryKey: key,
@@ -224,14 +231,14 @@ export function RunHistory({ ruleId }: { ruleId?: string }) {
   return (
     <div className="stack">
       <div className="tabs" role="group" aria-label="Filter runs">
-        {(["all", "failed", "pending"] as const).map((f) => <button key={f} type="button" className="tab" aria-pressed={filter === f} onClick={() => setFilter(f)}>{f === "all" ? "All" : f === "failed" ? "Failed" : "Waiting"}</button>)}
+        {RUN_FILTERS.map((f) => <button key={f.value} type="button" className="tab" aria-pressed={filter === f.value} onClick={() => setFilter(f.value)}>{f.label}</button>)}
       </div>
       <div className="card">
         {runs.isPending && <div className="card-pad"><CardSkeleton lines={3} title={false} /></div>}
         {runs.error && <ErrorState compact error={runs.error} onRetry={() => runs.refetch()} />}
-        {runs.data?.length === 0 && <EmptyState inline title={filter === "all" ? "Nothing has run yet" : filter === "failed" ? "No failures" : "Nothing waiting"} />}
+        {runs.data?.length === 0 && <EmptyState inline title={RUN_FILTERS.find((f) => f.value === filter)!.empty} />}
         {runs.data?.map((r) => {
-          const result = (Array.isArray(r.result) ? r.result : []) as Array<{ type: string; ok: boolean; detail: string }>;
+          const result = (Array.isArray(r.result) ? r.result : []) as Array<{ type: string; ok: boolean; detail: string; skipped?: boolean }>;
           const rule = r.rule as { id: string; name: string } | null;
           const path = r.subject_type && r.subject_id && SUBJECT_PATH[r.subject_type] ? `${SUBJECT_PATH[r.subject_type]}${r.subject_id}` : null;
           return (
@@ -243,8 +250,13 @@ export function RunHistory({ ruleId }: { ruleId?: string }) {
                   {r.status === "pending" ? `Runs ${timeAgo(r.run_after)}` : formatDateTime(r.finished_at ?? r.created_at)}
                   {path && <> · <Link to={path}>Open {r.subject_type}</Link></>}
                 </span>
-                {result.map((x, i) => <span key={i} className={`small ${x.ok ? "text-good" : "text-danger"}`} style={{ display: "block" }}>{x.ok ? "✓" : "✕"} {x.detail}</span>)}
-                {!result.length && r.error && <span className="small muted" style={{ display: "block" }}>{r.error}</span>}
+                {/* An action with nothing to do (Marketing off, a client who opted out) is neither done nor failed. The pill says Skipped when they all were. */}
+                {result.map((x, i) => (
+                  <span key={i} className={`small ${x.skipped ? "muted" : x.ok ? "text-good" : "text-danger"}`} style={{ display: "block" }}>
+                    {x.skipped ? "–" : x.ok ? "✓" : "✕"} {x.skipped && r.status !== "skipped" ? `Skipped: ${x.detail}` : x.detail}
+                  </span>
+                ))}
+                {(!result.length || r.status === "pending") && r.error && <span className="small muted" style={{ display: "block" }}>{r.error}</span>}
               </span>
               {r.status === "failed" && <Button size="sm" icon="refresh" loading={act.isPending && act.variables?.id === r.id} onClick={() => act.mutate({ id: r.id, action: "retry" })}>Retry</Button>}
               {r.status === "pending" && <Button size="sm" variant="ghost" loading={act.isPending && act.variables?.id === r.id} onClick={() => act.mutate({ id: r.id, action: "cancel" })}>Cancel</Button>}

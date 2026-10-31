@@ -271,6 +271,9 @@ account.post("/terms", requireUser, requireCompany(ADMINS), async (c) => {
 /** Load a trade preset into a new company. Runs as the new owner, so RLS still applies. */
 async function applyPreset(db: Db, companyId: string, preset: TradePreset) {
   const formulas = new Map(preset.formulas.map((f) => [f.name, f]));
+  const { data: company, error } = await db.from("companies").select("settings").eq("id", companyId).maybeSingle();
+  if (error) throw dbError(error);
+  const current = (company?.settings ?? {}) as Record<string, unknown>;
   const steps = [
     db.from("services").insert(
       preset.services.map((s, i) => {
@@ -305,9 +308,10 @@ async function applyPreset(db: Db, companyId: string, preset: TradePreset) {
       })),
     ),
     db.from("sop_categories").insert(preset.sop_categories.map((name, i) => ({ company_id: companyId, name, sort: i }))),
+    // Merged into what create_company started it with (Marketing installed, for one).
     db
       .from("companies")
-      .update({ settings: asJson({ job_types: preset.job_types, formulas: preset.formulas, weather_rules: preset.weather_rules, payment_terms_days: 30 }) })
+      .update({ settings: asJson({ ...current, job_types: preset.job_types, formulas: preset.formulas, weather_rules: preset.weather_rules, payment_terms_days: 30 }) })
       .eq("id", companyId),
   ];
   for (const result of await Promise.all(steps)) {

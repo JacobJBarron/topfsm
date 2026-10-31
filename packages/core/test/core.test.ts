@@ -12,7 +12,11 @@ import {
   FormulaError,
   checkCondition,
   cutOut,
+  describeAction,
+  describeCondition,
   describeRuleSentence,
+  fieldsFor,
+  triggerDef,
   drawingPitchFactor,
   drawingSquares,
   edgeLengths,
@@ -621,6 +625,28 @@ describe("automations", () => {
       .toBe("When a quote is sent, wait 3 days, if its status is Awaiting response: email the client.");
     expect(describeRuleSentence({ trigger: "visit.completed", delay_minutes: 0, conditions: [{ field: "client.tags", op: "includes", value: ["HOA"] }], actions: [{ type: "add_tag", tag: "Serviced 2026" }] }))
       .toBe("When a visit is completed, if client tags include HOA: tag the client “Serviced 2026”.");
+  });
+
+  it("asks for a review by text and email, after the recurring visit set in Marketing", () => {
+    expect(describeAction({ type: "request_review", channel: "both" })).toBe("Ask for a review by text and email");
+    expect(describeAction({ type: "request_review", channel: "sms" })).toBe("Ask for a review by text");
+    expect(triggerDef("job.recurring_third_visit")?.label).toBe("A recurring job reaches the visit set in Marketing");
+    expect(describeRuleSentence({ trigger: "job.recurring_third_visit", delay_minutes: 1440, conditions: [], actions: [{ type: "request_review", channel: "both" }] }))
+      .toBe("When a recurring job reaches the visit set in Marketing, wait 1 day: ask for a review by text and email.");
+  });
+
+  it("tells visits and invoices on recurring jobs apart, and deposit invoices from the rest", () => {
+    expect(fieldsFor("visit").map((f) => f.field)).toContain("job_kind");
+    expect(fieldsFor("invoice").map((f) => f.field)).toEqual(expect.arrayContaining(["job_kind", "invoice_kind"]));
+    expect(fieldsFor("job").map((f) => f.field)).not.toContain("job_kind");
+    expect(fieldsFor("visit").map((f) => f.field)).not.toContain("invoice_kind");
+    const notRecurring = { field: "job_kind", op: "not_equals" as const, value: "recurring" };
+    expect(checkCondition(notRecurring, { job_kind: "recurring" })).toBe(false);
+    expect(checkCondition(notRecurring, { job_kind: "one_off" })).toBe(true);
+    // An invoice on no job isn't recurring work.
+    expect(checkCondition(notRecurring, { job_kind: null })).toBe(true);
+    expect(describeCondition(notRecurring, "visit")).toBe("Job type is not Recurring job");
+    expect(describeCondition({ field: "invoice_kind", op: "not_equals", value: "deposit" }, "invoice")).toBe("Invoice type is not Deposit");
   });
 });
 

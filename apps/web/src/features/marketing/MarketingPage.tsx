@@ -1,10 +1,13 @@
 /**
- * Marketing: email campaigns to client segments, promo codes, Google review requests and referral rewards,
- * and visits to the business's website once Website Analytics is installed (WebsiteSection).
+ * Marketing (Apps → Crewtavo - Marketing): email campaigns to client segments, promo codes, Google
+ * review requests (Reviews) and referral rewards, and visits to the business's website once Website
+ * Analytics is installed (WebsiteSection). Uninstalled, the page says so, and still shows website
+ * visits when Website Analytics is installed (Home and Website Analytics open them here).
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { featureOn } from "@/components/shell/nav";
 import { Button, useJustDone } from "@/components/ui/Button";
 import { Field, FormError } from "@/components/ui/Field";
 import { Icon } from "@/components/ui/Icon";
@@ -18,12 +21,13 @@ import { copyText } from "@/lib/clipboard";
 import { formatDate, formatDateTime, formatMoney, timeAgo } from "@/lib/format";
 import { useListAnimation } from "@/lib/motion";
 import { can, hasRole, useSession } from "@/lib/session";
-import { toast } from "@/lib/toast";
 import { undoable } from "@/lib/undo";
 import { ClientPicker, type PickedClient } from "../clients/ClientForm";
-import { PromoCodes } from "./PromoCodes";
-import { analyticsOn } from "./website";
 import { ConnectEmailHint } from "../settings/ConnectEmailHint";
+import { PromoCodes } from "./PromoCodes";
+import { Reviews } from "./Reviews";
+import { useSettingsSaver } from "./useSettingsSaver";
+import { analyticsOn } from "./website";
 
 type Tab = "campaigns" | "promos" | "reviews" | "referrals" | "website";
 // Charts load with the tab, not with the rest of Marketing.
@@ -48,6 +52,7 @@ export function MarketingPage() {
   });
 
   if (!hasRole(session, "admin", "office") || !can(session, "marketing")) return <NoAccess title="Marketing" />;
+  if (!featureOn(session.company.settings, "marketing")) return <MarketingOff />;
   const s = summary.data;
   return (
     <>
@@ -57,7 +62,7 @@ export function MarketingPage() {
           <div className="card stat"><div className="label">Emails sent (30 days)</div><div className="value">{s.emails_sent_30d}</div><div className="hint">{s.campaigns_sent} campaigns sent in total</div></div>
           <div className="card stat"><div className="label">Review requests (30 days)</div><div className="value">{s.reviews_requested_30d}</div><div className="hint">{s.reviews_requested_30d ? `${Math.round((s.reviews_clicked_30d / s.reviews_requested_30d) * 100)}% opened the review link` : "None sent yet"}</div></div>
           <div className="card stat"><div className="label">Referrals</div><div className="value">{s.referrals_total}</div><div className="hint">{s.referrals_won} became jobs</div></div>
-          <div className="card stat"><div className="label">Rewards owed</div><div className="value">{formatMoney(s.rewards_pending)}</div><div className="hint">{s.opted_out} clients unsubscribed</div></div>
+          <div className="card stat"><div className="label">Rewards owed</div><div className="value">{formatMoney(s.rewards_pending)}</div><div className="hint">{s.opted_out} {s.opted_out === 1 ? "client" : "clients"} unsubscribed</div></div>
         </div>
       )}
       <div className="underline-tabs" role="tablist">
@@ -75,6 +80,30 @@ export function MarketingPage() {
         <Suspense fallback={<Loading label="Loading website visits" className="stack"><CardSkeleton height={320} /></Loading>}>
           <WebsiteSection />
         </Suspense>
+      )}
+    </>
+  );
+}
+
+/** Marketing isn't installed: say so, where to install it for those who can, and website visits, which are Website Analytics'. */
+function MarketingOff() {
+  const session = useSession();
+  const canTurnOn = hasRole(session, "admin") && can(session, "apps");
+  return (
+    <>
+      <PageHeader title="Marketing" />
+      <div className="card">
+        <EmptyState icon="marketing" title="Marketing is off" action={canTurnOn && <Link className="btn btn-primary" to="/apps/marketing">Install Marketing</Link>}>
+          {canTurnOn ? "Ask happy clients for reviews, track referrals and send campaigns. Install it to bring back everything you had." : "Ask an owner or admin to install Marketing from Apps."}
+        </EmptyState>
+      </div>
+      {analyticsOn(session) && (
+        <section className="stack" aria-labelledby="website-visits">
+          <h2 id="website-visits" className="section-title">Website visits</h2>
+          <Suspense fallback={<Loading label="Loading website visits" className="stack"><CardSkeleton height={320} /></Loading>}>
+            <WebsiteSection />
+          </Suspense>
+        </section>
       )}
     </>
   );
@@ -155,124 +184,6 @@ function Campaigns() {
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-/** Company settings for marketing: merged into companies.settings (owners and admins only). Its Save button says when it's saved. */
-function useSettingsSaver() {
-  const session = useSession();
-  return useMutation({
-    meta: { inline: true },
-    mutationFn: async (patch: Record<string, unknown>) => {
-      const current = unwrap(await supabase().from("companies").select("settings").eq("id", session.company.id).single());
-      unwrap(await supabase().from("companies").update({ settings: { ...(current.settings as Record<string, unknown>), ...patch } as never }).eq("id", session.company.id));
-    },
-    onSuccess: () => session.refresh(),
-  });
-}
-
-/** The API's default (services/reviews.ts) word for word: it's what clients get until it's changed here. */
-const DEFAULT_REVIEW_MESSAGE =
-  "Hi {{client.first_name}}, thank you for choosing {{company.name}}! If you have a minute, would you leave us a quick review? It really helps a small business like ours.\n\n{{link}}";
-
-function Reviews() {
-  const session = useSession();
-  const settings = session.company.settings as { review_url?: string; review_message?: string };
-  const canSave = hasRole(session, "admin");
-  const [url, setUrl] = useState(settings.review_url ?? "");
-  const [message, setMessage] = useState(settings.review_message ?? DEFAULT_REVIEW_MESSAGE);
-  const [client, setClient] = useState<PickedClient>(null);
-  const [channel, setChannel] = useState<"email" | "sms" | "link">("email");
-  const save = useSettingsSaver();
-  const saved = useJustDone(save);
-  const queryClient = useQueryClient();
-  const validUrl = /^https:\/\/\S+\.\S+/.test(url.trim());
-
-  const requests = useQuery({
-    queryKey: ["review-requests", session.company.id],
-    queryFn: async () => unwrap(await supabase().from("review_requests").select("id, channel, status, sent_at, clicked_at, error, client:clients(id, display_name)").eq("company_id", session.company.id).order("sent_at", { ascending: false }).limit(50)),
-  });
-  // A recurring job is never completed, so it has a starter rule of its own (its third visit).
-  const rules = useQuery({
-    queryKey: ["automation-rules", session.company.id, "review"],
-    queryFn: async () => unwrap(await supabase().from("automation_rules").select("id, enabled, template_key").eq("company_id", session.company.id).in("template_key", ["review_after_job", "review_recurring"])),
-  });
-  const reviewRules = [
-    { rule: rules.data?.find((r) => r.template_key === "review_after_job"), label: "After a job" },
-    { rule: rules.data?.find((r) => r.template_key === "review_recurring"), label: "Recurring work" },
-  ];
-  const ask = useMutation({
-    mutationFn: () => api.post<{ sent: boolean; link: string; detail: string }>("/reviews/request", { client_id: client!.id, channel }),
-    onSuccess: (r) => {
-      if (channel === "link") copyText(r.link, "Review link copied");
-      else toast.success(r.detail);
-      setClient(null);
-      queryClient.invalidateQueries({ queryKey: ["review-requests", session.company.id] });
-      queryClient.invalidateQueries({ queryKey: ["marketing-summary", session.company.id] });
-    },
-  });
-
-  return (
-    <div className="two-col">
-      <div className="wide stack">
-        <form className="card card-pad stack" onSubmit={(e: FormEvent) => { e.preventDefault(); save.mutate({ review_url: url.trim(), review_message: message.trim() }); }}>
-          <strong>Your review link</strong>
-          <Field label="Google review URL" error={url && !validUrl ? "Paste the full link, starting with https://" : null} hint={<a href="https://support.google.com/business/answer/3474122" target="_blank" rel="noreferrer">Where to find it</a>}>
-            <input className="input" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://g.page/r/…/review" disabled={!canSave} />
-          </Field>
-          <Field label="Message" hint="{{link}} is replaced with your review link.">
-            <textarea className="textarea" style={{ minHeight: 110 }} value={message} maxLength={1000} onChange={(e) => setMessage(e.target.value)} disabled={!canSave} />
-          </Field>
-          {!message.includes("{{link}}") && <p className="error-text">Include {"{{link}}"} so clients can click through.</p>}
-          <FormError error={save.error} />
-          <div className="form-actions" style={{ justifyContent: "flex-start" }}>
-            {canSave ? <Button type="submit" loading={save.isPending} done={saved} disabled={!validUrl || !message.includes("{{link}}")}>Save</Button> : <span className="muted small">Only owners and admins can change these.</span>}
-          </div>
-        </form>
-
-        <div className="card">
-          <div className="card-head"><strong>Recent requests</strong></div>
-          {requests.isPending && <div className="card-pad"><CardSkeleton lines={2} title={false} /></div>}
-          {requests.data?.length === 0 && <EmptyState inline title="No review requests yet" />}
-          {requests.data?.map((r) => (
-            <div key={r.id} className="card-row">
-              <Icon name={r.channel === "sms" ? "messages" : r.channel === "email" ? "mail" : "link"} size={16} />
-              <span className="grow">
-                <Link to={`/clients/${(r.client as { id: string } | null)?.id}`} className="strong" style={{ color: "var(--ink)" }}>{(r.client as { display_name: string } | null)?.display_name ?? "Client"}</Link>
-                <span className="muted small" style={{ display: "block" }}>{timeAgo(r.sent_at)}{r.error ? ` · ${r.error}` : ""}</span>
-              </span>
-              <StatusPill label={r.status === "clicked" ? "Opened link" : r.status === "failed" ? "Failed" : "Sent"} tone={r.status === "clicked" ? "good" : r.status === "failed" ? "danger" : "muted"} />
-            </div>
-          ))}
-        </div>
-      </div>
-      <aside className="narrow stack">
-        <form className="card card-pad stack-sm" onSubmit={(e: FormEvent) => { e.preventDefault(); if (client) ask.mutate(); }}>
-          <strong>Ask a client now</strong>
-          <ClientPicker value={client} onChange={setClient} allowCreate={false} />
-          <div className="segmented" role="group" aria-label="Send by">
-            <button type="button" aria-pressed={channel === "email"} onClick={() => setChannel("email")}>Email</button>
-            <button type="button" aria-pressed={channel === "sms"} onClick={() => setChannel("sms")}>Text</button>
-            <button type="button" aria-pressed={channel === "link"} onClick={() => setChannel("link")}>Copy link</button>
-          </div>
-          {!settings.review_url && <span className="small" style={{ color: "var(--warning)", fontWeight: 600 }}>Save your Google review link first.</span>}
-          <Button type="submit" variant="primary" icon="star" loading={ask.isPending} disabled={!client || !settings.review_url}>Ask for a review</Button>
-        </form>
-        <div className="card card-pad stack-sm">
-          <strong>Ask automatically</strong>
-          <p className="muted text-sm" style={{ margin: 0 }}>A day after each job, and on recurring work a day after its third visit, once for each job. At most once a month per client.</p>
-          {reviewRules.some((r) => r.rule) ? (
-            reviewRules.map(({ rule, label }) => rule && (
-              <Link key={rule.id} to={`/automations/${rule.id}`} className="btn btn-sm" style={{ justifySelf: "start" }}>
-                <Icon name="bolt" size={14} />{label} · {rule.enabled ? "On" : "Off, set it up"}
-              </Link>
-            ))
-          ) : (
-            <Link to="/automations/new" className="btn btn-sm" style={{ justifySelf: "start" }}><Icon name="bolt" size={14} />Create a rule</Link>
-          )}
-        </div>
-      </aside>
     </div>
   );
 }

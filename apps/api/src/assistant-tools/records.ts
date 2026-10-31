@@ -23,7 +23,7 @@ export const recordTools = {
     input: z.object({ client_id: z.uuid(), ...companyArg }),
     run: async (ctx, a) => {
       const [client, contacts, properties, requests, quotes, jobs] = await Promise.all([
-        rows(ctx.db.from("clients").select("id, display_name, company_name, email, phone, status, tags, notes, lead_source, billing_address, marketing_opt_out, custom_fields").eq("id", a.client_id).eq("company_id", ctx.companyId)),
+        rows(ctx.db.from("clients").select("id, display_name, company_name, email, phone, status, tags, notes, lead_source, billing_address, marketing_opt_out, review_opt_out, sms_opt_out_at, custom_fields").eq("id", a.client_id).eq("company_id", ctx.companyId)),
         rows(ctx.db.from("client_contacts").select("id, name, email, phone, role, is_primary, notify_email, notify_sms").eq("client_id", a.client_id)),
         rows(ctx.db.from("properties").select("id, label, line1, line2, city, region, postal_code, lat, lng, lot_size_sqft, notes, tags, access:property_access(gate_code, lockbox_code, alarm_code, instructions)").eq("client_id", a.client_id)),
         rows(ctx.db.from("requests").select("id, number, title, status, created_at").eq("client_id", a.client_id).order("created_at", { ascending: false }).limit(5)),

@@ -64,7 +64,10 @@ const connectedFrom = (remoteAddress: string, e: Env = env) => ({ ...e, incoming
 afterEach(() => vi.unstubAllGlobals());
 
 describe("campaign sending", () => {
-  const campaign = { id: "camp-1", company_id: "co-1", subject: "Fall cleanup", body: "Hi {{client.first_name}}, leaves are coming.", company: { name: "Acme Lawn Care, LLC", email: null, phone: null, address: {} } };
+  const campaign = {
+    id: "camp-1", company_id: "co-1", subject: "Fall cleanup", body: "Hi {{client.first_name}}, leaves are coming.",
+    company: { name: "Acme Lawn Care, LLC", email: null, phone: null, address: {}, settings: { marketing: { enabled: true } } },
+  };
   const recipients = [1, 2, 3].map((id) => ({
     id, campaign_id: "camp-1", company_id: "co-1", client_id: `client-${id}`, email: `person${id}@example.com`, name: `Person ${id}`, status: "sending", claim_token: "claim-1",
   }));
@@ -126,6 +129,29 @@ describe("campaign sending", () => {
     expect(settled()).toContainEqual({ fn: "finish_campaign_recipients", p_token: "claim-1", p_ids: [2, 3], p_status: "skipped", p_error: "Campaign stopped" });
   });
 
+  it("leaves companies with Marketing uninstalled out, starting and sending", async () => {
+    const calls = serve((call) => (call.method === "GET" && call.path === "campaigns" ? [] : []));
+    expect(await processCampaigns(env)).toMatchObject({ campaigns: 0, sent: 0 });
+    const reads = calls.filter((c) => c.method === "GET" && c.path === "campaigns");
+    // Scheduled ones whose time has come, and sending ones, only for companies with it on.
+    expect(reads.map((c) => c.url.searchParams.get("status"))).toEqual(["eq.scheduled", "eq.sending"]);
+    for (const read of reads) {
+      expect(read.url.searchParams.get("company.settings->marketing->>enabled")).toBe("eq.true");
+      expect(read.url.searchParams.get("select")).toContain("company:companies!inner(");
+    }
+    // Nothing was due, so nothing started.
+    expect(calls.some((c) => c.method === "PATCH" && c.path === "campaigns")).toBe(false);
+  });
+
+  it("starts only the scheduled campaigns it found due", async () => {
+    const calls = serve((call) => (call.method === "GET" && call.path === "campaigns" && call.url.searchParams.get("status") === "eq.scheduled" ? [{ id: "camp-2" }] : []));
+    await processCampaigns(env);
+    const start = calls.find((c) => c.method === "PATCH" && c.path === "campaigns")!;
+    expect(start.url.searchParams.get("id")).toBe("in.(camp-2)");
+    expect(start.url.searchParams.get("status")).toBe("eq.scheduled");
+    expect(start.body).toMatchObject({ status: "sending" });
+  });
+
   it("puts the rest of the batch back when the provider rate limits", async () => {
     const { settled, done } = run({ onEmail: (count) => (count === 2 ? Response.json({ message: "Too many requests" }, { status: 429 }) : undefined) });
     expect(await done).toMatchObject({ sent: 1, failed: 0 });
@@ -178,10 +204,9 @@ describe("review requests", () => {
   it("asks again when the last request within the window failed to send", async () => {
     const calls = serve((call) => {
       if (call.url.host === "api.resend.com") return Response.json({ id: "email-1" });
-      if (call.path === "companies") return [{ name: "Acme", phone: null, email: null, settings: { review_url: "https://g.page/r/acme" } }];
-      // The only request in the last 30 days failed.
-      if (call.method === "HEAD" && call.path === "review_requests") return counted(call.url.searchParams.get("status") === "neq.failed" ? 0 : 1);
-      if (call.method === "POST" && call.path === "review_requests") return Response.json({ id: "rr-2" });
+      if (call.path === "companies") return [{ name: "Acme", phone: null, email: null, timezone: "UTC", settings: { review_url: "https://g.page/r/acme", marketing: { enabled: true } } }];
+      // The database finds no ask in the window that went out (the only one failed), and records this one.
+      if (call.path === "rpc/begin_review_request") return Response.json("rr-2");
       return [];
     });
     const result = await sendReviewRequest(env, adminClient(env), {
@@ -193,6 +218,7 @@ describe("review requests", () => {
       createdBy: null,
     });
     expect(result).toMatchObject({ sent: true, id: "rr-2" });
+    expect(calls.find((c) => c.path === "rpc/begin_review_request")?.body).toMatchObject({ p_client: "client-1", p_gap_days: 30, p_channel: "email" });
     expect(calls.some((c) => c.url.host === "api.resend.com")).toBe(true);
   });
 });

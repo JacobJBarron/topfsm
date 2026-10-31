@@ -1,12 +1,27 @@
-/** Campaigns (send, schedule, test, AI drafts), review requests and referral links. */
-import { OFFICE, SALES } from "@crewtavo/core";
+/**
+ * Crewtavo - Marketing (Apps → Crewtavo - Marketing): installing it (POST /marketing/enabled),
+ * campaigns (send, schedule, test, AI drafts), review requests and when they're asked automatically
+ * (PUT /reviews/asks edits the two starter rules), and referral links.
+ */
+import { ADMINS, OFFICE, SALES, type TablesInsert } from "@crewtavo/core";
+import {
+  ASK_TEMPLATE_KEYS,
+  askRuleUpdate,
+  marketingOn,
+  MAX_RECURRING_VISITS,
+  MAX_REMINDER_DAYS,
+  readAskRule,
+  reviewSettings,
+  type AskRule,
+  type AskRuleKind,
+} from "@crewtavo/core/marketing";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../env";
 import { kickCampaign } from "../lib/background";
 import { requireCompany, requireUser } from "../lib/auth";
 import { firstName, isEmail, renderEmail } from "../lib/email";
-import { appUrl, dbError, HttpError, must, param, readJson, uuid } from "../lib/http";
+import { appUrl, asJson, dbError, HttpError, must, param, readJson, uuid } from "../lib/http";
 import { clientLink } from "../lib/links";
 import { emailReady, sendEmail } from "../lib/notify";
 import { adminClient } from "../lib/supabase";
@@ -14,12 +29,28 @@ import { renderTemplate } from "@crewtavo/core";
 import { companyAnthropicKey, complete } from "../services/ai";
 import { companyAddress } from "../services/automations";
 import { logoImage } from "../services/logo";
-import { sendReviewRequest } from "../services/reviews";
+import { rescheduleReminders, sendReviewRequest } from "../services/reviews";
 
 export const marketing = new Hono<AppEnv>();
 
+/** Install and Uninstall (owners and admins who connect apps), as Drive's. */
+marketing.post("/marketing/enabled", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
+  const body = await readJson(c, z.object({ enabled: z.boolean() }));
+  const { error } = await c.var.db.rpc("marketing_set_enabled", { p_company: c.var.companyId, p_enabled: body.enabled });
+  if (error) throw dbError(error);
+  return c.json({ enabled: body.enabled });
+});
+
 const requireEmail = async (c: Parameters<typeof appUrl>[0]) => {
   if (!(await emailReady(c.env, c.var.companyId))) throw new HttpError(501, "Email isn't connected yet, so campaigns can't be sent. An admin can connect it in Settings → Email.");
+};
+
+/** Uninstalled, Marketing sends clients nothing, so no campaign goes out (or starts, or is tested). */
+const requireMarketing = async (c: Parameters<typeof appUrl>[0]) => {
+  const company = must(await c.var.db.from("companies").select("settings").eq("id", c.var.companyId).maybeSingle());
+  if (!marketingOn(company.settings as Record<string, unknown> | null)) {
+    throw new HttpError(409, "Marketing is off, so campaigns can't be sent. An owner or admin can install it again in Apps.");
+  }
 };
 
 async function loadCampaign(c: Parameters<typeof appUrl>[0]) {
@@ -31,6 +62,7 @@ async function loadCampaign(c: Parameters<typeof appUrl>[0]) {
 
 /** Send now, or schedule: snapshots the audience so later edits to clients don't change who gets it. */
 marketing.post("/campaigns/:id/send", requireUser, requireCompany(OFFICE, "marketing"), async (c) => {
+  await requireMarketing(c);
   await requireEmail(c);
   const body = await readJson(c, z.object({ scheduled_at: z.iso.datetime({ offset: true }).optional() }));
   const campaign = await loadCampaign(c);
@@ -86,6 +118,7 @@ marketing.post("/campaigns/:id/cancel", requireUser, requireCompany(OFFICE, "mar
 
 /** Send yourself a test copy. */
 marketing.post("/campaigns/:id/test", requireUser, requireCompany(OFFICE, "marketing"), async (c) => {
+  await requireMarketing(c);
   await requireEmail(c);
   const body = await readJson(c, z.object({ to: z.email().optional() }));
   const campaign = await loadCampaign(c);
@@ -134,18 +167,89 @@ marketing.post("/campaigns/draft", requireUser, requireCompany(OFFICE, "marketin
 // Reviews and referrals
 // ---------------------------------------------------------------------------------------------
 
+/** Ask a client now: right away, whatever the time and however lately they were asked, unless they opted out or are archived. */
 marketing.post("/reviews/request", requireUser, requireCompany(SALES), async (c) => {
-  const body = await readJson(c, z.object({ client_id: uuid, job_id: uuid.optional(), channel: z.enum(["email", "sms", "link"]).default("email") }));
+  const body = await readJson(c, z.object({ client_id: uuid, job_id: uuid.optional(), channel: z.enum(["email", "sms", "both", "link"]).default("email") }));
   const client = must(
-    await c.var.db.from("clients").select("id, display_name, email, phone").eq("id", body.client_id).eq("company_id", c.var.companyId).maybeSingle(),
+    await c.var.db
+      .from("clients")
+      .select("id, display_name, email, phone, status, review_opt_out, marketing_opt_out, sms_opt_out_at")
+      .eq("id", body.client_id)
+      .eq("company_id", c.var.companyId)
+      .maybeSingle(),
     "Client not found.",
   );
   try {
-    const result = await sendReviewRequest(c.env, adminClient(c.env), { companyId: c.var.companyId, client, jobId: body.job_id, channel: body.channel, baseUrl: appUrl(c), createdBy: c.var.userId });
+    const result = await sendReviewRequest(c.env, adminClient(c.env), {
+      companyId: c.var.companyId, client, jobId: body.job_id, channel: body.channel, baseUrl: appUrl(c), automatic: false, createdBy: c.var.userId,
+    });
     return c.json(result);
   } catch (error) {
     throw new HttpError(400, error instanceof Error ? error.message : "The review request wasn't sent.");
   }
+});
+
+const ASK_RULE_FIELDS = "id, name, description, template_key, trigger, enabled, delay_minutes, conditions, actions";
+
+/**
+ * Marketing → Reviews' "Ask automatically": when the starter rules ask (review_after_job, and
+ * review_recurring for recurring work), by which channels, after which recurring visit, and the
+ * reminders. The rules stay where asking is set, so they still show in Automations: one shaped the
+ * way the form writes them is changed, one that's gone is put back, and one someone changed into
+ * something the form can't show keeps its shape and is named in `kept`, with only the switch
+ * turning it on or off. New reminder days move the reminders still to come.
+ */
+marketing.put("/reviews/asks", requireUser, requireCompany(ADMINS, "marketing"), async (c) => {
+  if (!c.var.permissions.includes("automations")) throw new HttpError(403, "Changing when reviews are asked needs the Automations area.");
+  const body = await readJson(
+    c,
+    z
+      .object({
+        enabled: z.boolean(),
+        when: z.enum(["job.completed", "visit.completed", "invoice.paid"]),
+        channel: z.enum(["email", "sms", "both"]),
+        recurring: z.boolean(),
+        recurring_after_visits: z.number().int().min(1).max(MAX_RECURRING_VISITS),
+        reminder_days: z.array(z.number().int().min(1).max(MAX_REMINDER_DAYS)).max(2),
+      })
+      .refine((b) => b.reminder_days.length < 2 || b.reminder_days[1]! > b.reminder_days[0]!, { message: "The second reminder comes after the first.", path: ["reminder_days"] }),
+  );
+  const { db, companyId } = c.var;
+  const rules = must(await db.from("automation_rules").select(ASK_RULE_FIELDS).eq("company_id", companyId).in("template_key", Object.values(ASK_TEMPLATE_KEYS)));
+
+  // Settings first, read fresh and merged, as saveWebsite does.
+  const current = must(await db.from("companies").select("settings, timezone").eq("id", companyId).maybeSingle());
+  const settings = (current.settings ?? {}) as Record<string, unknown>;
+  const reviews = (settings.reviews ?? {}) as Record<string, unknown>;
+  const next = { ...settings, reviews: { ...reviews, recurring_after_visits: body.recurring_after_visits, reminders: body.reminder_days.map((days) => ({ days })) } };
+  const saved = await db.from("companies").update({ settings: asJson(next) }).eq("id", companyId);
+  if (saved.error) throw dbError(saved.error);
+  const days = reviewSettings(next).reminderDays;
+  if (days.join() !== reviewSettings(settings).reminderDays.join()) {
+    await rescheduleReminders(adminClient(c.env), companyId, current.timezone || "UTC", days);
+  }
+
+  const kept: Array<{ id: string; name: string }> = [];
+  const forms: Record<AskRuleKind, { enabled: boolean }> = { after_job: { enabled: body.enabled }, recurring: { enabled: body.enabled && body.recurring } };
+  for (const kind of Object.keys(forms) as AskRuleKind[]) {
+    const rule = rules.find((r) => r.template_key === ASK_TEMPLATE_KEYS[kind]);
+    if (rule && !readAskRule(rule as unknown as AskRule, kind)) {
+      // Its shape is its own, but the switch still turns it on and off: asking off means nothing asks.
+      kept.push({ id: rule.id, name: rule.name });
+      if (rule.enabled !== forms[kind].enabled) {
+        const switched = await db.from("automation_rules").update({ enabled: forms[kind].enabled }).eq("id", rule.id);
+        if (switched.error) throw dbError(switched.error);
+      }
+      continue;
+    }
+    const change = askRuleUpdate(rule as unknown as AskRule | undefined, kind, { when: body.when, channel: body.channel, enabled: forms[kind].enabled });
+    const row = { ...change, conditions: asJson(change.conditions), actions: asJson(change.actions) };
+    const written = rule
+      ? await db.from("automation_rules").update(row).eq("id", rule.id)
+      : await db.from("automation_rules").insert({ ...row, company_id: companyId } as TablesInsert<"automation_rules">);
+    if (written.error) throw dbError(written.error);
+  }
+  return c.json({ kept });
 });
 
 marketing.get("/referrals/link/:id", requireUser, requireCompany(SALES), async (c) => {

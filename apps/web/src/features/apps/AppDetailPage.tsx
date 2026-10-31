@@ -20,6 +20,7 @@ import { copyText } from "@/lib/clipboard";
 import { timeAgo } from "@/lib/format";
 import { useSession } from "@/lib/session";
 import { useDriveSwitch } from "../drive/useDriveSwitch";
+import { useMarketingSwitch } from "../marketing/useMarketingSwitch";
 import { CalendarFeedCard } from "../settings/CalendarFeedCard";
 import { AbcSupplyPanel } from "./AbcSupplyPanel";
 import { AnalyticsPanel, useAnalyticsSwitch } from "./AnalyticsPanel";
@@ -32,6 +33,7 @@ import { categoryName, infoFor, LINK_ACCESS, MORE_LABELS, useApps, type AppInfo,
 import { DrivePanel } from "./DrivePanel";
 import { InstallRing, type InstallPhase } from "./InstallRing";
 import { useIsInstalled } from "./installed";
+import { MarketingPanel } from "./MarketingPanel";
 import { SCREENSHOTS } from "./screenshots";
 import { StripePanel } from "./StripePanel";
 import { TeamChatPanel, useTeamChatSwitch } from "./TeamChatPanel";
@@ -137,9 +139,15 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
   const formsSwitch = useWebsiteFormsSwitch();
   const careersSwitch = useWebsiteFormsSwitch("careers");
   const driveSwitch = useDriveSwitch();
+  const marketingSwitch = useMarketingSwitch();
   // Built-in apps turn on and off in the company's settings.
   const builtinSwitch =
-    app.id === "website_analytics" ? analyticsSwitch : app.id === "website_forms" ? formsSwitch : app.id === "careers" ? careersSwitch : app.id === "drive" ? driveSwitch : chatSwitch;
+    app.id === "website_analytics" ? analyticsSwitch
+    : app.id === "website_forms" ? formsSwitch
+    : app.id === "careers" ? careersSwitch
+    : app.id === "drive" ? driveSwitch
+    : app.id === "marketing" ? marketingSwitch
+    : chatSwitch;
 
   // Uninstall takes this app's own assistants and calendars with it.
   const assistants = connections.filter((c) => assistantAppFor(c.name) === app.id);
@@ -340,6 +348,7 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
           {app.id === "website_forms" && <WebsiteFormsPanel />}
           {app.id === "careers" && <WebsiteFormsPanel kind="careers" />}
           {app.id === "drive" && <DrivePanel />}
+          {app.id === "marketing" && <MarketingPanel />}
           {app.id === "team_chat" && <TeamChatPanel />}
           {app.auth === "site" && <WebsitePanel app={app} onSaved={refresh} />}
         </>

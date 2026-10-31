@@ -237,6 +237,26 @@ export const APP_INFO: Record<string, AppInfo> = {
     website: "https://crewtavo.com/docs/connections/drive/",
     open: "/drive",
   },
+  marketing: {
+    developer: "Crewtavo",
+    tagline: "Reviews, referrals and campaigns that bring in work",
+    about:
+      "Turn happy clients into more work. Crewtavo asks for a Google review after a job, a visit or a paid invoice, whichever you choose, by text, email or both. Anyone who hasn't opened the link gets up to two reminders, and no client is asked automatically more than once every six months. Every client has a referral link to share, and you see which friends became jobs. Email campaigns go to the clients you pick, by status, tags or time since their last visit, with promo codes and one-click unsubscribe. Clients who opt out aren't asked, and anyone who texts STOP gets no more texts.",
+    highlights: [
+      { icon: "star", title: "Reviews", text: "Ask after a job, a visit or a paid invoice, with up to two reminders for anyone who hasn't opened the link." },
+      { icon: "gift", title: "Referrals", text: "A link for every client to share, and the friends it brings in, from lead to won job." },
+      { icon: "mail", title: "Campaigns", text: "Email the clients you pick, write it with AI, and add a promo code." },
+    ],
+    access: [
+      "Show Marketing in the menu to owners, admins and office staff with the marketing area",
+      "Email and text your clients from your connected email and Twilio, asking each automatically at most once every 6 months",
+      "Leave out clients who opted out of marketing or reviews, and texts to anyone who texted STOP",
+      "Uninstalling hides Marketing and stops every automatic message it sends to clients, and keeps everything",
+    ],
+    connectsWith: "Your email and Twilio",
+    website: "https://crewtavo.com/docs/connections/marketing/",
+    open: "/marketing",
+  },
   google_calendar: {
     developer: "Google",
     tagline: "Your Google calendars on the schedule, and visits on Google",

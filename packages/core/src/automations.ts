@@ -54,9 +54,10 @@ export const TRIGGERS: TriggerDef[] = [
   { verb: "quote.lost", label: "A quote is marked lost", group: "Quotes", subject: "quote", delayable: true },
   { verb: "job.created", label: "A job is created", group: "Jobs", subject: "job", delayable: true },
   { verb: "job.completed", label: "A job is completed", group: "Jobs", subject: "job", delayable: true },
-  // A recurring job stays active, so it's never "completed": its third visit stands in, once
-  // (supabase/migrations/20261030000100_recurring_review_asks.sql).
-  { verb: "job.recurring_third_visit", label: "A recurring job's third visit is done", group: "Jobs", subject: "job", delayable: true },
+  // A recurring job stays active, so it's never "completed": the visit chosen in Marketing → Reviews
+  // stands in, once (settings.reviews.recurring_after_visits, 3 unless changed). The verb keeps its
+  // old name so rules that name it keep working (20261030000400_recurring_review_visits.sql).
+  { verb: "job.recurring_third_visit", label: "A recurring job reaches the visit set in Marketing", group: "Jobs", subject: "job", delayable: true },
   { verb: "visit.reminder", label: "A visit is tomorrow", group: "Visits", subject: "visit", delayable: false },
   { verb: "visit.en_route", label: "A crew is on the way", group: "Visits", subject: "visit", delayable: false },
   { verb: "visit.started", label: "A visit starts", group: "Visits", subject: "visit", delayable: false },
@@ -145,6 +146,15 @@ export const CONDITION_FIELDS: ConditionFieldDef[] = [
     field: "kind", label: "Type", kind: "choice", ops: ["equals", "not_equals"], subjects: ["job", "visit"],
     choices: [{ value: "one_off", label: "One-off job" }, { value: "recurring", label: "Recurring job" }, { value: "job", label: "Job visit" }, { value: "assessment", label: "Assessment" }, { value: "task", label: "Task" }],
   },
+  // The job a visit or invoice is on: Marketing → Reviews leaves recurring work to its own rule.
+  {
+    field: "job_kind", label: "Job type", kind: "choice", ops: ["equals", "not_equals"], subjects: ["visit", "invoice"],
+    choices: [{ value: "one_off", label: "One-off job" }, { value: "recurring", label: "Recurring job" }],
+  },
+  {
+    field: "invoice_kind", label: "Invoice type", kind: "choice", ops: ["equals", "not_equals"], subjects: ["invoice"],
+    choices: [{ value: "standard", label: "Standard" }, { value: "deposit", label: "Deposit" }, { value: "progress", label: "Progress billing" }, { value: "visits", label: "Visits" }],
+  },
 ];
 
 export const OP_LABELS: Record<ConditionOp, string> = {
@@ -166,6 +176,10 @@ export interface Facts {
   amount?: number | null;
   source?: string | null;
   kind?: string | null;
+  /** The kind of job a visit or invoice is on (one_off, recurring), and the job's own. */
+  job_kind?: string | null;
+  /** An invoice's kind: standard, deposit, progress or visits. */
+  invoice_kind?: string | null;
   line_items?: string[];
   client?: { tags?: string[]; status?: string | null; lead_source?: string | null } | null;
 }
@@ -241,7 +255,7 @@ export type Action =
   | { type: "remove_tag"; tag: string }
   | { type: "add_note"; body: string }
   | { type: "create_task"; title: string; days_from_now: number }
-  | { type: "request_review"; channel: "email" | "sms" }
+  | { type: "request_review"; channel: "email" | "sms" | "both" }
   | { type: "update_status"; status: string };
 
 export type ActionType = Action["type"];
@@ -430,7 +444,7 @@ export function describeAction(action: Action): string {
     case "create_task":
       return `Create a task${action.days_from_now ? ` due in ${action.days_from_now} ${action.days_from_now === 1 ? "day" : "days"}` : ""}`;
     case "request_review":
-      return `Ask for a review by ${action.channel === "sms" ? "text" : "email"}`;
+      return `Ask for a review by ${action.channel === "both" ? "text and email" : action.channel === "sms" ? "text" : "email"}`;
     case "update_status":
       return action.status === "lost" ? "Mark it lost" : "Archive it";
   }

@@ -4,6 +4,7 @@
  * Finance. Owners and office staff with "Finance and metrics".
  */
 import { breakPay, isUnpaidBreak } from "@crewtavo/core/breaks";
+import { marketingOn } from "@crewtavo/core/marketing";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Icon } from "@/components/ui/Icon";
@@ -344,7 +345,7 @@ function Clients({ range }: { range: Range }) {
             </div>
             <ReportCard
               title="No work in 12+ months"
-              action={d.lapsed.length > 0 && <Link to="/marketing" className="btn btn-ghost btn-sm"><Icon name="marketing" size={14} />Start a campaign</Link>}
+              action={d.lapsed.length > 0 && marketingOn(company.settings) && <Link to="/marketing" className="btn btn-ghost btn-sm"><Icon name="marketing" size={14} />Start a campaign</Link>}
             >
               <ReportTable
                 rows={d.lapsed}

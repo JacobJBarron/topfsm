@@ -1,6 +1,7 @@
 -- Database tests for review asks on recurring work: a recurring job never completes, so its third
 -- visit done is an event of its own, once for each job, and a starter rule asks for a review a day
--- after it (supabase/migrations/20261030000100_recurring_review_asks.sql).
+-- after it (supabase/migrations/20261030000100_recurring_review_asks.sql). The visit is the one the
+-- business chooses in Marketing → Reviews, 3 unless it does (20261030000400_recurring_review_visits.sql).
 -- Run with scripts/test-db.sh (plain Postgres + prelude.sql). Any failed check stops with an error.
 \set ON_ERROR_STOP on
 \set QUIET on
@@ -95,3 +96,78 @@ set role service_role;
 update public.visits set status = 'completed', completed_at = now() where job_id = :'cleanup';
 reset role;
 select t_recur_review.check(t_recur_review.events(:'cleanup') = 0, 'a one-off job''s visits never count');
+
+-- ===== The visit chosen in Marketing → Reviews ================================================
+select t_recur_review.check((select description = 'Sends your review link a day after a recurring job reaches the visit you chose in Marketing, once for each job.'
+                               from public.automation_rules where company_id = :'co' and template_key = 'review_recurring'),
+  'the starter rule says it asks after the visit chosen in Marketing');
+select t_recur_review.check(private.review_visits(:'co') = 3, 'until it''s chosen, that''s the 3rd');
+select t_recur_review.check(array[private.ordinal(1), private.ordinal(2), private.ordinal(3), private.ordinal(4), private.ordinal(11), private.ordinal(12),
+                                   private.ordinal(13), private.ordinal(21), private.ordinal(22), private.ordinal(111)]
+                            = '{1st,2nd,3rd,4th,11th,12th,13th,21st,22nd,111th}', 'visits are named the way people say them');
+update public.companies set settings = jsonb_set(settings, '{reviews}', '{"recurring_after_visits": "abc"}') where id = :'co';
+select t_recur_review.check(private.review_visits(:'co') = 3, 'a count that isn''t a number reads as 3');
+update public.companies set settings = jsonb_set(settings, '{reviews}', '{"recurring_after_visits": 0}') where id = :'co';
+select t_recur_review.check(private.review_visits(:'co') = 1, '0 reads as 1');
+update public.companies set settings = jsonb_set(settings, '{reviews}', '{"recurring_after_visits": 99}') where id = :'co';
+select t_recur_review.check(private.review_visits(:'co') = 20, '99 reads as 20');
+update public.companies set settings = jsonb_set(settings, '{reviews}', '{"recurring_after_visits": 2.6}') where id = :'co';
+select t_recur_review.check(private.review_visits(:'co') = 3, 'and 2.6 as 3, as the app reads it');
+
+update public.companies set settings = jsonb_set(settings, '{reviews}', '{"recurring_after_visits": 5}') where id = :'co';
+begin;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub": "c9100000-0000-0000-0000-000000000001", "role": "authenticated"}', true);
+insert into public.jobs (company_id, client_id, title, kind, recurrence_rule, starts_on, status)
+values (:'co', :'client', 'Pool service', 'recurring', 'FREQ=WEEKLY;BYDAY=MO', current_date, 'active') returning id as pool \gset
+insert into public.jobs (company_id, client_id, title, kind, recurrence_rule, starts_on, status)
+values (:'co', :'client', 'Window washing', 'recurring', 'FREQ=MONTHLY', current_date, 'active') returning id as windows \gset
+insert into public.jobs (company_id, client_id, title, kind, recurrence_rule, starts_on, status)
+values (:'co', :'client', 'Gutter checks', 'recurring', 'FREQ=MONTHLY', current_date, 'active') returning id as gutters \gset
+commit;
+set role service_role;
+insert into public.visits (company_id, job_id, title, scheduled_on)
+select :'co', j, 'Visit', '2030-07-01'::date + n from unnest(array[:'pool', :'windows', :'gutters']::uuid[]) j, generate_series(1, 6) n;
+reset role;
+
+-- Pool service: the 5th visit (its visits are on July 2nd to 7th).
+set role service_role;
+update public.visits set status = 'completed', completed_at = now() where job_id = :'pool' and scheduled_on <= '2030-07-04';
+reset role;
+select t_recur_review.check(t_recur_review.events(:'pool') = 0, 'with the 5th chosen, three visits aren''t enough');
+set role service_role;
+update public.visits set status = 'completed', completed_at = now() where job_id = :'pool' and scheduled_on = '2030-07-05';
+reset role;
+select t_recur_review.check(t_recur_review.events(:'pool') = 0, 'nor four');
+set role service_role;
+update public.visits set status = 'completed', completed_at = now() where job_id = :'pool' and scheduled_on = '2030-07-06';
+reset role;
+select t_recur_review.check(t_recur_review.events(:'pool') = 1, 'the 5th visit says so');
+select number as pool_no from public.jobs where id = :'pool' \gset
+select t_recur_review.check((select summary = format('Job #%s for Pat Weekly reached its 5th visit', :'pool_no') and data = jsonb_build_object('number', :'pool_no'::integer, 'visits', 5)
+                               from public.activity where subject_id = :'pool' and verb = 'job.recurring_third_visit'),
+  'saying which visit it was');
+
+-- Gutter checks: the count lowered below the visits it has had.
+set role service_role;
+update public.visits set status = 'completed', completed_at = now() where job_id = :'gutters' and scheduled_on <= '2030-07-04';
+reset role;
+update public.companies set settings = jsonb_set(settings, '{reviews}', '{"recurring_after_visits": 2}') where id = :'co';
+select t_recur_review.check(t_recur_review.events(:'gutters') = 0, 'lowering the count past a job''s visits doesn''t ask by itself');
+set role service_role;
+update public.visits set status = 'completed', completed_at = now() where job_id = :'gutters' and scheduled_on = '2030-07-05';
+reset role;
+select t_recur_review.check(t_recur_review.events(:'gutters') = 1, 'the job asks at its next visit');
+set role service_role;
+update public.visits set status = 'completed', completed_at = now() where job_id = :'gutters' and scheduled_on = '2030-07-06';
+reset role;
+select t_recur_review.check(t_recur_review.events(:'gutters') = 1, 'once');
+
+-- Window washing: the 1st.
+update public.companies set settings = jsonb_set(settings, '{reviews}', '{"recurring_after_visits": 1}') where id = :'co';
+set role service_role;
+update public.visits set status = 'completed', completed_at = now() where job_id = :'windows' and scheduled_on = '2030-07-02';
+reset role;
+select t_recur_review.check(t_recur_review.events(:'windows') = 1, 'with the 1st chosen, the first visit asks');
+select t_recur_review.check((select summary like '%reached its 1st visit' from public.activity where subject_id = :'windows' and verb = 'job.recurring_third_visit'),
+  'and says the 1st');

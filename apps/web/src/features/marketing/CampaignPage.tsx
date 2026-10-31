@@ -3,6 +3,7 @@ import { greetingName } from "@crewtavo/core/automations";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDeferredValue, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { featureOn } from "@/components/shell/nav";
 import { Button } from "@/components/ui/Button";
 import { confirm } from "@/components/ui/Confirm";
 import { Dialog } from "@/components/ui/Dialog";
@@ -20,7 +21,7 @@ import { formatDateTime, todayIn } from "@/lib/format";
 import { can, hasRole, useSession } from "@/lib/session";
 import { toast } from "@/lib/toast";
 import { useClientTags } from "../clients/ClientForm";
-import { CAMPAIGN_LABELS, CAMPAIGN_TONES } from "./MarketingPage";
+import { CAMPAIGN_LABELS, CAMPAIGN_TONES, MarketingPage } from "./MarketingPage";
 import { ConnectEmailHint } from "../settings/ConnectEmailHint";
 
 interface Audience {
@@ -47,7 +48,10 @@ const render = (text: string, vars: Record<string, string>) => text.replace(/\{\
 
 export function CampaignPage() {
   const session = useSession();
-  return hasRole(session, "admin", "office") && can(session, "marketing") ? <CampaignPageScreen /> : <NoAccess title="Campaign" />;
+  if (!hasRole(session, "admin", "office") || !can(session, "marketing")) return <NoAccess title="Campaign" />;
+  // Uninstalled, Marketing's pages say so, as Drive's do.
+  if (!featureOn(session.company.settings, "marketing")) return <MarketingPage />;
+  return <CampaignPageScreen />;
 }
 
 function CampaignPageScreen() {

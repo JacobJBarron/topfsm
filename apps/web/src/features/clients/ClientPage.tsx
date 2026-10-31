@@ -1,3 +1,4 @@
+import { askChannels, askRefusal, marketingOn, notAsked, reachOf, textsOff, type AskChannel } from "@crewtavo/core/marketing";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -27,7 +28,9 @@ import { PropertyDialog, type AccessRow, type PropertyRow } from "./PropertyDial
 import { Timeline } from "./Timeline";
 
 type WorkTab = "requests" | "quotes" | "jobs" | "invoices";
-type ClientPatch = { status?: "lead" | "active" | "archived"; marketing_opt_out?: boolean };
+type ClientPatch = { status?: "lead" | "active" | "archived"; marketing_opt_out?: boolean; review_opt_out?: boolean };
+/** The client's switches, which move the moment they're flipped. */
+const SWITCHES = ["marketing_opt_out", "review_opt_out"] as const;
 
 export function ClientPage() {
   const { id = "" } = useParams();
@@ -49,7 +52,7 @@ export function ClientPage() {
       unwrapOne(
         await supabase()
           .from("clients")
-          .select("id, display_name, company_name, email, phone, status, tags, lead_source, notes, created_at, billing_address, marketing_opt_out, referred_by, properties(id, label, line1, line2, city, region, postal_code, lat, lng, notes)")
+          .select("id, display_name, company_name, email, phone, status, tags, lead_source, notes, created_at, billing_address, marketing_opt_out, review_opt_out, sms_opt_out_at, referred_by, properties(id, label, line1, line2, city, region, postal_code, lat, lng, notes)")
           .eq("id", id)
           .maybeSingle(),
         "This client",
@@ -85,17 +88,19 @@ export function ClientPage() {
   });
 
   const update = useMutation({
-    // The marketing switch shows its own change, so only archiving and restoring say so.
+    // The switches show their own change, so only archiving and restoring say so.
     meta: { success: (_: unknown, patch: ClientPatch) => (patch.status === "archived" ? "Client archived" : patch.status ? "Client restored" : null) },
     mutationFn: async (patch: ClientPatch) => unwrap(await supabase().from("clients").update(patch).eq("id", id)),
-    // The switch moves the moment it's flipped, and back if the save fails.
+    // A switch moves the moment it's flipped, and back if the save fails.
     onMutate: async (patch) => {
-      if (patch.marketing_opt_out === undefined) return;
+      const key = SWITCHES.find((k) => patch[k] !== undefined);
+      if (!key) return;
       await queryClient.cancelQueries({ queryKey: ["client", id], exact: true });
-      queryClient.setQueryData<typeof client.data>(["client", id], (old) => old && { ...old, marketing_opt_out: Boolean(patch.marketing_opt_out) });
+      queryClient.setQueryData<typeof client.data>(["client", id], (old) => old && { ...old, [key]: Boolean(patch[key]) });
     },
     onError: (_error, patch) => {
-      if (patch.marketing_opt_out !== undefined) queryClient.setQueryData<typeof client.data>(["client", id], (old) => old && { ...old, marketing_opt_out: !patch.marketing_opt_out });
+      const key = SWITCHES.find((k) => patch[k] !== undefined);
+      if (key) queryClient.setQueryData<typeof client.data>(["client", id], (old) => old && { ...old, [key]: !patch[key] });
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["client", id] });
@@ -125,14 +130,27 @@ export function ClientPage() {
     onSuccess: (r) => copyText(r.link, "Referral link copied"),
   });
   const review = useMutation({
-    mutationFn: (channel: "email" | "sms") => api.post<{ sent: boolean; detail: string }>("/reviews/request", { client_id: id, channel }),
+    mutationFn: (channel: AskChannel) => api.post<{ sent: boolean; detail: string }>("/reviews/request", { client_id: id, channel }),
     onSuccess: (r) => toast.success(r.detail),
+    // Marketing → Reviews lists the ask, failed or not, and "Ask a client now" says when they were last asked.
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["review-requests", session.company.id] });
+      queryClient.invalidateQueries({ queryKey: ["review-ask", id] });
+    },
   });
+  // Review asks and referrals are Marketing's: while it's uninstalled they aren't offered here.
+  const marketing = marketingOn(session.company.settings);
 
   if (client.isPending) return <DetailSkeleton />;
   if (client.error || !c) return <PageError error={client.error} onRetry={() => client.refetch()} back={<BackLink to="/clients">Clients</BackLink>} />;
 
   const unpaid = work.data?.invoices.filter((i) => ["sent", "partially_paid", "overdue"].includes(i.status)) ?? [];
+  const stopped = textsOff(c);
+  // The review asks offered are the ones that can go: not to a client who opted out or is archived,
+  // nor by a way this Crewtavo can't send or the client can't get.
+  const ready = { email: session.config.features.email, sms: session.config.features.sms };
+  const cannotAsk = (channel: AskChannel) => Boolean(askRefusal(c, channel, ready));
+  const bothWays = !notAsked(c) && askChannels("both", reachOf(c, ready), false).send.length === 2;
   const owed = unpaid.reduce((sum, i) => sum + Number(i.balance_due), 0);
   const pastDue = unpaid.reduce((sum, i) => sum + (i.status === "overdue" ? Number(i.balance_due) : 0), 0);
   // Never paid, and taken as a loss: worth knowing before taking on more work for them.
@@ -202,10 +220,11 @@ export function ClientPage() {
                 items={[
                   { label: "Edit client", icon: "edit", onSelect: () => setDialog("edit") },
                   { label: "Copy Client Hub link", icon: "link", onSelect: () => hubLink.mutate() },
-                  { separator: true },
-                  { label: "Ask for a review by email", icon: "star", onSelect: () => review.mutate("email"), disabled: !c.email },
-                  { label: "Ask for a review by text", icon: "star", onSelect: () => review.mutate("sms"), disabled: !c.phone },
-                  { label: "Copy referral link", icon: "gift", onSelect: () => referralLink.mutate() },
+                  { separator: true, hidden: !marketing },
+                  { label: "Ask for a review by email", icon: "star", onSelect: () => review.mutate("email"), disabled: cannotAsk("email"), hidden: !marketing },
+                  { label: "Ask for a review by text", icon: "star", onSelect: () => review.mutate("sms"), disabled: cannotAsk("sms"), hidden: !marketing },
+                  { label: "Ask for a review by text and email", icon: "star", onSelect: () => review.mutate("both"), disabled: !bothWays, hidden: !marketing },
+                  { label: "Copy referral link", icon: "gift", onSelect: () => referralLink.mutate(), hidden: !marketing },
                   { separator: true, hidden: !isOffice },
                   { label: c.status === "archived" ? "Restore client" : "Archive client", icon: c.status === "archived" ? "undo" : "archive", onSelect: () => update.mutate({ status: c.status === "archived" ? "active" : "archived" }), hidden: !isOffice },
                   { label: "Delete client", icon: "trash", danger: true, onSelect: deleteClient, hidden: !isOffice },
@@ -220,6 +239,8 @@ export function ClientPage() {
         {c.company_name && c.company_name !== c.display_name && <span className="muted">{c.company_name}</span>}
         {c.tags.map((t) => <span key={t} className="tag">{t}</span>)}
         {c.marketing_opt_out && <span className="chip chip-amber">Unsubscribed from marketing</span>}
+        {c.review_opt_out && <span className="chip chip-amber">No review asks</span>}
+        {stopped && <span className="chip chip-amber">Texts off</span>}
       </div>
       {c.status === "archived" && (
         <div className="callout callout-warning">
@@ -347,6 +368,7 @@ export function ClientPage() {
             <dl className="kv">
               <dt>Email</dt><dd>{c.email ? <a href={`mailto:${c.email}`}>{c.email}</a> : "—"}</dd>
               <dt>Phone</dt><dd>{c.phone ? <a href={`tel:${c.phone}`}>{c.phone}</a> : "—"}</dd>
+              {c.sms_opt_out_at && <><dt>Texts</dt><dd>Off since {formatDate(c.sms_opt_out_at)}. They texted STOP, and can text START to turn texts back on.</dd></>}
               {owed > 0 && (
                 <>
                   <dt>Balance</dt>
@@ -367,8 +389,16 @@ export function ClientPage() {
                   <dd>
                     <label className="switch-row" style={{ fontWeight: 400 }}>
                       <input type="checkbox" className="switch" checked={!c.marketing_opt_out} onChange={(e) => update.mutate({ marketing_opt_out: !e.target.checked })} />
-                      Gets emails
+                      Gets campaigns and review asks
                     </label>
+                  </dd>
+                  <dt>Reviews</dt>
+                  <dd>
+                    <label className="switch-row" style={{ fontWeight: 400 }}>
+                      <input type="checkbox" className="switch" checked={!c.review_opt_out && !c.marketing_opt_out} disabled={c.marketing_opt_out} onChange={(e) => update.mutate({ review_opt_out: !e.target.checked })} />
+                      Gets review asks
+                    </label>
+                    {c.marketing_opt_out && <span className="muted small" style={{ display: "block" }}>Off while they're unsubscribed from marketing</span>}
                   </dd>
                 </>
               )}

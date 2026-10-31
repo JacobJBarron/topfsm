@@ -337,6 +337,18 @@ describe("a price range in the Client Hub", () => {
   });
 });
 
+describe("referrals on the client's home page", () => {
+  it("offers the client their link while Marketing is installed, and not once it's uninstalled", async () => {
+    const company = state.tables.companies![0]!;
+    company.settings = { ...(company.settings as Row), referral_offer: "$25 off your next roof check", marketing: { enabled: true } };
+    let body = await (await hub({ t: "client", id: CLIENT })).json();
+    expect(body.refer).toMatchObject({ offer: "$25 off your next roof check", link: expect.stringContaining("/refer/") });
+    company.settings = { ...(company.settings as Row), marketing: { enabled: false } };
+    body = await (await hub({ t: "client", id: CLIENT })).json();
+    expect(body.refer).toBeNull();
+  });
+});
+
 describe("the crew on the client's home page", () => {
   it("is first names only, and a sub is named from the office's record, never their own profile", async () => {
     const visit = (id: string, assignees: string[]) => ({

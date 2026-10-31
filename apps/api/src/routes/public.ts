@@ -6,6 +6,7 @@
 import { contractValues, fillIn } from "@crewtavo/core/contracts";
 import { pickTemplate, templateSettings, type TemplateSettings } from "@crewtavo/core/documents";
 import { hidesExactPrice, inRangeMode, isSiteAdjustment, optionsRange, priceRange, rangeSettings } from "@crewtavo/core/estimates";
+import { marketingOn } from "@crewtavo/core/marketing";
 import { chosenTotals, countsOn, optionBaseTotal, optionTotals, type OptionLine } from "@crewtavo/core/money";
 import { isPackagePicturePath, packagePictureSrc } from "@crewtavo/core/presets";
 import { Hono, type Context } from "hono";
@@ -944,7 +945,8 @@ async function clientHome(c: Parameters<typeof appUrl>[0], admin: ReturnType<typ
   const base = appUrl(c);
   const sign = (t: "quote" | "invoice", id: string) => clientLink(c.env, base, { c: companyId, t, id });
   const companySettings = (settings.settings ?? {}) as { referral_offer?: string; referral_reward?: { amount?: number } };
-  const referralOn = Boolean(companySettings.referral_offer || Number(companySettings.referral_reward?.amount ?? 0) > 0);
+  // Referrals are Marketing's: uninstalled, the Hub stops offering them (links already shared still open).
+  const referralOn = marketingOn(companySettings) && Boolean(companySettings.referral_offer || Number(companySettings.referral_reward?.amount ?? 0) > 0);
   return {
     kind: "client",
     company,
@@ -1201,7 +1203,10 @@ publicRoutes.post("/public/unsubscribe/:token", async (c) => {
   return c.json({ unsubscribed: !resubscribe });
 });
 
-/** Tracked review link: record the click, then send the client to the review page. */
+/**
+ * Tracked review link: record the click, which stops its reminders, then send the client to the
+ * review page. It works with Marketing uninstalled too: the client asked for nothing.
+ */
 publicRoutes.get("/public/r/:token", async (c) => {
   const payload = await readClientLink(c.env, c.req.param("token") ?? "");
   if (!payload || payload.t !== "review") return c.text("This link has expired.", 404);
@@ -1209,7 +1214,12 @@ publicRoutes.get("/public/r/:token", async (c) => {
   const { data: company } = await admin.from("companies").select("settings").eq("id", payload.c).maybeSingle();
   const url = (company?.settings as { review_url?: string } | null)?.review_url;
   if (!url || !/^https:\/\//.test(url)) return c.text("This business hasn't set up reviews yet.", 404);
-  await admin.from("review_requests").update({ status: "clicked", clicked_at: new Date().toISOString() }).eq("company_id", payload.c).eq("id", payload.id).is("clicked_at", null);
+  await admin
+    .from("review_requests")
+    .update({ status: "clicked", clicked_at: new Date().toISOString(), next_reminder_at: null })
+    .eq("company_id", payload.c)
+    .eq("id", payload.id)
+    .is("clicked_at", null);
   return c.redirect(url, 302);
 });
 

@@ -489,7 +489,7 @@ select t1070.check(array(
   'equipment_conflicts(uuid, uuid[], date, timestamp with time zone, timestamp with time zone, uuid)', 'global_search(uuid, text, integer)',
   'job_material_costs(uuid)', 'job_pay_accept(uuid, uuid[])', 'job_pay_cancel(uuid)', 'job_pay_costs(uuid[])', 'job_pay_covers(uuid, uuid, uuid)', 'job_pay_mark_done(uuid, date)',
   'job_pay_mark_paid(uuid[], text, date, text, numeric)', 'job_pay_start(uuid, uuid, uuid, uuid[])', 'job_pay_suggest(uuid, uuid, uuid, uuid[])',
-  'job_pay_unmark_paid(uuid[])', 'job_scope(uuid)', 'marketing_summary(uuid)', 'material_choices(uuid)', 'my_crew_ids(uuid)', 'my_sub_offers(boolean, uuid)', 'my_sub_pay_totals(uuid)',
+  'job_pay_unmark_paid(uuid[])', 'job_scope(uuid)', 'last_review_ask(uuid, uuid)', 'marketing_set_enabled(uuid, boolean)', 'marketing_summary(uuid)', 'material_choices(uuid)', 'my_crew_ids(uuid)', 'my_sub_offers(boolean, uuid)', 'my_sub_pay_totals(uuid)',
   'promo_code_usage(uuid)', 'put_quote_package(uuid, uuid, jsonb, boolean)', 'remove_promo_code(text, uuid)', 'remove_quote_option(uuid, uuid)',
   'search_sops(uuid, text, integer, boolean)', 'send_sub_offer(uuid, timestamp with time zone)', 'set_sub_reminders(uuid, boolean)',
   'set_sub_sign_in_countries(uuid, text[])', 'sign_quote(uuid, jsonb, uuid, numeric)',
@@ -577,10 +577,11 @@ select t1070.expect_error(format('select public.storage_overview(%L)', :'co'), '
 select t1070.expect_error(format('select public.storage_set_limit(%L, %L)', :'co', 'none'), 'storage_set_limit refuses');
 select t1070.expect_error(format('select public.storage_set_allowance(%L, %L, null, 1)', :'co', 'd1070000-0000-0000-0000-000000000005'), 'storage_set_allowance refuses');
 select t1070.check((select (public.marketing_summary(:'co') ->> 'opted_out')::int = 0
+  and public.last_review_ask(:'co', :'c1') is null
   and (public.dashboard(:'co') -> 'receivables' ->> 'total')::numeric = 0
   and (public.dashboard(:'co') -> 'workflow' -> 'quotes' ->> 'draft')::int = 0
   and coalesce((public.dashboard(:'co') -> 'today' ->> 'total')::int, 0) = 0),
-  'the dashboard and marketing summary count nothing (they run as the person, who can''t read the company)');
+  'the dashboard, marketing summary and when a client was last asked count nothing (they run as the person, who can''t read the company)');
 select t1070.check((select array_agg(visit_id) from public.equipment_conflicts(:'co', array[:'e1', :'e2']::uuid[], private.company_today(:'co') + 1, null, null)) is null
   and (select array_agg(visit_id) from public.equipment_conflicts(:'co', array[:'e1']::uuid[], private.company_today(:'co'), null, null)) = array[:'v1']::uuid[],
   'equipment_conflicts only sees their own visits');

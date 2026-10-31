@@ -1,7 +1,9 @@
 # Marketing as an app: plan
 
-Proposed 30 October 2026. Nothing here is built yet, apart from the recurring-work review ask
-(`supabase/migrations/20261030000100_recurring_review_asks.sql`, not yet committed). This is the plan.
+Proposed 30 October 2026. Phase A, the app and review reminders, is built
+(`supabase/migrations/20261030000200_marketing_app.sql` to `20261030000600_review_ask_followups.sql`,
+`packages/core/src/marketing.ts`, `apps/api/src/services/reviews.ts`, Marketing → Reviews). Phases B to E
+aren't. This is the plan.
 
 The goal: Crewtavo's own version of Jobber's Marketing Suite (Reviews, Referrals, Campaigns and
 social posting), following how Jobber does each one, shipped as one built-in app in Apps that owns
@@ -132,6 +134,8 @@ counted.
   does. Asks sent by hand go right away.
 - **One automatic ask per client every 6 months,** replacing 30 days. **Ask a client now** isn't
   held to it, but says when they were last asked.
+- **A copied link isn't an ask until it's opened.** It may never reach the client, so it doesn't
+  start the 6 months, get reminders or count in the overview until then.
 - **A per-client switch, "Don't ask for reviews",** on the client, as in Jobber. Clients who opted
   out of marketing aren't asked either. A STOP text sets `clients.sms_opt_out_at`, and texts to
   them stop. Twilio blocks those texts anyway, but Crewtavo then knows and shows it.
@@ -213,7 +217,8 @@ counted.
 
 - `companies.settings.marketing`: `{ enabled }`. `companies.settings.reviews`: `{ recurring_after_visits,
   reminders: [{ days }], channel }`. `companies.settings.referrals`: `{ reward: { kind: "amount" | "percent", value }, offer }`.
-- `review_requests`: `reminders_sent`, `next_reminder_at`.
+- `review_requests`: `reminders_sent`, `next_reminder_at`, `reminders_failed`, `reminder_error` (why the
+  last reminder failed) and `reminder_note` (why reminders stopped).
 - `clients`: `review_opt_out boolean`, `sms_opt_out_at timestamptz`.
 - `referrals`: `reward_status` (pending, earned, applied, none), `reward_invoice_id`, `earned_at`.
 - `campaigns`: `kind` (one_off, automated), opens and clicks per recipient on
@@ -239,6 +244,17 @@ counted.
 - **Each phase is one branch,** with database, API and web tests.
 - **Apply for Google's API access early** for crm.brrhi.com's Google Cloud project, so phase D isn't
   waiting on it.
+
+## Release notes for phase A
+
+- **Marketing is an app now.** It's listed in Apps as **Crewtavo - Marketing** and installed for every
+  business. Uninstalling it hides Marketing and stops review asks, their reminders and campaigns:
+  scheduled campaigns go back to drafts.
+- **Reminders now follow review asks, automatic and by hand:** two of them, 3 and 5 days later at
+  1:30pm, for anyone who hasn't opened the link. Businesses that already ask automatically start
+  sending them now. Set them to **None** in **Marketing → Reviews** to turn them off.
+- **Automatic asks go to a client at most once every 6 months,** instead of once a month.
+- **Clients who texted STOP have texts off,** shown on their page, including STOPs from before.
 
 ## Decisions on the open questions (30 October 2026)
 

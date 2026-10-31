@@ -18,10 +18,11 @@ import { asJson, dbError, HttpError, must } from "../lib/http";
 import { clientLink } from "../lib/links";
 import { reportError } from "../lib/monitoring";
 import { sendEmail, sendSms } from "../lib/notify";
-import type { Db } from "../lib/supabase";
+import { adminClient, type Db } from "../lib/supabase";
 import { companyAddress } from "./automations";
 import { checkContract, contractInput, freezeContract, freezeOption, initialsImage, isPriced, loadOptions, optionTiers, packageFill, postedId, resolveContract, sectionsHashSchema, type OptionRow } from "./contracts";
 import { isDrawnPng, logoImage } from "./logo";
+import { noteRefusedText, textsOffRefusal, textsOffTo } from "./textsOff";
 
 /** Who's signing, where: the person's client, their company and user, and the address links use. */
 export interface SigningScope {
@@ -278,8 +279,12 @@ async function deliverCopy(s: SigningScope, quote: Quote, company: Company, link
     } else {
       const to = body.to || client?.phone;
       if (!to) return { sent: false, reason: `Add a phone number for ${who} first.` };
+      // Not to their own phone after they texted STOP; another number is the office's to text.
+      const { data: texted } = await s.db.from("clients").select("id, phone, sms_opt_out_at").eq("id", quote.client_id).maybeSingle();
+      if (texted && textsOffTo(texted, to)) return { sent: false, reason: textsOffRefusal(who) };
       sentText = `${company.name}: Here's your signed estimate. You can view, print or save it any time: ${link}`;
       result = await sendSms(s.env, { to, body: sentText });
+      if (texted) await noteRefusedText(adminClient(s.env), texted, to, result);
     }
   } catch (error) {
     console.error("Couldn't send the signed copy", error);

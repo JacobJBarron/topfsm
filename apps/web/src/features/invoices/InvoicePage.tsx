@@ -58,7 +58,7 @@ function InvoicePageScreen() {
       unwrapOne(
         await supabase()
           .from("invoices")
-          .select("*, promo:promo_codes(code, kind, value, description), client:clients(id, display_name, email, phone, billing_address), job:jobs(id, number, title, po_number, property:properties(line1, city, region, postal_code), quote:quotes!jobs_company_id_quote_id_fkey(approval, option_id, option:quote_options!quotes_option_fkey(name, warranty), package:roof_packages!quotes_roof_package_fkey(name, warranty))), lines:invoice_line_items(id, name, description, quantity, unit, unit_price, taxable, sort, service_id), payments(id, amount, tip_amount, method, received_at, processor, notes, fee_amount, payout:payouts(arrival_on, status)), stripe:stripe_invoices(stripe_id, origin, status, number, hosted_url, livemode, amount_due, created_at, detached_at, processing_at)")
+          .select("*, promo:promo_codes(code, kind, value, description), client:clients(id, display_name, email, phone, billing_address, sms_opt_out_at), job:jobs(id, number, title, po_number, property:properties(line1, city, region, postal_code), quote:quotes!jobs_company_id_quote_id_fkey(approval, option_id, option:quote_options!quotes_option_fkey(name, warranty), package:roof_packages!quotes_roof_package_fkey(name, warranty))), lines:invoice_line_items(id, name, description, quantity, unit, unit_price, taxable, sort, service_id), payments(id, amount, tip_amount, method, received_at, processor, notes, fee_amount, payout:payouts(arrival_on, status)), stripe:stripe_invoices(stripe_id, origin, status, number, hosted_url, livemode, amount_due, created_at, detached_at, processing_at)")
           .eq("id", id)
           .order("sort", { referencedTable: "invoice_line_items" })
           .order("received_at", { referencedTable: "payments" })
@@ -348,7 +348,7 @@ function InvoicePageScreen() {
         </aside>
       </div>
 
-      {dialog === "send" && <SendDialog kind="invoice" id={inv.id} number={inv.number} email={inv.client?.email ?? null} phone={inv.client?.phone ?? null} onClose={() => setDialog(null)} onSent={refresh} />}
+      {dialog === "send" && <SendDialog kind="invoice" id={inv.id} number={inv.number} email={inv.client?.email ?? null} phone={inv.client?.phone ?? null} textsOffSince={inv.client?.sms_opt_out_at} onClose={() => setDialog(null)} onSent={refresh} />}
       {dialog === "payment" && <PaymentDialog invoice={{ id: inv.id, client_id: inv.client_id, balance, draft }} bank={bankNote} onClose={() => setDialog(null)} onSaved={refresh} />}
       {refunding && <RefundDialog invoice={{ id: inv.id, client_id: inv.client_id }} payment={refunding} left={refundable(refunding, inv.payments)} onClose={() => setRefunding(null)} onSaved={refresh} />}
     </>

@@ -1,5 +1,6 @@
 /** Apps page: catalog with status, OAuth connect/callback/disconnect, API keys, and AI helpers. */
 import { ADMINS } from "@crewtavo/core";
+import { marketingOn } from "@crewtavo/core/marketing";
 import { websiteOf } from "@crewtavo/core/website";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -44,11 +45,12 @@ apps.get("/apps", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
   const website = websiteOf(company.data?.settings as Record<string, unknown> | null);
   const byProvider = new Map(integrations.map(({ settings, ...r }) => [r.provider, r]));
   // Website analytics, while it counts visits (routes/analytics.ts), website forms and careers
-  // (routes/websiteForms.ts), and Drive (routes/drive.ts).
+  // (routes/websiteForms.ts), Drive (routes/drive.ts) and Marketing (routes/marketing.ts).
   builtinOn.website_analytics = analyticsSettings(company.data?.settings).enabled === true;
   builtinOn.website_forms = (company.data?.settings as { website_forms?: { enabled?: boolean } } | null)?.website_forms?.enabled === true;
   builtinOn.careers = (company.data?.settings as { careers?: { enabled?: boolean } } | null)?.careers?.enabled === true;
   builtinOn.drive = (company.data?.settings as { drive?: { enabled?: boolean } } | null)?.drive?.enabled === true;
+  builtinOn.marketing = marketingOn(company.data?.settings as Record<string, unknown> | null);
   const calendarRows = must(calendars);
   const ownKey = Boolean(stripeKey.count);
   const stripeSettings = (integrations.find((r) => r.provider === "stripe")?.settings ?? {}) as { webhook?: boolean; livemode?: boolean; import?: ImportState };

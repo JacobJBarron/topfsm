@@ -18,19 +18,21 @@ import { keepRailwayAlive } from "./services/railway";
 import { checkStorage } from "./services/storageUsage";
 import { processAutomations } from "./services/automations";
 import { processCampaigns } from "./services/campaigns";
+import { sendDueReminders } from "./services/reviews";
 import { deliverNotifications } from "./services/delivery";
 import { remindSubs } from "./services/subs";
 import { dailyOutlook } from "./services/external";
 import { autoRoutes } from "./services/routes";
 
-export const TASKS = ["automations", "campaigns", "notify", "outbox", "calendars", "recurrence", "followups", "weather", "address", "railway", "hosting", "plans", "trash", "storage", "routes", "website"] as const;
+export const TASKS = ["automations", "campaigns", "notify", "outbox", "calendars", "recurrence", "followups", "weather", "address", "railway", "hosting", "plans", "trash", "storage", "routes", "website", "reviews"] as const;
 export type TaskName = (typeof TASKS)[number];
 
 /** Cron expressions -> tasks, run by server.ts's scheduler. */
 export const CRON_TASKS: Record<string, TaskName[]> = {
   "* * * * *": ["automations", "campaigns", "notify"],
   "*/2 * * * *": ["address"],
-  "*/5 * * * *": ["outbox"],
+  // Review reminders go at 1:30pm in each company's time zone (services/reviews.ts).
+  "*/5 * * * *": ["outbox", "reviews"],
   "*/15 * * * *": ["calendars"],
   "0 * * * *": ["followups"],
   "0 */6 * * *": ["weather"],
@@ -88,6 +90,8 @@ export async function runTask(name: TaskName, env: Env): Promise<Record<string, 
       return autoRoutes(env);
     case "website":
       return rollUpVisits(adminClient(env));
+    case "reviews":
+      return sendDueReminders(env);
   }
 }
 

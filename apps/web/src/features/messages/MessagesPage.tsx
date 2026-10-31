@@ -1,4 +1,5 @@
 /** Message center: conversations by client (emails, texts, notes), with replies by email or text. */
+import { textsOff, textsOffReason } from "@crewtavo/core/marketing";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fragment, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -130,7 +131,7 @@ function Thread({ clientId, onBack }: { clientId: string; onBack: () => void }) 
     refetchInterval: 15_000,
     queryFn: async () => {
       const [client, rows] = await Promise.all([
-        supabase().from("clients").select("id, display_name, email, phone").eq("id", clientId).maybeSingle(),
+        supabase().from("clients").select("id, display_name, email, phone, sms_opt_out_at").eq("id", clientId).maybeSingle(),
         supabase().from("messages").select("id, channel, direction, subject, body, status, created_at").eq("client_id", clientId).order("created_at", { ascending: false }).limit(300),
       ]);
       return { client: unwrap(client), rows: unwrap(rows).reverse() };
@@ -190,10 +191,10 @@ function Thread({ clientId, onBack }: { clientId: string; onBack: () => void }) 
   );
 }
 
-function Composer({ client, onSent }: { client: { id: string; display_name: string; email: string | null; phone: string | null }; onSent: () => void }) {
+function Composer({ client, onSent }: { client: { id: string; display_name: string; email: string | null; phone: string | null; sms_opt_out_at: string | null }; onSent: () => void }) {
   const session = useSession();
   const { features } = session.config;
-  const [channel, setChannel] = useState<"email" | "sms" | "note">(client.phone && features.sms ? "sms" : client.email && features.email ? "email" : "note");
+  const [channel, setChannel] = useState<"email" | "sms" | "note">(client.phone && features.sms && !textsOff(client) ? "sms" : client.email && features.email ? "email" : "note");
   const [subject, setSubject] = useState(`A note from ${session.company.name}`);
   const [body, setBody] = useState("");
   const send = useMutation({
@@ -212,7 +213,7 @@ function Composer({ client, onSent }: { client: { id: string; display_name: stri
   });
   const problem =
     channel === "email" ? (!client.email ? "No email address on file for this client." : !features.email ? "Email isn't turned on yet." : null)
-    : channel === "sms" ? (!client.phone ? "No phone number on file for this client." : !features.sms ? "Texting isn't turned on yet." : null)
+    : channel === "sms" ? (!client.phone ? "No phone number on file for this client." : textsOff(client) ? textsOffReason(client.display_name) : !features.sms ? "Texting isn't turned on yet." : null)
     : null;
   const canSend = body.trim().length > 0 && !problem && (channel !== "email" || subject.trim().length > 0);
   return (

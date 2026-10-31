@@ -22,6 +22,7 @@ import {
   type ConditionOp,
   type SubjectKind,
 } from "@crewtavo/core/automations";
+import { marketingOn, ordinal, RECURRING_TRIGGER, reviewSettings } from "@crewtavo/core/marketing";
 import { STAFF } from "@crewtavo/core/roles";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -231,6 +232,11 @@ function RulePageScreen() {
                   </optgroup>
                 ))}
               </select>
+              {draft.trigger === RECURRING_TRIGGER && (
+                <p className="muted small" style={{ margin: 0 }}>
+                  The {ordinal(reviewSettings(session.company.settings).recurringAfterVisits)} visit, set in <Link to="/marketing?tab=reviews">Marketing → Reviews</Link>.
+                </p>
+              )}
             </Step>
 
             {trigger?.delayable && (
@@ -457,6 +463,7 @@ function ActionEditor({ index, count, subject, verb, value, onChange, onRemove, 
     else if ("body" in value) onChange({ ...value, body: text } as Action);
   };
   const def = actionsFor(subject).find((a) => a.type === value.type);
+  const session = useSession();
   return (
     <div className="card" style={{ padding: 14, display: "grid", gap: 10, boxShadow: "none", background: "var(--fill)" }}>
       <div className="row">
@@ -529,13 +536,17 @@ function ActionEditor({ index, count, subject, verb, value, onChange, onRemove, 
 
       {value.type === "request_review" && (
         <>
+          {!marketingOn(session.company.settings) && (
+            <div className="callout callout-info"><Icon name="info" size={18} /><div className="grow">Marketing is off, so this action is skipped.</div></div>
+          )}
           <Field label="Send by">
-            <select className="select" value={value.channel} onChange={(e) => onChange({ ...value, channel: e.target.value as "email" | "sms" })}>
+            <select className="select" value={value.channel} onChange={(e) => onChange({ ...value, channel: e.target.value as "email" | "sms" | "both" })}>
               <option value="email">Email</option>
               <option value="sms">Text message</option>
+              <option value="both">Text and email</option>
             </select>
           </Field>
-          <p className="muted small" style={{ margin: 0 }}>Uses your <Link to="/marketing?tab=reviews">review settings</Link>.</p>
+          <p className="muted small" style={{ margin: 0 }}>Uses your <Link to="/marketing?tab=reviews">review settings</Link>, and asks each client at most once every 6 months.</p>
         </>
       )}
 

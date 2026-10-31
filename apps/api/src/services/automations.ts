@@ -4,7 +4,9 @@
  *
  * Runs are processed every minute by cron, and right away when the web app or a public page
  * reports an action (POST /api/automations/process), so notifications feel instant.
- * A retried run skips actions that already succeeded, so nobody gets the same email twice.
+ * A retried run skips actions that already succeeded, so nobody gets the same email twice. An
+ * action that has to wait (an automatic review ask during quiet hours: WaitUntil) puts the run back
+ * until then, and one with nothing to do says so (Skip) without failing the run.
  */
 import {
   actionsForTrigger,
@@ -25,6 +27,7 @@ import {
   type TemplateVars,
 } from "@crewtavo/core";
 import { hidesExactPrice } from "@crewtavo/core/estimates";
+import { REVIEW_GAP_DAYS, textsOff, textsOffReason } from "@crewtavo/core/marketing";
 import { countsOn } from "@crewtavo/core/money";
 import type { Env } from "../env";
 import { firstName, isEmail, renderEmail } from "../lib/email";
@@ -32,14 +35,22 @@ import { clientLink } from "../lib/links";
 import { sendEmail, sendSms } from "../lib/notify";
 import { adminClient, type Db } from "../lib/supabase";
 import { logoImage } from "./logo";
-import { sendReviewRequest } from "./reviews";
+import { sendReviewRequest, WaitUntil } from "./reviews";
 import { isRoofWork } from "./roofPackages";
 import { optionsFrom } from "./sales";
+import { noteRefusedText } from "./textsOff";
 
 export interface ActionResult {
   type: string;
   ok: boolean;
   detail: string;
+  /** Nothing to do (Marketing is off, the client opted out): not a failure, and not a success either. */
+  skipped?: true;
+}
+
+/** What an action returns when it had nothing to do, and why. */
+export class Skip {
+  constructor(readonly detail: string) {}
 }
 
 interface CompanyInfo {
@@ -60,7 +71,18 @@ export interface RunContext {
   id: string;
   label: string;
   company: CompanyInfo;
-  client: { id: string; display_name: string; email: string | null; phone: string | null; tags: string[]; status: string; lead_source: string | null } | null;
+  client: {
+    id: string;
+    display_name: string;
+    email: string | null;
+    phone: string | null;
+    tags: string[];
+    status: string;
+    lead_source: string | null;
+    review_opt_out: boolean;
+    marketing_opt_out: boolean;
+    sms_opt_out_at: string | null;
+  } | null;
   facts: Facts;
   vars: TemplateVars;
   appPath: string;
@@ -182,7 +204,9 @@ export async function loadContext(admin: Db, companyId: string, subjectType: str
       clientId = data.client_id;
       propertyId = data.property_id;
       jobId = subjectId;
-      facts = { status: data.status, kind: data.kind, amount: Number(data.financials?.contract_total ?? 0), line_items: (data.lines as Array<{ name: string }>).map((l) => l.name) };
+      facts = {
+        status: data.status, kind: data.kind, job_kind: data.kind, amount: Number(data.financials?.contract_total ?? 0), line_items: (data.lines as Array<{ name: string }>).map((l) => l.name),
+      };
       vars = { number: data.number, title: data.title, total: fmt(data.financials?.contract_total ?? 0), address: addressOf(data.property as Property) };
       label = `Job #${data.number}`;
       appPath = `/jobs/${subjectId}`;
@@ -191,16 +215,16 @@ export async function loadContext(admin: Db, companyId: string, subjectType: str
     case "visit": {
       const { data } = await admin
         .from("visits")
-        .select("title, kind, status, scheduled_on, starts_at, job_id, property_id, property:properties(line1, city, region, client_id), job:jobs(client_id), request:requests(client_id)")
+        .select("title, kind, status, scheduled_on, starts_at, job_id, property_id, property:properties(line1, city, region, client_id), job:jobs(client_id, kind), request:requests(client_id)")
         .eq("company_id", companyId)
         .eq("id", subjectId)
         .maybeSingle();
       if (!data) return null;
-      const rel = data as unknown as { job: { client_id: string } | null; request: { client_id: string } | null; property: (Property & { client_id: string }) | null };
+      const rel = data as unknown as { job: { client_id: string; kind: string } | null; request: { client_id: string } | null; property: (Property & { client_id: string }) | null };
       clientId = rel.job?.client_id ?? rel.request?.client_id ?? rel.property?.client_id ?? null;
       propertyId = data.property_id;
       jobId = data.job_id;
-      facts = { status: data.status, kind: data.kind };
+      facts = { status: data.status, kind: data.kind, job_kind: rel.job?.kind ?? null };
       const tz = co.timezone || "UTC";
       const date = data.starts_at ?? (data.scheduled_on ? `${data.scheduled_on}T12:00:00Z` : null);
       vars = {
@@ -216,14 +240,17 @@ export async function loadContext(admin: Db, companyId: string, subjectType: str
     case "invoice": {
       const { data } = await admin
         .from("invoices")
-        .select("number, subject, status, total, balance_due, client_id, job_id, lines:invoice_line_items(name)")
+        .select("number, subject, status, kind, total, balance_due, client_id, job_id, job:jobs(kind), lines:invoice_line_items(name)")
         .eq("company_id", companyId)
         .eq("id", subjectId)
         .maybeSingle();
       if (!data) return null;
       clientId = data.client_id;
       jobId = data.job_id;
-      facts = { status: data.status, amount: Number(data.total), line_items: (data.lines as Array<{ name: string }>).map((l) => l.name) };
+      facts = {
+        status: data.status, invoice_kind: data.kind, job_kind: (data.job as unknown as { kind: string } | null)?.kind ?? null, amount: Number(data.total),
+        line_items: (data.lines as Array<{ name: string }>).map((l) => l.name),
+      };
       vars = { number: data.number, title: data.subject || `Invoice #${data.number}`, total: fmt(data.total), balance: fmt(data.balance_due) };
       label = `Invoice #${data.number}`;
       appPath = `/invoices/${subjectId}`;
@@ -233,7 +260,12 @@ export async function loadContext(admin: Db, companyId: string, subjectType: str
 
   let client: RunContext["client"] = null;
   if (clientId) {
-    const { data } = await admin.from("clients").select("id, display_name, email, phone, tags, status, lead_source").eq("company_id", companyId).eq("id", clientId).maybeSingle();
+    const { data } = await admin
+      .from("clients")
+      .select("id, display_name, email, phone, tags, status, lead_source, review_opt_out, marketing_opt_out, sms_opt_out_at")
+      .eq("company_id", companyId)
+      .eq("id", clientId)
+      .maybeSingle();
     client = data ?? null;
     if (subject === "client") {
       if (!client) return null;
@@ -320,8 +352,11 @@ async function mayHear(admin: Db, ctx: RunContext, people: Array<{ user_id: stri
   });
 }
 
-/** Performs one action. Returns a short description of what happened, or throws with the reason. */
-export async function performAction(env: Env, admin: Db, ctx: RunContext, action: Action, ruleName: string, baseUrl: string | null): Promise<string> {
+/**
+ * Performs one action. Returns a short description of what happened (a Skip when there was nothing
+ * to do), throws with the reason, or throws WaitUntil when it can't happen yet.
+ */
+export async function performAction(env: Env, admin: Db, ctx: RunContext, action: Action, ruleName: string, baseUrl: string | null): Promise<string | Skip> {
   const client = ctx.client;
   switch (action.type) {
     case "notify": {
@@ -367,8 +402,10 @@ export async function performAction(env: Env, admin: Db, ctx: RunContext, action
     case "send_sms": {
       if (!client) throw new Error("There's no client on this record.");
       if (!client.phone) throw new Error(`${client.display_name} has no phone number.`);
+      if (textsOff(client)) return new Skip(textsOffReason(client.display_name).replace(/\.$/, ""));
       const body = render(action.body, ctx);
       const result = await sendSms(env, { to: client.phone, body });
+      await noteRefusedText(admin, client, client.phone, result);
       if (!result.sent) throw new Error(result.reason ?? "The text wasn't sent.");
       await admin.from("messages").insert({
         company_id: ctx.company.id, client_id: client.id, channel: "sms", direction: "out", body,
@@ -413,10 +450,11 @@ export async function performAction(env: Env, admin: Db, ctx: RunContext, action
     }
     case "request_review": {
       if (!client) throw new Error("There's no client on this record.");
+      const channel = action.channel === "sms" || action.channel === "both" ? action.channel : "email";
       const result = await sendReviewRequest(env, admin, {
-        companyId: ctx.company.id, client, jobId: ctx.jobId, channel: action.channel === "sms" ? "sms" : "email", baseUrl, skipIfRecentDays: 30, createdBy: null,
+        companyId: ctx.company.id, client, jobId: ctx.jobId, channel, baseUrl, automatic: true, skipIfRecentDays: REVIEW_GAP_DAYS, createdBy: null,
       });
-      return result.detail;
+      return result.skipped ? new Skip(result.detail) : result.detail;
     }
     case "update_status": {
       const allowed = STATUS_ACTION_CHOICES[ctx.subject]?.some((s) => s.value === action.status);
@@ -462,7 +500,7 @@ async function renew(admin: Db, run: RunRow, results: ActionResult[]) {
   return data === true;
 }
 
-export async function executeRun(env: Env, admin: Db, run: RunRow, baseUrl: string | null): Promise<"done" | "skipped" | "failed" | "lost"> {
+export async function executeRun(env: Env, admin: Db, run: RunRow, baseUrl: string | null): Promise<"done" | "skipped" | "failed" | "waiting" | "lost"> {
   try {
     const { data: rule } = await admin.from("automation_rules").select("id, name, trigger, enabled, conditions, actions, run_count").eq("id", run.rule_id).maybeSingle();
     if (!rule || !rule.enabled) return finish(admin, run, "skipped", [], "The rule was turned off or deleted.");
@@ -499,21 +537,36 @@ export async function executeRun(env: Env, admin: Db, run: RunRow, baseUrl: stri
       if (acted && !(await renew(admin, run, results))) return "lost";
       acted = true;
       try {
-        results.push({ type: action.type, ok: true, detail: await performAction(env, admin, ctx, action, rule.name, baseUrl) });
+        const done = await performAction(env, admin, ctx, action, rule.name, baseUrl);
+        results.push(done instanceof Skip ? { type: action.type, ok: true, skipped: true, detail: done.detail } : { type: action.type, ok: true, detail: done });
       } catch (error) {
+        // Not yet: the run waits with what's done so far, and this action and the ones after it go
+        // then. The reason is the run's note, not a result, so the action isn't counted as done.
+        if (error instanceof WaitUntil) return postpone(admin, run, error, results);
         results.push({ type: action.type, ok: false, detail: error instanceof Error ? error.message : String(error) });
       }
     }
     const failure = results.find((r) => !r.ok);
-    const outcome = await finish(admin, run, failure ? "failed" : "done", results, failure ? failure.detail : null);
+    // A run whose every action had nothing to do is skipped, not done.
+    const status = failure ? "failed" : results.length && results.every((r) => r.skipped) ? "skipped" : "done";
+    const outcome = await finish(admin, run, status, results, failure ? failure.detail : null);
     // Counted by the worker that finished the run, not by one whose claim had gone.
-    if (outcome !== "lost") await admin.from("automation_rules").update({ run_count: (rule.run_count ?? 0) + 1, last_run_at: new Date().toISOString() }).eq("id", rule.id);
+    if (outcome !== "lost" && outcome !== "skipped") await admin.from("automation_rules").update({ run_count: (rule.run_count ?? 0) + 1, last_run_at: new Date().toISOString() }).eq("id", rule.id);
     return outcome;
   } catch (error) {
     if (error instanceof ClaimUnchecked) throw error;
     console.error("Automation run failed", run.id, error);
     return finish(admin, run, "failed", [], error instanceof Error ? error.message : String(error));
   }
+}
+
+/** Puts the run back to wait until the action can happen; "lost" when another worker has it now. */
+async function postpone(admin: Db, run: RunRow, wait: WaitUntil, results: ActionResult[]) {
+  const { data: held, error } = await admin.rpc("postpone_automation_run", {
+    p_id: run.id, p_token: run.claim_token!, p_until: wait.until.toISOString(), p_result: results as unknown as never, p_note: wait.message,
+  });
+  if (error) throw new ClaimUnchecked(error.message);
+  return held ? "waiting" : "lost";
 }
 
 /** Runs this worker claimed but never started go back to waiting, without using an attempt. */
@@ -527,7 +580,7 @@ export async function processAutomations(env: Env, options: { companyId?: string
   const { data: runs, error } = await admin.rpc("claim_automation_runs", { p_limit: options.limit ?? 25, ...(options.companyId ? { p_company: options.companyId } : {}) });
   if (error) throw new Error(error.message);
   const claimed = runs ?? [];
-  const tally = { claimed: claimed.length, done: 0, skipped: 0, failed: 0, lost: 0 };
+  const tally = { claimed: claimed.length, done: 0, skipped: 0, failed: 0, waiting: 0, lost: 0 };
   let next = 0; // the first run not started yet
   try {
     for (const [index, run] of claimed.entries()) {

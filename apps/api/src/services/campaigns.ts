@@ -1,7 +1,9 @@
 /**
  * Sends email campaigns in small batches (every minute by cron, and right after Send). Each email
  * is personalized, carries a one-click unsubscribe link and the company's address, and every
- * recipient's outcome is recorded.
+ * recipient's outcome is recorded. Nothing goes while the company has Marketing uninstalled:
+ * uninstalling puts its scheduled campaigns back to drafts and stops ones sending
+ * (public.marketing_set_enabled), so installing it again sends nothing late.
  */
 import { renderTemplate } from "@crewtavo/core";
 import type { Env } from "../env";
@@ -41,12 +43,22 @@ export async function processCampaigns(env: Env, options: { campaignId?: string;
   const baseUrl = options.baseUrl ?? env.APP_URL ?? null;
   const now = new Date().toISOString();
 
-  // Scheduled campaigns whose time has come start sending.
-  let start = admin.from("campaigns").update({ status: "sending", started_at: now }).eq("status", "scheduled").lte("scheduled_at", now);
-  if (options.campaignId) start = start.eq("id", options.campaignId);
-  await start;
+  // Scheduled campaigns whose time has come start sending, for companies with Marketing installed.
+  let due = admin.from("campaigns").select("id, company:companies!inner(id)").eq("status", "scheduled").lte("scheduled_at", now).eq("company.settings->marketing->>enabled", "true").limit(100);
+  if (options.campaignId) due = due.eq("id", options.campaignId);
+  const { data: starting, error: dueError } = await due;
+  if (dueError) throw new Error(dueError.message);
+  if (starting?.length) {
+    await admin.from("campaigns").update({ status: "sending", started_at: now }).in("id", starting.map((c) => c.id)).eq("status", "scheduled");
+  }
 
-  let query = admin.from("campaigns").select("id, company_id, subject, body, company:companies(name, email, phone, address, settings)").eq("status", "sending").limit(5);
+  // Filtered in the query, so companies with Marketing uninstalled don't fill the batch.
+  let query = admin
+    .from("campaigns")
+    .select("id, company_id, subject, body, company:companies!inner(name, email, phone, address, settings)")
+    .eq("status", "sending")
+    .eq("company.settings->marketing->>enabled", "true")
+    .limit(5);
   if (options.campaignId) query = query.eq("id", options.campaignId);
   const { data: campaigns, error } = await query;
   if (error) throw new Error(error.message);

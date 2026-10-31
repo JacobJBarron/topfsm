@@ -98,7 +98,7 @@ async function loadQuote(id: string) {
   return unwrapOne(
     await supabase()
       .from("quotes")
-      .select("id, number, title, status, message, subtotal, discount_amount, tax_rate, tax_amount, total, deposit_amount, valid_until, sent_at, approved_at, approval, lost_reason, request_id, created_at, template_id, option_id, section_ids, roof_package_id, promo_code_id, promo:promo_codes(code, kind, value, description), request:requests(promo_code), client:clients(id, display_name, email, phone, billing_address), property:properties(id, line1, city, region, postal_code, lat, lng), lines:quote_line_items(id, name, description, quantity, unit, unit_price, unit_cost, taxable, optional, selected, option_group, option_id, formula, sort, service_id), jobs!jobs_company_id_quote_id_fkey(id, number), change_order_for, change_job:jobs!quotes_change_order_fkey(id, number, title), package:roof_packages!quotes_roof_package_fkey(name, warranty), range_low, range_high, range_accepted_at, priced_on_site_at, exact_sent_at")
+      .select("id, number, title, status, message, subtotal, discount_amount, tax_rate, tax_amount, total, deposit_amount, valid_until, sent_at, approved_at, approval, lost_reason, request_id, created_at, template_id, option_id, section_ids, roof_package_id, promo_code_id, promo:promo_codes(code, kind, value, description), request:requests(promo_code), client:clients(id, display_name, email, phone, billing_address, sms_opt_out_at), property:properties(id, line1, city, region, postal_code, lat, lng), lines:quote_line_items(id, name, description, quantity, unit, unit_price, unit_cost, taxable, optional, selected, option_group, option_id, formula, sort, service_id), jobs!jobs_company_id_quote_id_fkey(id, number), change_order_for, change_job:jobs!quotes_change_order_fkey(id, number, title), package:roof_packages!quotes_roof_package_fkey(name, warranty), range_low, range_high, range_accepted_at, priced_on_site_at, exact_sent_at")
       .eq("id", id)
       .order("sort", { referencedTable: "quote_line_items" })
       .maybeSingle(),
@@ -765,7 +765,7 @@ export function QuotePage() {
           // Out as a range: resending sends the range again, never an email with the exact total.
           <SendEstimateDialog quote={quoteToSend(q, options)} mode="range" onClose={() => setDialog(null)} onSent={refresh} />
         ) : (
-          <SendDialog kind="quote" id={q.id} number={q.number} email={q.client?.email ?? null} phone={q.client?.phone ?? null} onClose={() => setDialog(null)} onSent={refresh} />
+          <SendDialog kind="quote" id={q.id} number={q.number} email={q.client?.email ?? null} phone={q.client?.phone ?? null} textsOffSince={q.client?.sms_opt_out_at} onClose={() => setDialog(null)} onSent={refresh} />
         ))}
       {/* They said yes to the range: the exact price goes out instead, the way the roofing project offers it. */}
       {dialog === "exact" && <SendEstimateDialog quote={quoteToSend(q, options)} mode="exact" onClose={() => setDialog(null)} onSent={refresh} />}

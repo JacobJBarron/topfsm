@@ -19,6 +19,7 @@ export * from "./jobberExport";
 export * from "./imagery";
 export * from "./jobPay";
 export * from "./markdown";
+export * from "./marketing";
 export * from "./money";
 export * from "./notifications";
 export * from "./pay";
