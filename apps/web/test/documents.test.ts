@@ -475,6 +475,39 @@ describe("a quote that offers options, and its contract", () => {
     expect(doc).toMatchObject({ kind: "invoice", number: 77, notes: null, balanceDue: 500, payments: [{ label: "Paid Oct 5, 2026", amount: 500 }] });
     expect(doc.contract?.sections.map((s) => s.id)).toEqual(["k9"]);
   });
+
+  it("lists each referral credit under its note, as much of them as the invoice takes, and the totals agree", () => {
+    // $300 less a $20 promo and $80 of the $100 in credits (the second only fits in part), taxed at 5%.
+    const doc = invoiceDocument(
+      {
+        number: 78, issued_on: "2026-10-01", due_on: null, subject: null, notes: null, subtotal: 300, discount_amount: 20, credit_amount: 80, tax_amount: 10, total: 210,
+        retainage_amount: 0, balance_due: 210, promo: { code: "SPRING" }, client: { display_name: "Ana" }, lines: [{ name: "Patio", quantity: 1, unit: "ea", unit_price: 300 }], payments: [],
+        credits: [{ amount: 50, note: "Referral credit: thanks for referring Maria" }, { amount: 50, note: "Referral credit: thanks for referring Nia" }],
+      },
+      { timeZone: "America/New_York" },
+    );
+    expect(doc.credits).toEqual([{ label: "Referral credit: thanks for referring Maria", amount: 50 }, { label: "Referral credit: thanks for referring Nia", amount: 30 }]);
+    expect(doc.subtotal - doc.discount - doc.credits!.reduce((sum, c) => sum + c.amount, 0) + doc.tax).toBe(doc.total);
+    const html = page({}, doc);
+    for (const text of ["Promo code SPRING", "Referral credit: thanks for referring Maria", "−$50.00", "Referral credit: thanks for referring Nia", "−$30.00", "$210.00"]) expect(html, text).toContain(text);
+    // An invoice with none says nothing about them.
+    const plain = { number: 79, issued_on: "2026-10-01", due_on: null, subject: null, notes: null, subtotal: 300, discount_amount: 0, tax_amount: 0, total: 300, retainage_amount: 0, balance_due: 300, lines: [], payments: [] };
+    expect(invoiceDocument(plain, { timeZone: "America/New_York" }).credits).toBeUndefined();
+    expect(page({}, invoiceDocument(plain, { timeZone: "America/New_York" }))).not.toContain("Referral credit");
+  });
+
+  it("keeps a void invoice's credit on its paper after the credit was given back", () => {
+    // Voided with a $50 credit on it: the invoice keeps its figures, the credit's row went back to the referrer.
+    const doc = invoiceDocument(
+      {
+        number: 80, issued_on: "2026-10-01", due_on: null, subject: null, notes: null, subtotal: 90, discount_amount: 0, credit_amount: 50, tax_amount: 0, total: 40,
+        retainage_amount: 0, balance_due: 40, client: { display_name: "Ana" }, lines: [{ name: "Trim", quantity: 1, unit: "ea", unit_price: 90 }], payments: [], credits: [],
+      },
+      { timeZone: "America/New_York" },
+    );
+    expect(doc.credits).toEqual([{ label: "Referral credit", amount: 50 }]);
+    expect(doc.subtotal - doc.discount - doc.credits!.reduce((sum, c) => sum + c.amount, 0) + doc.tax).toBe(doc.total);
+  });
 });
 
 describe("the page", () => {

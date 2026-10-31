@@ -179,7 +179,7 @@ async function pushInvoice(ctx: Ctx, invoiceId: string): Promise<string> {
   const invoice = await one(
     ctx.admin
       .from("invoices")
-      .select("id, number, client_id, issued_on, due_on, subject, tax_rate, tax_amount, discount_amount, invoice_line_items(name, description, quantity, unit_price, taxable, service_id, sort)")
+      .select("id, number, client_id, issued_on, due_on, subject, tax_rate, tax_amount, discount_amount, credit_amount, invoice_line_items(name, description, quantity, unit_price, taxable, service_id, sort)")
       .eq("company_id", ctx.companyId)
       .eq("id", invoiceId)
       .maybeSingle(),
@@ -187,7 +187,10 @@ async function pushInvoice(ctx: Ctx, invoiceId: string): Promise<string> {
   );
   const customerId = await pushClient(ctx, invoice.client_id);
   const lines = [...(invoice.invoice_line_items ?? [])].sort((a: any, b: any) => a.sort - b.sort);
-  const discount = Number(invoice.discount_amount ?? 0);
+  // Referral credits come off before tax with the discount, so the books see one discount for both.
+  // A credit put on after the invoice was pushed isn't sent (automatic credits wait for one that
+  // hasn't been: private.referral_credit_room).
+  const discount = Math.round((Number(invoice.discount_amount ?? 0) + Number(invoice.credit_amount ?? 0)) * 100) / 100;
   // The lines' amounts in cents, before the discount and tax: with the date, what tells the one we
   // sent from an invoice of theirs with our number.
   const charged = lines.reduce((sum: number, line: any) => sum + toCents(lineTotal(line.quantity, line.unit_price)), 0);
@@ -221,7 +224,7 @@ async function pushInvoice(ctx: Ctx, invoiceId: string): Promise<string> {
             TaxCodeRef: { value: line.taxable ? "TAX" : "NON" },
           },
         })),
-        // Discounts (promo codes) come off before tax, as they do here.
+        // Discounts (promo codes) and referral credits come off before tax, as they do here.
         ...(discount > 0 ? [{ DetailType: "DiscountLineDetail", Amount: discount, DiscountLineDetail: { PercentBased: false } }] : []),
       ],
       ApplyTaxAfterDiscount: true,
@@ -232,10 +235,10 @@ async function pushInvoice(ctx: Ctx, invoiceId: string): Promise<string> {
   }
 
   // Sent already: Zoho has an invoice for this customer with our number as its reference, dated as
-  // ours and coming to what we send (no tax goes to Zoho, so the lines less the discount).
+  // ours and coming to what we send (no tax goes to Zoho, so the lines less the discount and credits).
   const reference = String(invoice.number);
   const sent = ((await zoho(ctx, "GET", `invoices?reference_number=${encodeURIComponent(reference)}&customer_id=${encodeURIComponent(customerId)}`)).invoices ?? [])
-    .find((i: any) => i.reference_number === reference && i.customer_id === customerId && i.date === invoice.issued_on && toCents(i.total) === charged - toCents(invoice.discount_amount));
+    .find((i: any) => i.reference_number === reference && i.customer_id === customerId && i.date === invoice.issued_on && toCents(i.total) === charged - toCents(discount));
   const created = sent ?? (await zoho(ctx, "POST", "invoices", {
     customer_id: customerId,
     reference_number: reference,

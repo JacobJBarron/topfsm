@@ -27,7 +27,7 @@ import {
   type TemplateVars,
 } from "@crewtavo/core";
 import { hidesExactPrice } from "@crewtavo/core/estimates";
-import { REVIEW_GAP_DAYS, textsOff, textsOffReason } from "@crewtavo/core/marketing";
+import { REFERRAL_GAP_DAYS, REVIEW_GAP_DAYS, textsOff, textsOffReason } from "@crewtavo/core/marketing";
 import { countsOn } from "@crewtavo/core/money";
 import type { Env } from "../env";
 import { firstName, isEmail, renderEmail } from "../lib/email";
@@ -35,6 +35,7 @@ import { clientLink } from "../lib/links";
 import { sendEmail, sendSms } from "../lib/notify";
 import { adminClient, type Db } from "../lib/supabase";
 import { logoImage } from "./logo";
+import { sendReferralAsk } from "./referrals";
 import { sendReviewRequest, WaitUntil } from "./reviews";
 import { isRoofWork } from "./roofPackages";
 import { optionsFrom } from "./sales";
@@ -304,19 +305,23 @@ async function withLink(env: Env, ctx: RunContext, baseUrl: string | null): Prom
 
 /**
  * Adds what the event itself says, for the triggers that carry it: a sub's offer gives {{sub.name}},
- * {{sub.price}} (the price offered) and, turned down, {{sub.reason}}.
+ * {{sub.price}} (the price offered) and, turned down, {{sub.reason}}; a referral credit earned gives
+ * {{referral.name}} (the friend's first name), {{referral.credit}} and {{referral.invoice}} (the
+ * invoice it went on, if it did).
  */
 export async function withEvent(admin: Db, ctx: RunContext, trigger: string, activityId: number | null | undefined): Promise<RunContext> {
   if (!triggerDef(trigger)?.variables?.length || activityId == null) return ctx;
   const { data } = await admin.from("activity").select("data").eq("company_id", ctx.company.id).eq("id", activityId).maybeSingle();
   const event = (data?.data ?? {}) as Record<string, unknown>;
   const text = (v: unknown) => (v == null ? "" : String(v));
+  const amount = (v: unknown) => (v == null ? "" : money(v as number, ctx.company.currency || "USD"));
+  if (trigger === "referral.earned") {
+    const invoice = event.invoice_number == null ? "" : `#${event.invoice_number}`;
+    return { ...ctx, vars: { ...ctx.vars, referral: { name: event.friend_name ? firstName(text(event.friend_name)) : "", credit: amount(event.credit), invoice } } };
+  }
   return {
     ...ctx,
-    vars: {
-      ...ctx.vars,
-      sub: { name: text(event.sub_name), price: event.total == null ? "" : money(event.total as number, ctx.company.currency || "USD"), reason: text(event.reason) },
-    },
+    vars: { ...ctx.vars, sub: { name: text(event.sub_name), price: amount(event.total), reason: text(event.reason) } },
   };
 }
 
@@ -453,6 +458,13 @@ export async function performAction(env: Env, admin: Db, ctx: RunContext, action
       const channel = action.channel === "sms" || action.channel === "both" ? action.channel : "email";
       const result = await sendReviewRequest(env, admin, {
         companyId: ctx.company.id, client, jobId: ctx.jobId, channel, baseUrl, automatic: true, skipIfRecentDays: REVIEW_GAP_DAYS, createdBy: null,
+      });
+      return result.skipped ? new Skip(result.detail) : result.detail;
+    }
+    case "request_referral": {
+      if (!client) throw new Error("There's no client on this record.");
+      const result = await sendReferralAsk(env, admin, {
+        companyId: ctx.company.id, client, baseUrl, automatic: true, skipIfRecentDays: REFERRAL_GAP_DAYS, createdBy: null,
       });
       return result.skipped ? new Skip(result.detail) : result.detail;
     }

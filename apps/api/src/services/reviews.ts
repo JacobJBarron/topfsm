@@ -34,12 +34,12 @@ import {
   type SendChannel,
 } from "@crewtavo/core/marketing";
 import type { Env } from "../env";
-import { firstName, renderEmail } from "../lib/email";
+import { firstName } from "../lib/email";
 import { clientLink } from "../lib/links";
 import { reportError } from "../lib/monitoring";
-import { emailReady, sendEmail, sendSms, smsConfigured, type SendResult } from "../lib/notify";
+import { emailReady, sendSms, smsConfigured, type SendResult } from "../lib/notify";
 import { adminClient, type Db } from "../lib/supabase";
-import { logoImage } from "./logo";
+import { emailClient } from "./marketingEmail";
 import { noteRefusedText } from "./textsOff";
 
 /** An action that can't happen yet: the automation run waits until then, with the message saying why. */
@@ -104,7 +104,8 @@ const vars = (company: Company, client: ReviewClient, link: string) => ({
 
 /**
  * Sends the message by each channel, recording each one sent in the client's messages. An email
- * carries one-click unsubscribe (marketing_opt_out stops review asks too), as campaigns do.
+ * carries one-click unsubscribe (marketing_opt_out stops review asks too), as campaigns do
+ * (marketingEmail.ts).
  */
 async function deliver(
   env: Env,
@@ -116,19 +117,7 @@ async function deliver(
   for (const channel of d.channels) {
     let result: SendResult;
     if (channel === "email") {
-      const unsubscribe = await clientLink(env, d.baseUrl, { c: d.companyId, t: "unsub", id: d.client.id });
-      result = await sendEmail(
-        env,
-        {
-          to: d.client.email!.trim(),
-          subject: d.subject,
-          ...renderEmail({ companyName: d.company.name, logo: logoImage(d.baseUrl, d.companyId, d.company.settings), text: d.text, unsubscribeUrl: unsubscribe }),
-          replyTo: d.company.email ?? undefined,
-          fromName: d.company.name,
-          headers: { "List-Unsubscribe": `<${unsubscribe.replace("/u/", "/api/public/unsubscribe/")}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" },
-        },
-        d.companyId,
-      );
+      result = await emailClient(env, { companyId: d.companyId, company: d.company, client: d.client, subject: d.subject, text: d.text, baseUrl: d.baseUrl });
     } else {
       result = await sendSms(env, { to: d.client.phone!, body: d.text });
       await noteRefusedText(admin, d.client, d.client.phone!, result);

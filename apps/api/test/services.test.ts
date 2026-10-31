@@ -384,9 +384,10 @@ describe("public submissions", () => {
       if (call.method === "POST" && call.path === "clients") return Response.json({ id: "client-2" }, { status: 201 });
       if (call.method === "POST" && call.path === "properties") return Response.json({ id: "property-2" }, { status: 201 });
       if (call.method === "POST" && call.path === "requests") return Response.json({ id: "request-2", number: 1042 }, { status: 201 });
+      if (call.path === "rpc/record_referral") return { client_id: "client-2", property_id: "property-2", new_property: true, request_id: "request-2", number: 1043 };
       return [];
     });
-    const made = () => calls.filter((c) => c.method === "POST" && ["clients", "properties", "requests", "referrals"].includes(c.path)).map((c) => c.path);
+    const made = () => calls.filter((c) => c.method === "POST" && ["clients", "properties", "requests", "referrals", "rpc/record_referral"].includes(c.path)).map((c) => c.path);
     const limits = () => calls.filter((c) => c.path === "rpc/rate_limit_hit").map((c) => [c.body.p_key, c.body.p_max, c.body.p_window_seconds]);
     return { calls, made, limits };
   }
@@ -487,8 +488,15 @@ describe("public submissions", () => {
   it("limits referrals per visitor and per company", async () => {
     const path = `/public/refer/${await token("refer", "client-1")}`;
     const ok = database();
-    expect((await post(path, lead)).status).toBe(201);
+    const res = await post(path, { ...lead, phone: "540-555-0123" });
+    expect([res.status, await res.json()]).toEqual([201, { ok: true, reference: 1043 }]);
     expect(ok.limits()).toEqual([["referral:ip:203.0.113.9", 10, 3600], ["referral:company:co-1", 100, 3600]]);
+    // The lead, their property, the request and the referral, made together by the database.
+    expect(ok.made()).toEqual(["rpc/record_referral"]);
+    expect(ok.calls.find((c) => c.path === "rpc/record_referral")?.body).toEqual({
+      p_company: "co-1", p_referrer: "client-1", p_name: "Bob Jones", p_email: "bob@example.com", p_phone: "540-555-0123",
+      p_address: { line1: "12 Main St", city: "Radford", postal_code: "24141" },
+    });
 
     const limited = database({ full: /^referral:company:/ });
     expect((await post(path, lead)).status).toBe(429);

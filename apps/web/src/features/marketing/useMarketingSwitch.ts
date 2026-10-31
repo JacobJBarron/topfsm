@@ -1,8 +1,9 @@
 /**
  * Crewtavo - Marketing on its Apps page: Install turns it on, and Uninstall turns it off, which
  * takes Marketing out of the sidebar and stops every automatic message it sends to clients (review
- * asks, their reminders and campaigns: scheduled ones go back to drafts), keeping everything (POST
- * /api/marketing/enabled, public.marketing_set_enabled).
+ * asks, their reminders, referral asks and campaigns: scheduled ones go back to drafts), keeping
+ * everything (POST /api/marketing/enabled, public.marketing_set_enabled). Referral credits keep
+ * going on invoices: the business promised them.
  */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { confirm } from "@/components/ui/Confirm";
@@ -27,9 +28,10 @@ export function useMarketingSwitch() {
     const ok = await confirm({
       title: "Uninstall Marketing?",
       body:
-        "Marketing leaves the sidebar for everyone, and every automatic message it sends to clients stops: review asks, their reminders and campaigns. " +
+        "Marketing leaves the sidebar for everyone, and every automatic message it sends to clients stops: review asks, their reminders, referral asks and campaigns. " +
         "Scheduled campaigns go back to drafts, and one that's sending stops where it is. " +
         "Review and referral links already sent keep working, and promo codes keep working on quotes and online booking. " +
+        "Referral credits clients have earned, or earn later from links already shared, still go on their invoices. " +
         "Your campaigns, promo codes, review requests and referrals are kept, and come back if you install it again. Reminders that were due aren't sent later.",
       confirmLabel: "Uninstall",
       danger: true,

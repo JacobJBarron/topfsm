@@ -1,4 +1,4 @@
-import { askChannels, askRefusal, marketingOn, notAsked, reachOf, textsOff, type AskChannel } from "@crewtavo/core/marketing";
+import { askChannels, askRefusal, creditMoney, marketingOn, notAsked, reachOf, referralAskRefusal, referralsReady, textsOff, type AskChannel } from "@crewtavo/core/marketing";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -129,6 +129,22 @@ export function ClientPage() {
     mutationFn: () => api.get<{ link: string }>(`/referrals/link/${id}`),
     onSuccess: (r) => copyText(r.link, "Referral link copied"),
   });
+  const referralAsk = useMutation({
+    mutationFn: () => api.post<{ sent: boolean; detail: string }>("/referrals/request", { client_id: id }),
+    onSuccess: (r) => toast.success(r.detail),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["referral-asks", session.company.id] });
+      queryClient.invalidateQueries({ queryKey: ["referral-ask", id] });
+    },
+  });
+  // Credits they've earned and that aren't on an invoice yet: shown whether Marketing is installed
+  // or not, since they still go on their invoices.
+  const credits = useQuery({
+    queryKey: ["referral-credits-for", id],
+    enabled: isOffice && can(session, "invoices"),
+    meta: { silent: true },
+    queryFn: async () => unwrap(await supabase().rpc("referral_credits_for", { p_company: session.company.id, p_client: id })),
+  });
   const review = useMutation({
     mutationFn: (channel: AskChannel) => api.post<{ sent: boolean; detail: string }>("/reviews/request", { client_id: id, channel }),
     onSuccess: (r) => toast.success(r.detail),
@@ -224,7 +240,9 @@ export function ClientPage() {
                   { label: "Ask for a review by email", icon: "star", onSelect: () => review.mutate("email"), disabled: cannotAsk("email"), hidden: !marketing },
                   { label: "Ask for a review by text", icon: "star", onSelect: () => review.mutate("sms"), disabled: cannotAsk("sms"), hidden: !marketing },
                   { label: "Ask for a review by text and email", icon: "star", onSelect: () => review.mutate("both"), disabled: !bothWays, hidden: !marketing },
-                  { label: "Copy referral link", icon: "gift", onSelect: () => referralLink.mutate(), hidden: !marketing },
+                  { label: "Ask for referrals by email", icon: "gift", onSelect: () => referralAsk.mutate(), hidden: !marketing,
+                    disabled: !referralsReady(session.company.settings) || Boolean(referralAskRefusal(c, session.config.features.email)) },
+                  { label: "Copy referral link", icon: "link", onSelect: () => referralLink.mutate(), hidden: !marketing },
                   { separator: true, hidden: !isOffice },
                   { label: c.status === "archived" ? "Restore client" : "Archive client", icon: c.status === "archived" ? "undo" : "archive", onSelect: () => update.mutate({ status: c.status === "archived" ? "active" : "archived" }), hidden: !isOffice },
                   { label: "Delete client", icon: "trash", danger: true, onSelect: deleteClient, hidden: !isOffice },
@@ -381,6 +399,18 @@ export function ClientPage() {
               {writtenOff > 0 && <><dt>Written off</dt><dd className="tabular">{formatMoney(writtenOff)}</dd></>}
               <dt>Lead source</dt><dd>{c.lead_source ?? "—"}</dd>
               {referrer && <><dt>Referred by</dt><dd><Link to={`/clients/${referrer.id}`}>{referrer.display_name}</Link></dd></>}
+              {credits.data?.some((r) => Number(r.credit_left) > 0) && (
+                <>
+                  <dt>Referral credit</dt>
+                  <dd className="stack-sm" style={{ gap: 2 }}>
+                    {credits.data.filter((r) => Number(r.credit_left) > 0).map((r) => (
+                      <span key={r.referral_id}>
+                        {creditMoney(Number(r.credit_left))} for referring {r.friend_name}. {r.auto_apply ? "Goes on their next invoice." : "Kept off invoices."}
+                      </span>
+                    ))}
+                  </dd>
+                </>
+              )}
               <dt>Client since</dt><dd>{formatDate(c.created_at)}</dd>
               {billing?.line1 && <><dt>Billing</dt><dd>{addressLine(billing)}</dd></>}
               {isOffice && (
@@ -389,7 +419,7 @@ export function ClientPage() {
                   <dd>
                     <label className="switch-row" style={{ fontWeight: 400 }}>
                       <input type="checkbox" className="switch" checked={!c.marketing_opt_out} onChange={(e) => update.mutate({ marketing_opt_out: !e.target.checked })} />
-                      Gets campaigns and review asks
+                      Gets campaigns, review and referral asks
                     </label>
                   </dd>
                   <dt>Reviews</dt>

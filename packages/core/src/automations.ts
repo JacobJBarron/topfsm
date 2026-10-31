@@ -46,6 +46,15 @@ const SUB_VARIABLES = [
 
 export const TRIGGERS: TriggerDef[] = [
   { verb: "client.created", label: "A client is added", group: "Clients", subject: "client", delayable: true },
+  // On the client who referred a friend, once the friend pays their first invoice (Marketing → Referrals).
+  {
+    verb: "referral.earned", label: "A client earns a referral credit", group: "Clients", subject: "client", delayable: true,
+    variables: [
+      { token: "referral.name", label: "Friend's first name" },
+      { token: "referral.credit", label: "Their credit" },
+      { token: "referral.invoice", label: "Invoice the credit went on" },
+    ],
+  },
   { verb: "request.created", label: "A request comes in", group: "Requests", subject: "request", delayable: true },
   { verb: "quote.sent", label: "A quote is sent", group: "Quotes", subject: "quote", delayable: true },
   { verb: "quote.approved", label: "A quote is approved", group: "Quotes", subject: "quote", delayable: true },
@@ -256,6 +265,7 @@ export type Action =
   | { type: "add_note"; body: string }
   | { type: "create_task"; title: string; days_from_now: number }
   | { type: "request_review"; channel: "email" | "sms" | "both" }
+  | { type: "request_referral" }
   | { type: "update_status"; status: string };
 
 export type ActionType = Action["type"];
@@ -269,6 +279,7 @@ export const ACTIONS: Array<{ type: ActionType; label: string; description: stri
   { type: "add_note", label: "Add a note to the client", description: "An internal note on the client's timeline.", subjects: "all" },
   { type: "create_task", label: "Create a task", description: "A task on the schedule for the office.", subjects: "all" },
   { type: "request_review", label: "Ask for a Google review", description: "Sends your review link (set it in Marketing).", subjects: "all" },
+  { type: "request_referral", label: "Ask for referrals", description: "Emails the client their referral link (set it up in Marketing).", subjects: "all" },
   { type: "update_status", label: "Change the status", description: "Archive a quote or request automatically.", subjects: ["quote", "request"] },
 ];
 
@@ -445,6 +456,8 @@ export function describeAction(action: Action): string {
       return `Create a task${action.days_from_now ? ` due in ${action.days_from_now} ${action.days_from_now === 1 ? "day" : "days"}` : ""}`;
     case "request_review":
       return `Ask for a review by ${action.channel === "both" ? "text and email" : action.channel === "sms" ? "text" : "email"}`;
+    case "request_referral":
+      return "Ask for referrals by email";
     case "update_status":
       return action.status === "lost" ? "Mark it lost" : "Archive it";
   }

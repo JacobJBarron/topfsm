@@ -95,6 +95,8 @@ export interface DocumentData {
   discount: number;
   /** "Discount" unless given, like "Promo code SPRING". */
   discountLabel?: string;
+  /** Invoices: referral credits after the discount, each under its note ("Referral credit: thanks for referring Maria"). */
+  credits?: Array<{ label: string; amount: number }>;
   tax: number;
   total: number;
   /** Estimates: the deposit to get on the schedule. */

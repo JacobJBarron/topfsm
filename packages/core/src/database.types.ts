@@ -870,14 +870,14 @@ isOneToOne: false
                   ]
                 },"invoices": {
                   Row: {
-                    "amount_paid": number,"balance_due": number,"client_id": string,"company_id": string,"created_at": string,"created_by": string | null,"discount_amount": number,"due_on": string | null,"id": string,"issued_on": string,"job_id": string | null,"kind": string,"notes": string | null,"number": number | null,"pay_app_number": number | null,"promo_code_id": string | null,"retainage_amount": number,"retainage_pct": number,"sent_at": string | null,"status": string,"subject": string | null,"subtotal": number,"tax_amount": number,"tax_rate": number,"total": number,"updated_at": string,"written_off_at": string | null
+                    "amount_paid": number,"balance_due": number,"client_id": string,"company_id": string,"created_at": string,"created_by": string | null,"credit_amount": number,"discount_amount": number,"due_on": string | null,"id": string,"issued_on": string,"job_id": string | null,"kind": string,"notes": string | null,"number": number | null,"pay_app_number": number | null,"promo_code_id": string | null,"retainage_amount": number,"retainage_pct": number,"sent_at": string | null,"status": string,"subject": string | null,"subtotal": number,"tax_amount": number,"tax_rate": number,"total": number,"updated_at": string,"written_off_at": string | null
                   }
                   ComputedFields: never
                   Insert: {
-                    "amount_paid"?: number,"balance_due"?: number,"client_id": string,"company_id": string,"created_at"?: string,"created_by"?: string | null,"discount_amount"?: number,"due_on"?: string | null,"id"?: string,"issued_on"?: string,"job_id"?: string | null,"kind"?: string,"notes"?: string | null,"number"?: number | null,"pay_app_number"?: number | null,"promo_code_id"?: string | null,"retainage_amount"?: number,"retainage_pct"?: number,"sent_at"?: string | null,"status"?: string,"subject"?: string | null,"subtotal"?: number,"tax_amount"?: number,"tax_rate"?: number,"total"?: number,"updated_at"?: string,"written_off_at"?: string | null
+                    "amount_paid"?: number,"balance_due"?: number,"client_id": string,"company_id": string,"created_at"?: string,"created_by"?: string | null,"credit_amount"?: number,"discount_amount"?: number,"due_on"?: string | null,"id"?: string,"issued_on"?: string,"job_id"?: string | null,"kind"?: string,"notes"?: string | null,"number"?: number | null,"pay_app_number"?: number | null,"promo_code_id"?: string | null,"retainage_amount"?: number,"retainage_pct"?: number,"sent_at"?: string | null,"status"?: string,"subject"?: string | null,"subtotal"?: number,"tax_amount"?: number,"tax_rate"?: number,"total"?: number,"updated_at"?: string,"written_off_at"?: string | null
                   }
                   Update: {
-                    "amount_paid"?: number,"balance_due"?: number,"client_id"?: string,"company_id"?: string,"created_at"?: string,"created_by"?: string | null,"discount_amount"?: number,"due_on"?: string | null,"id"?: string,"issued_on"?: string,"job_id"?: string | null,"kind"?: string,"notes"?: string | null,"number"?: number | null,"pay_app_number"?: number | null,"promo_code_id"?: string | null,"retainage_amount"?: number,"retainage_pct"?: number,"sent_at"?: string | null,"status"?: string,"subject"?: string | null,"subtotal"?: number,"tax_amount"?: number,"tax_rate"?: number,"total"?: number,"updated_at"?: string,"written_off_at"?: string | null
+                    "amount_paid"?: number,"balance_due"?: number,"client_id"?: string,"company_id"?: string,"created_at"?: string,"created_by"?: string | null,"credit_amount"?: number,"discount_amount"?: number,"due_on"?: string | null,"id"?: string,"issued_on"?: string,"job_id"?: string | null,"kind"?: string,"notes"?: string | null,"number"?: number | null,"pay_app_number"?: number | null,"promo_code_id"?: string | null,"retainage_amount"?: number,"retainage_pct"?: number,"sent_at"?: string | null,"status"?: string,"subject"?: string | null,"subtotal"?: number,"tax_amount"?: number,"tax_rate"?: number,"total"?: number,"updated_at"?: string,"written_off_at"?: string | null
                   }
                   Relationships: [
                     {
@@ -1770,16 +1770,106 @@ isOneToOne: false
       referencedColumns: ["company_id","id"]
     }
                   ]
-                },"referrals": {
+                },"referral_asks": {
                   Row: {
-                    "company_id": string,"created_at": string,"id": string,"referred_client_id": string | null,"referred_name": string,"referrer_client_id": string,"request_id": string | null,"reward_amount": number,"reward_issued_at": string | null,"reward_status": string,"status": string,"updated_at": string
+                    "automatic": boolean,"client_id": string,"company_id": string,"created_by": string | null,"error": string | null,"id": string,"sent_at": string,"status": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "company_id": string,"created_at"?: string,"id"?: string,"referred_client_id"?: string | null,"referred_name": string,"referrer_client_id": string,"request_id"?: string | null,"reward_amount"?: number,"reward_issued_at"?: string | null,"reward_status"?: string,"status"?: string,"updated_at"?: string
+                    "automatic"?: boolean,"client_id": string,"company_id": string,"created_by"?: string | null,"error"?: string | null,"id"?: string,"sent_at"?: string,"status"?: string
                   }
                   Update: {
-                    "company_id"?: string,"created_at"?: string,"id"?: string,"referred_client_id"?: string | null,"referred_name"?: string,"referrer_client_id"?: string,"request_id"?: string | null,"reward_amount"?: number,"reward_issued_at"?: string | null,"reward_status"?: string,"status"?: string,"updated_at"?: string
+                    "automatic"?: boolean,"client_id"?: string,"company_id"?: string,"created_by"?: string | null,"error"?: string | null,"id"?: string,"sent_at"?: string,"status"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "referral_asks_company_id_client_id_fkey"
+      columns: ["company_id","client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["company_id","id"]
+    },{
+      foreignKeyName: "referral_asks_company_id_fkey"
+      columns: ["company_id"]
+isOneToOne: false
+      referencedRelation: "companies"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"referral_credit_skips": {
+                  Row: {
+                    "company_id": string,"created_at": string,"created_by": string | null,"invoice_id": string,"referral_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "company_id": string,"created_at"?: string,"created_by"?: string | null,"invoice_id": string,"referral_id": string
+                  }
+                  Update: {
+                    "company_id"?: string,"created_at"?: string,"created_by"?: string | null,"invoice_id"?: string,"referral_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "referral_credit_skips_company_id_fkey"
+      columns: ["company_id"]
+isOneToOne: false
+      referencedRelation: "companies"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "referral_credit_skips_company_id_invoice_id_fkey"
+      columns: ["company_id","invoice_id"]
+isOneToOne: false
+      referencedRelation: "invoices"
+      referencedColumns: ["company_id","id"]
+    },{
+      foreignKeyName: "referral_credit_skips_company_id_referral_id_fkey"
+      columns: ["company_id","referral_id"]
+isOneToOne: false
+      referencedRelation: "referrals"
+      referencedColumns: ["company_id","id"]
+    }
+                  ]
+                },"referral_credits": {
+                  Row: {
+                    "amount": number,"automatic": boolean,"company_id": string,"created_at": string,"created_by": string | null,"id": string,"invoice_id": string,"note": string,"referral_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "amount": number,"automatic"?: boolean,"company_id": string,"created_at"?: string,"created_by"?: string | null,"id"?: string,"invoice_id": string,"note": string,"referral_id": string
+                  }
+                  Update: {
+                    "amount"?: number,"automatic"?: boolean,"company_id"?: string,"created_at"?: string,"created_by"?: string | null,"id"?: string,"invoice_id"?: string,"note"?: string,"referral_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "referral_credits_company_id_fkey"
+      columns: ["company_id"]
+isOneToOne: false
+      referencedRelation: "companies"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "referral_credits_company_id_invoice_id_fkey"
+      columns: ["company_id","invoice_id"]
+isOneToOne: false
+      referencedRelation: "invoices"
+      referencedColumns: ["company_id","id"]
+    },{
+      foreignKeyName: "referral_credits_company_id_referral_id_fkey"
+      columns: ["company_id","referral_id"]
+isOneToOne: false
+      referencedRelation: "referrals"
+      referencedColumns: ["company_id","id"]
+    }
+                  ]
+                },"referrals": {
+                  Row: {
+                    "applied_at": string | null,"auto_apply": boolean,"company_id": string,"created_at": string,"credit_anyway": boolean,"earned_at": string | null,"earned_invoice_id": string | null,"given_amount": number,"id": string,"lost_at": string | null,"no_reward_reason": string | null,"referred_client_id": string | null,"referred_name": string,"referrer_client_id": string,"request_id": string | null,"reward_amount": number,"reward_issued_at": string | null,"reward_kind": string,"reward_status": string,"reward_value": number,"status": string,"updated_at": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "applied_at"?: string | null,"auto_apply"?: boolean,"company_id": string,"created_at"?: string,"credit_anyway"?: boolean,"earned_at"?: string | null,"earned_invoice_id"?: string | null,"given_amount"?: number,"id"?: string,"lost_at"?: string | null,"no_reward_reason"?: string | null,"referred_client_id"?: string | null,"referred_name": string,"referrer_client_id": string,"request_id"?: string | null,"reward_amount"?: number,"reward_issued_at"?: string | null,"reward_kind"?: string,"reward_status"?: string,"reward_value"?: number,"status"?: string,"updated_at"?: string
+                  }
+                  Update: {
+                    "applied_at"?: string | null,"auto_apply"?: boolean,"company_id"?: string,"created_at"?: string,"credit_anyway"?: boolean,"earned_at"?: string | null,"earned_invoice_id"?: string | null,"given_amount"?: number,"id"?: string,"lost_at"?: string | null,"no_reward_reason"?: string | null,"referred_client_id"?: string | null,"referred_name"?: string,"referrer_client_id"?: string,"request_id"?: string | null,"reward_amount"?: number,"reward_issued_at"?: string | null,"reward_kind"?: string,"reward_status"?: string,"reward_value"?: number,"status"?: string,"updated_at"?: string
                   }
                   Relationships: [
                     {
@@ -1805,6 +1895,12 @@ isOneToOne: false
       columns: ["company_id","request_id"]
 isOneToOne: false
       referencedRelation: "requests"
+      referencedColumns: ["company_id","id"]
+    },{
+      foreignKeyName: "referrals_earned_invoice_fkey"
+      columns: ["company_id","earned_invoice_id"]
+isOneToOne: false
+      referencedRelation: "invoices"
       referencedColumns: ["company_id","id"]
     }
                   ]
@@ -2523,8 +2619,14 @@ isOneToOne: false
 "apply_quote_options":
 { Args: { "p_current"?: Json,"p_mode": string,"p_options": Json,"p_quote": string,"p_shared"?: (string)[] }; Returns: Json
                            },
+"apply_referral_credit":
+{ Args: { "p_invoice": string,"p_referral": string }; Returns: number
+                           },
 "approve_hub_quote":
 { Args: { "p_approval": Json,"p_company": string,"p_expected_total"?: number,"p_option"?: string,"p_quote": string,"p_selected": (string)[] }; Returns: boolean
+                           },
+"begin_referral_ask":
+{ Args: { "p_automatic": boolean,"p_client": string,"p_company": string,"p_created_by"?: string,"p_gap_days"?: number }; Returns: string
                            },
 "begin_review_request":
 { Args: { "p_channel"?: string,"p_client": string,"p_company": string,"p_created_by"?: string,"p_gap_days"?: number,"p_job"?: string }; Returns: string
@@ -3026,6 +3128,9 @@ isOneToOne: false
               "description": string,"id": string,"name": string,"quantity": number,"sort": number,"unit": string
             }[]
                            },
+"last_referral_ask":
+{ Args: { "p_client": string,"p_company": string }; Returns: string
+                           },
 "last_review_ask":
 { Args: { "p_client": string,"p_company": string }; Returns: string
                            },
@@ -3070,6 +3175,29 @@ isOneToOne: false
 "rate_limit_hit":
 { Args: { "p_key": string,"p_max": number,"p_window_seconds": number }; Returns: boolean
                            },
+"record_referral":
+{ Args: { "p_address"?: Json,"p_company": string,"p_details"?: string,"p_email"?: string,"p_name": string,"p_phone"?: string,"p_referrer": string }; Returns: Json
+                           },
+"referral_auto_apply":
+{ Args: { "p_on"?: boolean,"p_referral": string }; Returns: number
+                           },
+"referral_credits_for":
+{ Args: { "p_client": string,"p_company": string }; Returns: {
+              "auto_apply": boolean,"credit_left": number,"friend": string,"friend_name": string,"referral_id": string
+            }[]
+                           },
+"referral_give_credit":
+{ Args: { "p_referral": string }; Returns: string
+                           },
+"referral_no_reward":
+{ Args: { "p_referral": string }; Returns: undefined
+                           },
+"referral_set_given":
+{ Args: { "p_referral": string }; Returns: undefined
+                           },
+"referral_stats":
+{ Args: { "p_company": string,"p_from"?: string,"p_to"?: string }; Returns: Json
+                           },
 "release_automation_runs":
 { Args: { "p_ids": (number)[],"p_token": string }; Returns: number
                            },
@@ -3081,6 +3209,9 @@ isOneToOne: false
                            },
 "remove_quote_option":
 { Args: { "p_option": string,"p_quote": string }; Returns: Json
+                           },
+"remove_referral_credit":
+{ Args: { "p_credit": string }; Returns: undefined
                            },
 "renew_automation_run":
 { Args: { "p_id": number,"p_result": Json,"p_token": string }; Returns: boolean

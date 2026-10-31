@@ -1301,6 +1301,7 @@ function InvoiceHub({ token, data, onChanged, printing }: { token: string; data:
             canChange={!data.preview && !data.from_stripe && balance > 0 && inv.payments.length === 0}
             onChanged={onChanged}
           />
+          {(doc.data.credits ?? []).map((c, i) => <div key={i} className="line"><span>{c.label}</span><span className="nowrap">−{formatMoneyCents(c.amount)}</span></div>)}
           {Number(inv.tax_amount) > 0 && <div className="line"><span>Tax</span><span>{formatMoneyCents(inv.tax_amount)}</span></div>}
           <div className="line"><span>Total</span><span>{formatMoneyCents(inv.total)}</span></div>
           {Number(inv.retainage_amount) > 0 && <div className="line"><span>Retainage (billed later)</span><span>−{formatMoneyCents(inv.retainage_amount)}</span></div>}
@@ -1387,7 +1388,7 @@ function HubDiscount({ token, promo, discount, canChange, canAdd = canChange, ch
           <span className="muted small">{promo.description ?? (promo.kind === "percent" ? `${Number(promo.value)}% off` : "Discount")}</span>
           {canChange && <button type="button" className="btn btn-sm btn-ghost no-print" disabled={remove.isPending} onClick={() => remove.mutate()}>Remove</button>}
         </span>
-        <span>−{formatMoneyCents(discount)}</span>
+        <span className="nowrap">−{formatMoneyCents(discount)}</span>
       </div>
     );
   }

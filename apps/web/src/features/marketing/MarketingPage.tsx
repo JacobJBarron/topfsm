@@ -1,32 +1,29 @@
 /**
  * Marketing (Apps → Crewtavo - Marketing): email campaigns to client segments, promo codes, Google
- * review requests (Reviews) and referral rewards, and visits to the business's website once Website
- * Analytics is installed (WebsiteSection). Uninstalled, the page says so, and still shows website
+ * review requests (Reviews) and referral credits and asks (Referrals), and visits to the business's
+ * website once Website Analytics is installed (WebsiteSection). Uninstalled, the page says so, and still shows website
  * visits when Website Analytics is installed (Home and Website Analytics open them here).
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
+import { lazy, Suspense } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { featureOn } from "@/components/shell/nav";
-import { Button, useJustDone } from "@/components/ui/Button";
-import { Field, FormError } from "@/components/ui/Field";
+import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
 import { Menu } from "@/components/ui/Menu";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { CardSkeleton, Loading, StatsSkeleton, TableSkeleton } from "@/components/ui/Skeleton";
 import { EmptyState, ErrorState, NoAccess } from "@/components/ui/States";
-import { StatusPill, type Tone } from "@/components/ui/StatusPill";
-import { api, supabase, unwrap } from "@/lib/api";
-import { copyText } from "@/lib/clipboard";
-import { formatDate, formatDateTime, formatMoney, timeAgo } from "@/lib/format";
+import { StatusPill, statusText, type Tone } from "@/components/ui/StatusPill";
+import { supabase, unwrap } from "@/lib/api";
+import { formatDate, formatDateTime, formatMoneyCents, timeAgo } from "@/lib/format";
 import { useListAnimation } from "@/lib/motion";
 import { can, hasRole, useSession } from "@/lib/session";
 import { undoable } from "@/lib/undo";
-import { ClientPicker, type PickedClient } from "../clients/ClientForm";
 import { ConnectEmailHint } from "../settings/ConnectEmailHint";
 import { PromoCodes } from "./PromoCodes";
+import { Referrals } from "./Referrals";
 import { Reviews } from "./Reviews";
-import { useSettingsSaver } from "./useSettingsSaver";
 import { analyticsOn } from "./website";
 
 type Tab = "campaigns" | "promos" | "reviews" | "referrals" | "website";
@@ -47,7 +44,8 @@ export function MarketingPage() {
     meta: { silent: true },
     queryFn: async () =>
       unwrap(await supabase().rpc("marketing_summary", { p_company_id: session.company.id })) as {
-        campaigns_sent: number; emails_sent_30d: number; reviews_requested_30d: number; reviews_clicked_30d: number; referrals_total: number; referrals_won: number; rewards_pending: number; opted_out: number;
+        campaigns_sent: number; emails_sent_30d: number; reviews_requested_30d: number; reviews_clicked_30d: number; referrals_total: number; referrals_won: number;
+        credits_owed: number; referral_revenue: number | null; opted_out: number;
       },
   });
 
@@ -59,10 +57,10 @@ export function MarketingPage() {
       <PageHeader title="Marketing" />
       {summary.isPending ? <StatsSkeleton count={4} /> : s && (
         <div className="stat-row">
-          <div className="card stat"><div className="label">Emails sent (30 days)</div><div className="value">{s.emails_sent_30d}</div><div className="hint">{s.campaigns_sent} campaigns sent in total</div></div>
+          <div className="card stat"><div className="label">Emails sent (30 days)</div><div className="value">{s.emails_sent_30d}</div><div className="hint">{s.campaigns_sent} campaigns sent in total · {s.opted_out} unsubscribed</div></div>
           <div className="card stat"><div className="label">Review requests (30 days)</div><div className="value">{s.reviews_requested_30d}</div><div className="hint">{s.reviews_requested_30d ? `${Math.round((s.reviews_clicked_30d / s.reviews_requested_30d) * 100)}% opened the review link` : "None sent yet"}</div></div>
           <div className="card stat"><div className="label">Referrals</div><div className="value">{s.referrals_total}</div><div className="hint">{s.referrals_won} became jobs</div></div>
-          <div className="card stat"><div className="label">Rewards owed</div><div className="value">{formatMoney(s.rewards_pending)}</div><div className="hint">{s.opted_out} {s.opted_out === 1 ? "client" : "clients"} unsubscribed</div></div>
+          <div className="card stat"><div className="label">Referral credits {statusText("credit", "earned").toLowerCase()}</div><div className="value">{formatMoneyCents(s.credits_owed)}</div><div className="hint">Not on an invoice yet</div></div>
         </div>
       )}
       <div className="underline-tabs" role="tablist">
@@ -94,7 +92,8 @@ function MarketingOff() {
       <PageHeader title="Marketing" />
       <div className="card">
         <EmptyState icon="marketing" title="Marketing is off" action={canTurnOn && <Link className="btn btn-primary" to="/apps/marketing">Install Marketing</Link>}>
-          {canTurnOn ? "Ask happy clients for reviews, track referrals and send campaigns. Install it to bring back everything you had." : "Ask an owner or admin to install Marketing from Apps."}
+          {canTurnOn ? "Ask happy clients for reviews and referrals, and send campaigns. Install it to bring back everything you had." : "Ask an owner or admin to install Marketing from Apps."}
+          {" "}Referral credits clients have earned, or earn later from links already shared, still go on their invoices.
         </EmptyState>
       </div>
       {analyticsOn(session) && (
@@ -184,89 +183,6 @@ function Campaigns() {
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-function Referrals() {
-  const session = useSession();
-  const queryClient = useQueryClient();
-  const settings = session.company.settings as { referral_reward?: { amount?: number }; referral_offer?: string };
-  const canSave = hasRole(session, "admin");
-  const [amount, setAmount] = useState(String(settings.referral_reward?.amount ?? ""));
-  const [offer, setOffer] = useState(settings.referral_offer ?? "");
-  const [client, setClient] = useState<PickedClient>(null);
-  useEffect(() => setAmount(String(settings.referral_reward?.amount ?? "")), [settings.referral_reward?.amount]);
-  const save = useSettingsSaver();
-  const saved = useJustDone(save);
-  const referrals = useQuery({
-    queryKey: ["referrals", session.company.id],
-    queryFn: async () =>
-      unwrap(
-        await supabase()
-          .from("referrals")
-          .select("id, referred_name, status, reward_amount, reward_status, reward_issued_at, created_at, referrer:clients!referrals_company_id_referrer_client_id_fkey(id, display_name), referred:clients!referrals_company_id_referred_client_id_fkey(id, display_name)")
-          .eq("company_id", session.company.id)
-          .order("created_at", { ascending: false })
-          .limit(100),
-      ),
-  });
-  const issue = useMutation({
-    meta: { success: "Reward marked as given" },
-    mutationFn: async (id: string) => unwrap(await supabase().from("referrals").update({ reward_status: "issued", reward_issued_at: new Date().toISOString() }).eq("id", id)),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["referrals", session.company.id] });
-      queryClient.invalidateQueries({ queryKey: ["marketing-summary", session.company.id] });
-    },
-  });
-  const link = useMutation({
-    mutationFn: () => api.get<{ link: string }>(`/referrals/link/${client!.id}`),
-    onSuccess: (r) => copyText(r.link, `Referral link for ${client!.display_name} copied`),
-  });
-  const value = Number(amount);
-
-  return (
-    <div className="two-col">
-      <div className="wide stack">
-        <div className="card">
-          <div className="card-head"><strong>Referrals</strong></div>
-          {referrals.isPending && <div className="card-pad"><CardSkeleton lines={2} title={false} /></div>}
-          {referrals.error && <ErrorState compact error={referrals.error} onRetry={() => referrals.refetch()} />}
-          {referrals.data?.length === 0 && <EmptyState inline title="No referrals yet" />}
-          {referrals.data?.map((r) => {
-            const referrer = r.referrer as unknown as { id: string; display_name: string } | null;
-            const referred = r.referred as unknown as { id: string; display_name: string } | null;
-            return (
-              <div key={r.id} className="card-row">
-                <span className="grow">
-                  <span><Link to={referred ? `/clients/${referred.id}` : "#"} className="strong" style={{ color: "var(--ink)" }}>{referred?.display_name ?? r.referred_name}</Link> <span className="muted">referred by</span> {referrer ? <Link to={`/clients/${referrer.id}`}>{referrer.display_name}</Link> : "a client"}</span>
-                  <span className="muted small" style={{ display: "block" }}>{timeAgo(r.created_at)}{Number(r.reward_amount) > 0 ? ` · ${formatMoney(r.reward_amount)} reward${r.reward_status === "issued" ? ` given ${formatDate(r.reward_issued_at)}` : ""}` : ""}</span>
-                </span>
-                <StatusPill label={{ new: "New lead", quoted: "Quoted", won: "Won", lost: "Lost" }[r.status] ?? r.status} tone={r.status === "won" ? "good" : r.status === "quoted" ? "info" : r.status === "lost" ? "danger" : "warning"} />
-                {r.status === "won" && r.reward_status === "pending" && <Button size="sm" icon="gift" loading={issue.isPending && issue.variables === r.id} onClick={() => issue.mutate(r.id)}>Mark reward given</Button>}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-      <aside className="narrow stack">
-        <form className="card card-pad stack-sm" onSubmit={(e: FormEvent) => { e.preventDefault(); if (client) link.mutate(); }}>
-          <strong>Get a client's referral link</strong>
-          <ClientPicker value={client} onChange={setClient} allowCreate={false} />
-          <Button type="submit" icon="copy" loading={link.isPending} disabled={!client}>Copy referral link</Button>
-        </form>
-        <form className="card card-pad stack-sm" onSubmit={(e: FormEvent) => { e.preventDefault(); save.mutate({ referral_reward: { amount: value > 0 ? Math.round(value * 100) / 100 : 0 }, referral_offer: offer.trim() || null }); }}>
-          <strong>Reward</strong>
-          <Field label="Reward per referral that becomes a job">
-            <span className="input-group"><span className="addon">$</span><input className="input" style={{ paddingLeft: 22 }} inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} disabled={!canSave} placeholder="50" /></span>
-          </Field>
-          <Field label="Offer shown to friends" optional>
-            <input className="input" value={offer} maxLength={200} onChange={(e) => setOffer(e.target.value)} disabled={!canSave} placeholder="10% off your first service" />
-          </Field>
-          <FormError error={save.error} />
-          {canSave ? <Button type="submit" loading={save.isPending} done={saved} style={{ justifySelf: "start" }}>Save</Button> : <span className="muted small">Only owners and admins can change these.</span>}
-        </form>
-      </aside>
     </div>
   );
 }

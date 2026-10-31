@@ -63,7 +63,7 @@ const BLANK: Draft = {
 
 // Who a rule can notify: the team's levels (automations never notify subs).
 const ROLE_OPTIONS: Array<[string, string]> = STAFF.map((r) => [r, ROLE_GROUP_LABELS[r] ?? r]);
-const ACTION_ICON: Record<ActionType, IconName> = { notify: "bell", send_email: "mail", send_sms: "messages", add_tag: "tag", remove_tag: "tag", add_note: "note", create_task: "calendarCheck", request_review: "star", update_status: "archive" };
+const ACTION_ICON: Record<ActionType, IconName> = { notify: "bell", send_email: "mail", send_sms: "messages", add_tag: "tag", remove_tag: "tag", add_note: "note", create_task: "calendarCheck", request_review: "star", request_referral: "gift", update_status: "archive" };
 const STEP_COLORS = { when: "#3474d4", wait: "#8b5cf6", if: "#c9852a", then: "#3b7d23" };
 
 function blankAction(type: ActionType, subject: SubjectKind): Action {
@@ -75,6 +75,7 @@ function blankAction(type: ActionType, subject: SubjectKind): Action {
     case "add_note": return { type, body: "" };
     case "create_task": return { type, title: "", days_from_now: 1 };
     case "request_review": return { type, channel: "email" };
+    case "request_referral": return { type };
     case "update_status": return { type, status: STATUS_ACTION_CHOICES[subject]?.[0]?.value ?? "archived" };
   }
 }
@@ -547,6 +548,17 @@ function ActionEditor({ index, count, subject, verb, value, onChange, onRemove, 
             </select>
           </Field>
           <p className="muted small" style={{ margin: 0 }}>Uses your <Link to="/marketing?tab=reviews">review settings</Link>, and asks each client at most once every 6 months.</p>
+        </>
+      )}
+
+      {value.type === "request_referral" && (
+        <>
+          {!marketingOn(session.company.settings) && (
+            <div className="callout callout-info"><Icon name="info" size={18} /><div className="grow">Marketing is off, so this action is skipped.</div></div>
+          )}
+          <p className="muted small" style={{ margin: 0 }}>
+            Emails each client their referral link, at most once every 6 months. The message is in your <Link to="/marketing?tab=referrals">referral settings</Link>.
+          </p>
         </>
       )}
 

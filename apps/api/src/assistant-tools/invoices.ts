@@ -35,13 +35,13 @@ export const invoiceTools = {
     },
   }),
   get_invoice: tool({
-    description: "An invoice in full: client, job, lines, totals, tax, what's been paid (each payment) and what's still owed.",
+    description: "An invoice in full: client, job, lines, totals, discounts and referral credits, tax, what's been paid (each payment) and what's still owed.",
     input: z.object({ invoice_id: z.uuid(), ...companyArg }),
     run: (ctx, a) =>
       one(
         ctx.db
           .from("invoices")
-          .select("id, number, kind, status, subtotal, discount_amount, tax_amount, total, amount_paid, balance_due, issued_on, due_on, written_off_at, job:jobs(id, number, title), client:clients(id, display_name, email), lines:invoice_line_items(name, description, quantity, unit, unit_price, taxable), payments(id, amount, tip_amount, method, received_at, notes, processor)")
+          .select("id, number, kind, status, subtotal, discount_amount, credit_amount, credits:referral_credits(amount, note), tax_amount, total, amount_paid, balance_due, issued_on, due_on, written_off_at, job:jobs(id, number, title), client:clients(id, display_name, email), lines:invoice_line_items(name, description, quantity, unit, unit_price, taxable), payments(id, amount, tip_amount, method, received_at, notes, processor)")
           .eq("id", a.invoice_id)
           .eq("company_id", ctx.companyId)
           .maybeSingle(),

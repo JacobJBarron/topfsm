@@ -10,6 +10,9 @@ import {
   dueTone,
   FORMULA_VARIABLES,
   FormulaError,
+  ACTIONS,
+  actionsForTrigger,
+  variablesForTrigger,
   checkCondition,
   cutOut,
   describeAction,
@@ -625,6 +628,19 @@ describe("automations", () => {
       .toBe("When a quote is sent, wait 3 days, if its status is Awaiting response: email the client.");
     expect(describeRuleSentence({ trigger: "visit.completed", delay_minutes: 0, conditions: [{ field: "client.tags", op: "includes", value: ["HOA"] }], actions: [{ type: "add_tag", tag: "Serviced 2026" }] }))
       .toBe("When a visit is completed, if client tags include HOA: tag the client “Serviced 2026”.");
+  });
+
+  it("asks for referrals by email, and thanks a client who earned a referral credit", () => {
+    expect(ACTIONS.find((a) => a.type === "request_referral")).toMatchObject({ label: "Ask for referrals", subjects: "all" });
+    expect(actionsForTrigger("job.completed").map((a) => a.type)).toContain("request_referral");
+    expect(describeAction({ type: "request_referral" })).toBe("Ask for referrals by email");
+    expect(validateRule({ name: "Ask for referrals after a job", trigger: "job.completed", delay_minutes: 10080, conditions: [{ field: "kind", op: "not_equals", value: "recurring" }], actions: [{ type: "request_referral" }] })).toEqual([]);
+    expect(describeRuleSentence({ trigger: "job.completed", delay_minutes: 10080, conditions: [{ field: "kind", op: "not_equals", value: "recurring" }], actions: [{ type: "request_referral" }] }))
+      .toBe("When a job is completed, wait 7 days, if type is not Recurring job: ask for referrals by email.");
+    expect(triggerDef("referral.earned")).toMatchObject({ label: "A client earns a referral credit", group: "Clients", subject: "client", delayable: true });
+    expect(variablesForTrigger("referral.earned").map((v) => v.token)).toEqual(expect.arrayContaining(["client.first_name", "referral.name", "referral.credit", "referral.invoice"]));
+    expect(actionsForTrigger("referral.earned").map((a) => a.type)).toEqual(expect.arrayContaining(["send_email", "notify", "add_tag"]));
+    expect(validateRule({ name: "Thank them", trigger: "referral.earned", delay_minutes: 0, conditions: [], actions: [{ type: "send_email", subject: "Thanks!", body: "Thanks for referring {{referral.name}}: {{referral.credit}} is yours." }] })).toEqual([]);
   });
 
   it("asks for a review by text and email, after the recurring visit set in Marketing", () => {

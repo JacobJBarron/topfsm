@@ -6,7 +6,7 @@
 import { contractValues, fillIn } from "@crewtavo/core/contracts";
 import { pickTemplate, templateSettings, type TemplateSettings } from "@crewtavo/core/documents";
 import { hidesExactPrice, inRangeMode, isSiteAdjustment, optionsRange, priceRange, rangeSettings } from "@crewtavo/core/estimates";
-import { marketingOn } from "@crewtavo/core/marketing";
+import { marketingOn, referralSettings, referralsReady, referrerLine } from "@crewtavo/core/marketing";
 import { chosenTotals, countsOn, optionBaseTotal, optionTotals, type OptionLine } from "@crewtavo/core/money";
 import { isPackagePicturePath, packagePictureSrc } from "@crewtavo/core/presets";
 import { Hono, type Context } from "hono";
@@ -426,7 +426,7 @@ publicRoutes.get("/hub/:token", async (c) => {
     await admin
       .from("invoices")
       .select(
-        "id, number, status, subject, notes, issued_on, due_on, subtotal, discount_amount, tax_amount, total, retainage_amount, amount_paid, balance_due, client_id, promo:promo_codes(code, kind, value, description), client:clients(display_name, billing_address), job:jobs(property:properties(line1, city, region, postal_code), quote:quotes!jobs_company_id_quote_id_fkey(approval, option_id, roof_package_id, option:quote_options!quotes_option_fkey(name, warranty))), lines:invoice_line_items(name, description, quantity, unit, unit_price, sort), payments(amount, tip_amount, received_at)",
+        "id, number, status, subject, notes, issued_on, due_on, subtotal, discount_amount, credit_amount, tax_amount, total, retainage_amount, amount_paid, balance_due, client_id, promo:promo_codes(code, kind, value, description), credits:referral_credits(amount, note, created_at), client:clients(display_name, billing_address), job:jobs(property:properties(line1, city, region, postal_code), quote:quotes!jobs_company_id_quote_id_fkey(approval, option_id, roof_package_id, option:quote_options!quotes_option_fkey(name, warranty))), lines:invoice_line_items(name, description, quantity, unit, unit_price, sort), payments(amount, tip_amount, received_at)",
       )
       .eq("company_id", l.c)
       .eq("id", l.id)
@@ -944,9 +944,16 @@ async function clientHome(c: Parameters<typeof appUrl>[0], admin: ReturnType<typ
 
   const base = appUrl(c);
   const sign = (t: "quote" | "invoice", id: string) => clientLink(c.env, base, { c: companyId, t, id });
-  const companySettings = (settings.settings ?? {}) as { referral_offer?: string; referral_reward?: { amount?: number } };
+  const companySettings = (settings.settings ?? {}) as Record<string, unknown>;
   // Referrals are Marketing's: uninstalled, the Hub stops offering them (links already shared still open).
-  const referralOn = marketingOn(companySettings) && Boolean(companySettings.referral_offer || Number(companySettings.referral_reward?.amount ?? 0) > 0);
+  const referralOn = marketingOn(companySettings) && referralsReady(companySettings);
+  const referrals = referralSettings(companySettings);
+  // Credit they've earned that goes on their next invoice: not on one yet, not given outside
+  // Crewtavo, and not one the office keeps off invoices (that may never reach an invoice).
+  const earned = referralOn
+    ? (await admin.from("referrals").select("reward_amount, given_amount, credits:referral_credits(amount)").eq("company_id", companyId).eq("referrer_client_id", clientId).eq("reward_status", "earned").eq("auto_apply", true)).data ?? []
+    : [];
+  const creditLeft = earned.reduce((sum, r) => sum + Number(r.reward_amount) - Number(r.given_amount ?? 0) - (r.credits as Array<{ amount: number }>).reduce((on, x) => on + Number(x.amount), 0), 0);
   return {
     kind: "client",
     company,
@@ -972,7 +979,14 @@ async function clientHome(c: Parameters<typeof appUrl>[0], admin: ReturnType<typ
     payments: (payments.data ?? []).map((p) => ({ amount: p.amount, tip_amount: p.tip_amount, method: p.method, received_at: p.received_at, invoice: (p.invoice as unknown as { number: number } | null)?.number ?? null })),
     requests: requests.data ?? [],
     services: [...new Set((services.data ?? []).map((s) => s.category as string))].slice(0, 8),
-    refer: referralOn ? { link: await clientLink(c.env, base, { c: companyId, t: "refer", id: clientId }), offer: companySettings.referral_offer ?? null } : null,
+    refer: referralOn
+      ? {
+          link: await clientLink(c.env, base, { c: companyId, t: "refer", id: clientId }),
+          offer: referrals.offer,
+          rewards: referrerLine(referrals.reward) || null,
+          credit_left: Math.round(creditLeft * 100) / 100,
+        }
+      : null,
   };
 }
 
@@ -1231,11 +1245,10 @@ publicRoutes.get("/public/refer/:token", async (c) => {
     admin.from("clients").select("display_name").eq("company_id", l.c).eq("id", l.id).maybeSingle(),
   ]);
   if (!company.data || !client.data) throw new HttpError(404, "This referral link isn't valid anymore.");
-  const settings = (company.data.settings ?? {}) as { referral_offer?: string };
   return c.json({
     company: { name: company.data.name, phone: company.data.phone, website: company.data.website, logo: logoImage("", l.c, company.data.settings)?.src ?? null },
     referrer: firstName(client.data.display_name),
-    offer: settings.referral_offer ?? null,
+    offer: referralSettings(company.data.settings as Record<string, unknown> | null).offer,
   });
 });
 
@@ -1256,32 +1269,15 @@ publicRoutes.post("/public/refer/:token", async (c) => {
   await verifyTurnstile(c, body.turnstile_token);
   await limitSubmissions(c, "referral", l.c);
   const admin = adminClient(c.env);
-  const referrer = must(await admin.from("clients").select("id, display_name").eq("company_id", l.c).eq("id", l.id).maybeSingle(), "This referral link isn't valid anymore.");
-  const { data: company } = await admin.from("companies").select("settings").eq("id", l.c).maybeSingle();
-  const reward = Number((company?.settings as { referral_reward?: { amount?: number } } | null)?.referral_reward?.amount ?? 0);
-
-  const client = must(
-    await admin
-      .from("clients")
-      .insert({ company_id: l.c, status: "lead", display_name: body.name, email: body.email, phone: body.phone, lead_source: "Referral", referred_by: referrer.id })
-      .select("id")
-      .single(),
-  );
-  const property = must(
-    await admin.from("properties").insert({ company_id: l.c, client_id: client.id, line1: body.address.line1, city: body.address.city, postal_code: body.address.postal_code }).select("id").single(),
-  );
-  const request = must(
-    await admin
-      .from("requests")
-      .insert({ company_id: l.c, client_id: client.id, property_id: property.id, source: "referral", title: `Referral from ${referrer.display_name}`, details: body.details ?? null, created_by: null })
-      .select("id, number")
-      .single(),
-  );
-  await admin.from("referrals").insert({
-    company_id: l.c, referrer_client_id: referrer.id, referred_client_id: client.id, request_id: request.id, referred_name: body.name,
-    reward_amount: Math.max(0, reward), reward_status: reward > 0 ? "pending" : "none",
+  // The lead, their property, the request and the referral, together, with the credit offered now.
+  // A friend who is the referrer or a client already asks on that client, at an address of theirs.
+  const { data: made, error } = await admin.rpc("record_referral", {
+    p_company: l.c, p_referrer: l.id, p_name: body.name, p_email: body.email ?? undefined, p_phone: body.phone ?? undefined,
+    p_address: asJson(body.address), p_details: body.details ?? undefined,
   });
-  geocodeLater(c, property.id, body.address);
+  if (error) throw error.code === "P0002" ? new HttpError(404, "This referral link isn't valid anymore.") : dbError(error);
+  const result = made as unknown as { client_id: string; property_id: string; new_property: boolean; request_id: string; number: number };
+  if (result.new_property) geocodeLater(c, result.property_id, body.address);
   kickAutomations(c, l.c);
-  return c.json({ ok: true, reference: request.number }, 201);
+  return c.json({ ok: true, reference: result.number }, 201);
 });

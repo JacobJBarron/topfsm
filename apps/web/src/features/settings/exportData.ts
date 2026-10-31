@@ -88,7 +88,7 @@ export async function exportEverything(session: Session, step: (what: string) =>
     everyRow((from, to) => db.from("visit_assignees").select("visit_id, user_id").eq("company_id", companyId).order("visit_id").order("user_id").range(from, to)),
     everyRow((from, to) => db.from("crews").select("id, name, lead_user_id, active").eq("company_id", companyId).order("id").range(from, to)),
     everyRow((from, to) => db.from("crew_members").select("crew_id, user_id").eq("company_id", companyId).order("crew_id").order("user_id").range(from, to)),
-    everyRow((from, to) => db.from("invoices").select("id, number, subject, client_id, job_id, kind, status, issued_on, due_on, subtotal, discount_amount, tax_rate, tax_amount, total, amount_paid, balance_due, retainage_amount, notes, sent_at, written_off_at").eq("company_id", companyId).order("id").range(from, to)),
+    everyRow((from, to) => db.from("invoices").select("id, number, subject, client_id, job_id, kind, status, issued_on, due_on, subtotal, discount_amount, credit_amount, tax_rate, tax_amount, total, amount_paid, balance_due, retainage_amount, notes, sent_at, written_off_at").eq("company_id", companyId).order("id").range(from, to)),
     everyRow((from, to) => db.from("invoice_line_items").select("id, invoice_id, sort, name, description, quantity, unit, unit_price, taxable").eq("company_id", companyId).order("id").range(from, to)),
     everyRow((from, to) => db.from("payments").select("id, client_id, invoice_id, amount, tip_amount, fee_amount, method, processor, processor_ref, received_at, notes").eq("company_id", companyId).order("id").range(from, to)),
   ]);
@@ -201,7 +201,7 @@ export async function exportEverything(session: Session, step: (what: string) =>
     sheet("invoices.csv", [...invoices].sort(byNumber), [
       ["Invoice #", (i) => i.number], ["Subject", (i) => i.subject], ["Client", (i) => clientName(i.client_id)], ["Job #", (i) => jobNumber(i.job_id)], ["Type", (i) => words(i.kind)],
       ["Status", (i) => words(i.status)], ["Issued", (i) => i.issued_on], ["Due", (i) => i.due_on], ["Subtotal", (i) => i.subtotal], ["Discount", (i) => i.discount_amount],
-      ["Tax rate (%)", (i) => taxPercent(i.tax_rate)], ["Tax", (i) => i.tax_amount], ["Total", (i) => i.total], ["Paid", (i) => i.amount_paid], ["Balance", (i) => i.balance_due],
+      ["Referral credit", (i) => i.credit_amount], ["Tax rate (%)", (i) => taxPercent(i.tax_rate)], ["Tax", (i) => i.tax_amount], ["Total", (i) => i.total], ["Paid", (i) => i.amount_paid], ["Balance", (i) => i.balance_due],
       ["Retainage", (i) => i.retainage_amount], ["Sent", (i) => day(i.sent_at)], ["Written off", (i) => day(i.written_off_at)], ["Notes", (i) => i.notes],
       ["Client ID", (i) => i.client_id], ["Invoice ID", (i) => i.id],
     ]),

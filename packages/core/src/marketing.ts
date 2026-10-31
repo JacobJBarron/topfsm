@@ -7,8 +7,12 @@
  *   settings.marketing   {enabled}: installed or not (supabase/migrations/20261030000200_marketing_app.sql).
  *   settings.reviews     {recurring_after_visits, reminders: [{days}], reminder_message}.
  *   settings.review_url and settings.review_message stay where they always were.
+ *   settings.referrals   {reward: {kind, value}, offer, message}: the credit for each friend who
+ *                        becomes a client, the line shown to friends, and the referral ask's email
+ *                        (supabase/migrations/20261031000100_referral_credits.sql).
  */
 import { triggerDef, type Action, type Condition } from "./automations";
+import { toUnits, type Amount } from "./money";
 import { addDays, localDate, localTime, zonedTimeToUtc } from "./time";
 
 type Settings = Record<string, unknown> | null | undefined;
@@ -541,4 +545,245 @@ export function smsKeyword(body: string | null | undefined): "stop" | "start" | 
   if (STOP_WORDS.includes(word)) return "stop";
   if (START_WORDS.includes(word)) return "start";
   return null;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Referrals
+// ---------------------------------------------------------------------------------------------
+
+/** An automatic referral ask goes to a client at most once in this many days (about 6 months). */
+export const REFERRAL_GAP_DAYS = 182;
+export const MAX_REFERRAL_AMOUNT = 10_000;
+
+export type ReferralRewardKind = "amount" | "percent";
+export interface ReferralReward {
+  kind: ReferralRewardKind;
+  value: number;
+}
+export interface ReferralSettings {
+  reward: ReferralReward;
+  /** The line shown to friends, like "10% off your first service". */
+  offer: string | null;
+  /** The referral ask's email, with {{link}} and {{rewards}}. */
+  message: string;
+}
+
+/** The referral ask's email until the business writes its own (settings.referrals.message). */
+export const DEFAULT_REFERRAL_MESSAGE =
+  "Hi {{client.first_name}}, thank you for choosing {{company.name}}! Know someone who could use our help? Send them your own link and we'll take good care of them.\n\n{{link}}\n\n{{rewards}}";
+
+const cents = (value: Amount) => Number(toUnits(value, 2)) / 100;
+
+/**
+ * settings.referrals, kept in range as the database reads it for a new referral
+ * (private.referral_terms): a percentage from 1 to 100, or an amount up to $10,000. Anything else
+ * is no credit. The old keys (referral_reward, referral_offer) aren't read: a migration moved them.
+ */
+export function referralSettings(settings: Settings): ReferralSettings {
+  const referrals = (settings?.referrals ?? {}) as { reward?: { kind?: unknown; value?: unknown } | null; offer?: unknown; message?: unknown };
+  const kind = referrals.reward?.kind;
+  const raw = referrals.reward?.value;
+  const value = typeof raw === "number" && Number.isFinite(raw) ? cents(raw) : null;
+  const reward: ReferralReward =
+    kind === "percent"
+      ? { kind: "percent", value: value !== null && value >= 1 && value <= 100 ? value : 0 }
+      : { kind: "amount", value: kind === "amount" && value !== null && value >= 0 && value <= MAX_REFERRAL_AMOUNT ? value : 0 };
+  const offer = typeof referrals.offer === "string" && referrals.offer.trim() ? referrals.offer.trim() : null;
+  const message = typeof referrals.message === "string" && referrals.message.trim() ? referrals.message : DEFAULT_REFERRAL_MESSAGE;
+  return { reward, offer, message };
+}
+
+/** Referrals have something to offer: a credit or a line for friends. The Client Hub, asks and the rule wait for one. */
+export const referralsReady = (settings: Settings) => {
+  const { reward, offer } = referralSettings(settings);
+  return Boolean(offer) || reward.value > 0;
+};
+
+/** "$50", "$12.50". */
+export function creditMoney(amount: Amount): string {
+  const value = cents(amount);
+  const digits = Number.isInteger(value) ? 0 : 2;
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: digits, maximumFractionDigits: digits }).format(value);
+}
+
+/** "10%", "12.5%". */
+const percentWords = (value: number) => `${Number(value.toFixed(2))}%`;
+
+/** The credit as words: "a $50 credit", "10% of their first job back as a credit", or "" when none is set. */
+export function referralRewardWords(reward: ReferralReward): string {
+  if (reward.value <= 0) return "";
+  return reward.kind === "percent" ? `${percentWords(reward.value)} of their first job back as a credit` : `a ${creditMoney(reward.value)} credit`;
+}
+
+/** What the client who shares their link gets, said to them, or "" when no credit is set. */
+export function referrerLine(reward: ReferralReward): string {
+  if (reward.value <= 0) return "";
+  return reward.kind === "percent"
+    ? `You'll get ${percentWords(reward.value)} of their first job back as a credit on your next invoice.`
+    : `You'll get a ${creditMoney(reward.value)} credit on your next invoice once they pay their first one.`;
+}
+
+/**
+ * The offer as the client who shares their link reads it. It's written to the friend ("10% off
+ * your first service"), so it's quoted: "For your friends: “10% off your first service”".
+ */
+export const friendOfferLine = (offer: string) => `For your friends: “${offer}”`;
+
+/**
+ * {{rewards}} in the referral ask: what the friend gets (the offer, quoted) and what the client
+ * gets, each on its own line, or "" when neither is set.
+ */
+export function referralRewards(settings: Settings): string {
+  const { reward, offer } = referralSettings(settings);
+  return [offer ? friendOfferLine(offer) : "", referrerLine(reward)].filter(Boolean).join("\n");
+}
+
+/** A credit as the database works it out: the amount, or the percent of `base` rounded to cents, half away from zero. */
+export function referralCredit(kind: ReferralRewardKind, value: Amount, base: Amount): number {
+  if (kind === "amount") return Math.max(cents(value), 0);
+  const units = toUnits(base, 2) * toUnits(value, 2);
+  if (units <= 0n) return 0;
+  return Number((2n * units + 10000n) / 20000n) / 100;
+}
+
+export const REFERRAL_EMAIL_NOT_CONNECTED = "Email isn't connected yet, so referral asks can't be sent. An admin can connect it in Settings → Email.";
+export const REFERRALS_NOT_SET_UP = "Add a credit or an offer first.";
+
+/** A client as referral asks see them. */
+export interface ReferralAskClient {
+  display_name: string;
+  email: string | null;
+  status?: string | null;
+  marketing_opt_out?: boolean | null;
+}
+
+/**
+ * Why a client can't be asked for referrals, or null when they can: they unsubscribed from
+ * marketing, they're archived, they have no email address, or (`emailReady` false) the business
+ * hasn't connected email. Asks go by email only, as Jobber's do.
+ */
+export function referralAskRefusal(client: ReferralAskClient, emailReady = true): string | null {
+  const name = client.display_name;
+  if (client.marketing_opt_out) return `${name} unsubscribed from marketing, so they aren't asked for referrals.`;
+  if (client.status === "archived") return `${name} is archived. Restore them to ask for a referral.`;
+  if (!isEmailAddress(client.email)) return `${name} has no email address.`;
+  if (!emailReady) return REFERRAL_EMAIL_NOT_CONNECTED;
+  return null;
+}
+
+/** A referral as its line on Marketing → Referrals reads it. */
+export interface CreditReferral {
+  status: string;
+  reward_status: string;
+  reward_kind: string;
+  reward_value: Amount;
+  reward_amount: Amount;
+  /** What was given outside Crewtavo (Mark given). */
+  given_amount: Amount;
+  no_reward_reason: string | null;
+  auto_apply: boolean;
+}
+/** Where a credit went. `invoice` is null for someone who can't read invoices. */
+export interface CreditOnInvoice {
+  amount: Amount;
+  invoice: { id: string; number: number | null } | null;
+}
+/** Text, or an invoice the page links to. */
+export type CreditPart = string | { invoice: { id: string; number: number | null } };
+
+const NO_CREDIT: Record<string, string> = {
+  self: "they referred themselves",
+  already_client: "they were already a client",
+  lost: "the work was lost",
+  not_set: "no credit was set when they were referred",
+  by_hand: "you chose no credit",
+};
+
+function onInvoices(credits: readonly CreditOnInvoice[]): CreditPart[] {
+  const known = credits.filter((c) => c.invoice);
+  if (!known.length) return ["on an invoice"];
+  const parts: CreditPart[] = [known.length === 1 ? "on invoice " : "on invoices "];
+  known.forEach((c, i) => {
+    if (i) parts.push(i === known.length - 1 ? " and " : ", ");
+    parts.push({ invoice: c.invoice! });
+  });
+  return parts;
+}
+
+/**
+ * The detail under a referral on Marketing → Referrals: what the credit is and where it went.
+ * "$50 credit on invoice #1042", "$30 of $50 on invoice #1042, $20 to go", "$50 of $80 given
+ * outside Crewtavo, $30 to go", "No credit: they referred themselves". The pill beside it says the
+ * state, in StatusPill's words.
+ */
+export function creditLine(referral: CreditReferral, credits: readonly CreditOnInvoice[]): CreditPart[] {
+  const amount = cents(referral.reward_amount);
+  const given = cents(referral.given_amount);
+  const applied = credits.reduce((sum, c) => sum + cents(c.amount), 0);
+  const left = Math.max(Math.round((amount - given - applied) * 100) / 100, 0);
+  const givenPart = given > 0 ? [`, ${creditMoney(given)} given outside Crewtavo`] : [];
+  switch (referral.reward_status) {
+    case "pending":
+      if (referral.reward_kind === "percent") return [`${percentWords(cents(referral.reward_value))} of their first job, worked out when they pay their first invoice`];
+      return [`${creditMoney(referral.reward_value)} credit once they pay their first invoice`];
+    case "earned": {
+      const rest = `${creditMoney(left)} ${referral.auto_apply ? "to go" : "kept off invoices"}`;
+      if (applied) return [`${creditMoney(applied)} of ${creditMoney(amount)} `, ...onInvoices(credits), ...givenPart, `, ${rest}`];
+      if (given) return [`${creditMoney(given)} of ${creditMoney(amount)} given outside Crewtavo, ${rest}`];
+      return [`${creditMoney(amount)} credit, ${referral.auto_apply ? "goes on their next invoice" : "kept off invoices"}`];
+    }
+    case "applied":
+      if (given) return [`${creditMoney(applied)} `, ...onInvoices(credits), ...givenPart];
+      return [`${creditMoney(amount)} credit `, ...onInvoices(credits)];
+    case "issued":
+      if (!applied) return [`${creditMoney(given || amount)} credit, given outside Crewtavo`];
+      return [`${creditMoney(applied)} `, ...onInvoices(credits), `, ${creditMoney(given)} given outside Crewtavo`];
+    default:
+      return [`No credit: ${NO_CREDIT[referral.no_reward_reason ?? ""] ?? "none was set"}`];
+  }
+}
+
+/** creditLine as plain text. */
+export const creditText = (parts: readonly CreditPart[]) => parts.map((p) => (typeof p === "string" ? p : `#${p.invoice.number ?? ""}`)).join("");
+
+/**
+ * The status a referral's pill shows: its credit's once there is one (Earned, Applied, Given), and
+ * the referral's own otherwise (New lead, Quoted, Won, Lost), so a referral with no credit still
+ * shows how the friend's work is going. creditLine says why there's no credit. StatusPill has the
+ * words.
+ */
+export function referralPill(referral: Pick<CreditReferral, "status" | "reward_status">): { kind: "referral" | "credit"; status: string } {
+  if (["earned", "applied", "issued"].includes(referral.reward_status)) return { kind: "credit", status: referral.reward_status };
+  return { kind: "referral", status: referral.status };
+}
+
+// The starter rule that asks a week after a job (supabase/migrations/20261031000120_referral_asks.sql).
+
+export const REFERRAL_RULE_KEY = "referral_after_job";
+const REFERRAL_CONDITIONS: Condition[] = [{ field: "kind", op: "not_equals", value: "recurring" }];
+
+/** The starter rule as it comes, to put back one that was deleted. */
+export const REFERRAL_RULE = {
+  template_key: REFERRAL_RULE_KEY,
+  name: "Ask for referrals after a job",
+  description: "Emails your referral link a week after a job is completed.",
+  trigger: "job.completed",
+  delay_minutes: 10080,
+  conditions: REFERRAL_CONDITIONS,
+  actions: [{ type: "request_referral" }] as Action[],
+};
+
+/** The rule is still the starter rule's shape (its wait can be anything), not one changed in Automations into something else. */
+export function isReferralRule(rule: Pick<AskRule, "trigger" | "conditions" | "actions"> | null | undefined): boolean {
+  if (!rule) return false;
+  const actions = rule.actions as Action[] | null;
+  return rule.trigger === REFERRAL_RULE.trigger && Array.isArray(actions) && actions.length === 1 && actions[0]!.type === "request_referral"
+    && sameConditions(rule.conditions, REFERRAL_CONDITIONS);
+}
+
+/** "Goes out a week after a job is completed." */
+export function referralRuleTiming(rule: Pick<AskRule, "trigger" | "delay_minutes">): string {
+  const label = triggerDef(rule.trigger)?.label ?? rule.trigger;
+  const when = rule.delay_minutes === 10080 ? "a week after" : afterDelay(rule.delay_minutes);
+  return `Goes out ${when} ${label.charAt(0).toLowerCase()}${label.slice(1)}.`;
 }

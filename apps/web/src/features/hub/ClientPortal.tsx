@@ -3,6 +3,7 @@
  * to pay), then their next visit, quick actions, and history. Visits and "request work" are their
  * own views (?view=visits, ?view=request) so the back button works.
  */
+import { friendOfferLine } from "@crewtavo/core/marketing";
 import { useMutation } from "@tanstack/react-query";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -44,7 +45,8 @@ export interface ClientView {
   payments: Array<{ amount: number; tip_amount: number; method: string; received_at: string; invoice: number | null }>;
   requests: Array<{ number: number; title: string; status: string; created_at: string }>;
   services: string[];
-  refer: { link: string; offer: string | null } | null;
+  /** What the friend gets (offer), what the client gets (rewards) and credit they've earned that isn't on an invoice yet. */
+  refer: { link: string; offer: string | null; rewards?: string | null; credit_left?: number } | null;
 }
 
 type Fetch = <T>(path: string, body?: unknown, method?: "DELETE") => Promise<T>;
@@ -244,7 +246,9 @@ function Home({ token, data, go, onMessage }: { token: string; data: ClientView;
       {data.refer && (
         <section className="hub-refer">
           <h2>Know someone who could use {data.company.name}?</h2>
-          {data.refer.offer && <p>{data.refer.offer}</p>}
+          {data.refer.offer && <p>{friendOfferLine(data.refer.offer)}</p>}
+          {data.refer.rewards && <p>{data.refer.rewards}</p>}
+          {Number(data.refer.credit_left ?? 0) > 0 && <p><strong>You have {formatMoneyCents(data.refer.credit_left)} in referral credit.</strong> It goes on your next invoice.</p>}
           <button type="button" onClick={share}>Share my link</button>
         </section>
       )}

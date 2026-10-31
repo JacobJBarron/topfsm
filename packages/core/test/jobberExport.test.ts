@@ -197,6 +197,13 @@ describe("moving to Jobber", () => {
     });
   });
 
+  it("puts referral credits into Jobber's one discount", () => {
+    const credited = jobberExport({ ...INPUT, invoices: [{ ...INPUT.invoices[0]!, discount_amount: 5, credit_amount: 20.5 }] });
+    expect(credited.files.find((f) => f.name.startsWith("4-invoices"))!.rows[0]).toMatchObject({
+      "Invoice Discount Type (Unit/Percentage)": "Unit", "Invoice Discount Amount (Unit/Percentage)": 25.5,
+    });
+  });
+
   it("says what stays out or comes in differently", () => {
     expect(result.counts).toEqual({ clients: 3, properties: 3, quotes: 2, jobs: 5, invoices: 2 });
     const notes = result.notes.join("\n");

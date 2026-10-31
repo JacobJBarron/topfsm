@@ -72,7 +72,7 @@ export function friendlyDbError(error: DbErrorLike): ApiError {
     return new ApiError("Something went wrong. Refresh the page and try again.", 400, code);
   }
   reportError(new Error(`Database error${code ? ` ${code}` : ""}: ${raw}`));
-  return new ApiError("Something went wrong saving that. Try again.", 500, code);
+  return new ApiError("Something went wrong. Try again.", 500, code);
 }
 
 /**

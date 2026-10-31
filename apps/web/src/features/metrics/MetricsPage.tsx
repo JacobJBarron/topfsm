@@ -293,20 +293,24 @@ function Team({ range }: { range: Range }) {
 /* ------------------------------------------------------------------ Clients */
 
 function Clients({ range }: { range: Range }) {
-  const { company } = useSession();
+  const session = useSession();
+  const { company } = session;
   const cid = company.id;
+  // Referrals made in the range, as Marketing → Referrals counts them: only with Marketing, and installed.
+  const referrals = hasRole(session, "admin", "office") && can(session, "marketing") && marketingOn(company.settings);
   const query = useQuery({
-    queryKey: ["metrics", cid, "clients", range.from, range.to],
+    queryKey: ["metrics", cid, "clients", range.from, range.to, referrals],
     placeholderData: keepPreviousData,
     queryFn: async () => {
       const db = supabase();
-      const [created, active, leads, jobs] = await Promise.all([
+      const [created, active, leads, jobs, referred] = await Promise.all([
         fetchAll((a, b) => db.from("clients").select("created_at, lead_source, requests(web_visit)").eq("company_id", cid).gte("created_at", range.start).lt("created_at", range.end).range(a, b)),
         db.from("clients").select("id", { count: "exact", head: true }).eq("company_id", cid).eq("status", "active"),
         db.from("clients").select("id", { count: "exact", head: true }).eq("company_id", cid).eq("status", "lead"),
         fetchAll((a, b) => db.from("jobs").select("status, updated_at, client:clients(id, display_name, status, email, marketing_opt_out)").eq("company_id", cid).neq("status", "archived").range(a, b)),
+        referrals ? db.rpc("referral_stats", { p_company: cid, p_from: range.start, p_to: range.end }) : Promise.resolve({ data: null, error: null }),
       ]);
-      for (const r of [active, leads]) if (r.error) throw r.error;
+      for (const r of [active, leads, referred]) if (r.error) throw r.error;
       // Lapsed: past work, nothing active, nothing touched in a year.
       const yearAgo = new Date(Date.now() - 365 * 86_400_000).toISOString();
       const byClient = new Map<string, { id: string; name: string; email: string | null; optOut: boolean; last: string; active: boolean }>();
@@ -318,7 +322,8 @@ function Clients({ range }: { range: Range }) {
         byClient.set(j.client.id, row);
       }
       const lapsed = [...byClient.values()].filter((c) => !c.active && c.last < yearAgo);
-      return { created, active: active.count ?? 0, leads: leads.count ?? 0, lapsed };
+      const stats = referred.data as { leads: number; won: number; revenue: number | null } | null;
+      return { created, active: active.count ?? 0, leads: leads.count ?? 0, lapsed, referred: stats };
     },
   });
   const buckets = bucketsFor(range);
@@ -334,6 +339,13 @@ function Clients({ range }: { range: Range }) {
               <Kpi label="Active clients" value={formatNumber(d.active)} />
               <Kpi label="Leads" value={formatNumber(d.leads)} hint={<Link to="/clients?status=lead">View leads</Link>} />
               <Kpi label="No work in 12+ months" value={formatNumber(d.lapsed.length)} />
+              {d.referred && (
+                <Kpi
+                  label="Referrals"
+                  value={formatNumber(d.referred.leads)}
+                  hint={<>{[`${formatNumber(d.referred.won)} won`, d.referred.revenue === null ? null : formatMoney(d.referred.revenue)].filter(Boolean).join(" · ")} · <Link to="/marketing?tab=referrals">View referrals</Link></>}
+                />
+              )}
             </KpiStrip>
             <div className="report-grid">
               <ReportCard title="New clients" value={formatNumber(d.created.length)}>

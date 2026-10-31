@@ -238,8 +238,11 @@ function AskAutomatically({ rules }: { rules: AskRuleRow[] }) {
 
       <p className="muted small" style={{ margin: 0 }}>
         {timing} At most once every 6 months per client. Between 9pm and 9am the first ask goes by email.
-        {afterRule && <> <Link to={`/automations/${afterRule.id}`}>{afterRule.name}</Link></>}
-        {recurringRule && <> · <Link to={`/automations/${recurringRule.id}`}>{recurringRule.name}</Link></>}
+        {(afterRule || recurringRule) && " In Automations: "}
+        {afterRule && <Link to={`/automations/${afterRule.id}`}>{afterRule.name}</Link>}
+        {afterRule && recurringRule && " · "}
+        {recurringRule && <Link to={`/automations/${recurringRule.id}`}>{recurringRule.name}</Link>}
+        {(afterRule || recurringRule) && "."}
       </p>
       {canSave && missing && <p className="muted small" style={{ margin: 0 }}>Saving puts the rules back in Automations.</p>}
       <FormError error={save.error} />

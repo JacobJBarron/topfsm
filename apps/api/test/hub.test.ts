@@ -340,12 +340,44 @@ describe("a price range in the Client Hub", () => {
 describe("referrals on the client's home page", () => {
   it("offers the client their link while Marketing is installed, and not once it's uninstalled", async () => {
     const company = state.tables.companies![0]!;
-    company.settings = { ...(company.settings as Row), referral_offer: "$25 off your next roof check", marketing: { enabled: true } };
+    company.settings = { ...(company.settings as Row), referrals: { reward: { kind: "amount", value: 50 }, offer: "$25 off your next roof check" }, marketing: { enabled: true } };
     let body = await (await hub({ t: "client", id: CLIENT })).json();
-    expect(body.refer).toMatchObject({ offer: "$25 off your next roof check", link: expect.stringContaining("/refer/") });
+    expect(body.refer).toMatchObject({
+      offer: "$25 off your next roof check", link: expect.stringContaining("/refer/"),
+      rewards: "You'll get a $50 credit on your next invoice once they pay their first one.", credit_left: 0,
+    });
     company.settings = { ...(company.settings as Row), marketing: { enabled: false } };
     body = await (await hub({ t: "client", id: CLIENT })).json();
     expect(body.refer).toBeNull();
+  });
+
+  it("says what the client gets, and the credit they've earned that goes on their next invoice", async () => {
+    const company = state.tables.companies![0]!;
+    company.settings = { ...(company.settings as Row), referrals: { reward: { kind: "percent", value: 10 } }, marketing: { enabled: true } };
+    state.tables.referrals = [
+      { company_id: ROOFER, referrer_client_id: CLIENT, reward_status: "earned", reward_amount: 50, given_amount: 0, auto_apply: true, credits: [{ amount: 20 }] },
+      { company_id: ROOFER, referrer_client_id: CLIENT, reward_status: "earned", reward_amount: 45.06, given_amount: 0, auto_apply: true, credits: [] },
+      // $50 given outside Crewtavo, $30 still to go on an invoice.
+      { company_id: ROOFER, referrer_client_id: CLIENT, reward_status: "earned", reward_amount: 80, given_amount: 50, auto_apply: true, credits: [] },
+    ];
+    const body = await (await hub({ t: "client", id: CLIENT })).json();
+    expect(body.refer).toMatchObject({ offer: null, rewards: "You'll get 10% of their first job back as a credit on your next invoice.", credit_left: 105.06 });
+  });
+
+  it("leaves out a credit the office keeps off invoices, since it won't go on the next one", async () => {
+    const company = state.tables.companies![0]!;
+    company.settings = { ...(company.settings as Row), referrals: { reward: { kind: "amount", value: 50 } }, marketing: { enabled: true } };
+    state.tables.referrals = [
+      { company_id: ROOFER, referrer_client_id: CLIENT, reward_status: "earned", reward_amount: 50, given_amount: 0, auto_apply: false, credits: [] },
+    ];
+    const body = await (await hub({ t: "client", id: CLIENT })).json();
+    expect(body.refer.credit_left).toBe(0);
+  });
+
+  it("isn't offered with no credit or offer to tell friends about", async () => {
+    const company = state.tables.companies![0]!;
+    company.settings = { ...(company.settings as Row), referrals: { reward: { kind: "amount", value: 0 } }, marketing: { enabled: true } };
+    expect((await (await hub({ t: "client", id: CLIENT })).json()).refer).toBeNull();
   });
 });
 
@@ -940,11 +972,13 @@ describe("an invoice in the Client Hub", () => {
       client: { display_name: "Dana Whitfield", billing_address: { line1: "PO Box 12", city: "Springfield", region: "IL", postal_code: "62705" } },
       job: { property: { line1: "1482 Ridgeview Dr", city: "Springfield", region: "IL", postal_code: "62704" } },
       lines: [{ name: "Architectural shingle roof", description: null, quantity: 1, unit: "ea", unit_price: 18304, sort: 1 }],
-      payments: [],
+      payments: [], credit_amount: 50, credits: [{ amount: 50, note: "Referral credit: thanks for referring Maria", created_at: "2026-10-02T12:00:00Z" }],
     }];
     const res = await hub({ t: "invoice", id: INVOICE });
     expect(res.status).toBe(200);
     const body = await res.json();
+    // A referral credit on it goes out with its note, as the paper and the totals show it.
+    expect(body.invoice).toMatchObject({ credit_amount: 50, credits: [{ amount: 50, note: "Referral credit: thanks for referring Maria" }] });
     expect(body.contract).toEqual({
       // Plain text: the paper escapes it as it prints.
       terms: "Due by October 1, 2026. Thanks, Dana Whitfield.",

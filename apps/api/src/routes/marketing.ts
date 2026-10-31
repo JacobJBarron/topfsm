@@ -1,16 +1,22 @@
 /**
  * Crewtavo - Marketing (Apps → Crewtavo - Marketing): installing it (POST /marketing/enabled),
  * campaigns (send, schedule, test, AI drafts), review requests and when they're asked automatically
- * (PUT /reviews/asks edits the two starter rules), and referral links.
+ * (PUT /reviews/asks edits the two starter rules), referral links, and asking for referrals (POST
+ * /referrals/request by hand, PUT /referrals/asks switches the starter rule).
  */
 import { ADMINS, OFFICE, SALES, type TablesInsert } from "@crewtavo/core";
 import {
   ASK_TEMPLATE_KEYS,
   askRuleUpdate,
+  isReferralRule,
   marketingOn,
   MAX_RECURRING_VISITS,
   MAX_REMINDER_DAYS,
   readAskRule,
+  REFERRAL_RULE,
+  REFERRAL_RULE_KEY,
+  referralsReady,
+  REFERRALS_NOT_SET_UP,
   reviewSettings,
   type AskRule,
   type AskRuleKind,
@@ -29,6 +35,7 @@ import { renderTemplate } from "@crewtavo/core";
 import { companyAnthropicKey, complete } from "../services/ai";
 import { companyAddress } from "../services/automations";
 import { logoImage } from "../services/logo";
+import { ReferralAskRefused, sendReferralAsk } from "../services/referrals";
 import { rescheduleReminders, sendReviewRequest } from "../services/reviews";
 
 export const marketing = new Hono<AppEnv>();
@@ -250,6 +257,63 @@ marketing.put("/reviews/asks", requireUser, requireCompany(ADMINS, "marketing"),
     if (written.error) throw dbError(written.error);
   }
   return c.json({ kept });
+});
+
+/** Ask for referrals by email: right away, however lately they were asked, unless they opted out of marketing or are archived. */
+marketing.post("/referrals/request", requireUser, requireCompany(SALES), async (c) => {
+  const body = await readJson(c, z.object({ client_id: uuid }));
+  const client = must(
+    await c.var.db.from("clients").select("id, display_name, email, status, marketing_opt_out").eq("id", body.client_id).eq("company_id", c.var.companyId).maybeSingle(),
+    "Client not found.",
+  );
+  try {
+    const result = await sendReferralAsk(c.env, adminClient(c.env), { companyId: c.var.companyId, client, baseUrl: appUrl(c), automatic: false, createdBy: c.var.userId });
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof ReferralAskRefused && error.marketingOff) throw new HttpError(409, error.message);
+    throw new HttpError(400, error instanceof Error ? error.message : "The referral ask wasn't sent.");
+  }
+});
+
+/**
+ * Marketing → Referrals' "Ask automatically": the starter rule's switch (referral_after_job). One
+ * that's gone is put back; one someone changed in Automations keeps its shape, named in `kept`.
+ * Turning it on needs something to send and a way to send it: Marketing installed, a credit or an
+ * offer, and email connected. Off always goes through.
+ */
+marketing.put("/referrals/asks", requireUser, requireCompany(ADMINS, "marketing"), async (c) => {
+  if (!c.var.permissions.includes("automations")) throw new HttpError(403, "Changing when referrals are asked needs the Automations area.");
+  const body = await readJson(c, z.object({ enabled: z.boolean() }));
+  const { db, companyId } = c.var;
+  if (body.enabled) {
+    const company = must(await db.from("companies").select("settings").eq("id", companyId).maybeSingle());
+    const settings = company.settings as Record<string, unknown> | null;
+    if (!marketingOn(settings)) throw new HttpError(409, "Marketing is off, so referral asks can't be sent. An owner or admin can install it again in Apps.");
+    if (!referralsReady(settings)) throw new HttpError(400, REFERRALS_NOT_SET_UP);
+    if (!(await emailReady(c.env, companyId))) throw new HttpError(400, "Connect your email first, so referral asks can go out. An admin can connect it in Settings → Email.");
+  }
+  const { data: rule, error } = await db
+    .from("automation_rules")
+    .select("id, name, trigger, enabled, conditions, actions")
+    .eq("company_id", companyId)
+    .eq("template_key", REFERRAL_RULE_KEY)
+    .maybeSingle();
+  if (error) throw dbError(error);
+  if (!rule) {
+    const added = must(
+      await db
+        .from("automation_rules")
+        .insert({ ...REFERRAL_RULE, conditions: asJson(REFERRAL_RULE.conditions), actions: asJson(REFERRAL_RULE.actions), enabled: body.enabled, company_id: companyId } as TablesInsert<"automation_rules">)
+        .select("id")
+        .single(),
+    );
+    return c.json({ kept: [], rule_id: added.id });
+  }
+  if (rule.enabled !== body.enabled) {
+    const switched = await db.from("automation_rules").update({ enabled: body.enabled }).eq("id", rule.id);
+    if (switched.error) throw dbError(switched.error);
+  }
+  return c.json({ kept: isReferralRule(rule) ? [] : [{ id: rule.id, name: rule.name }], rule_id: rule.id });
 });
 
 marketing.get("/referrals/link/:id", requireUser, requireCompany(SALES), async (c) => {

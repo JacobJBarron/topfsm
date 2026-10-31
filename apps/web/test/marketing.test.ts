@@ -2,18 +2,20 @@
  * Crewtavo - Marketing as a built-in app (features/marketing, features/apps): who has it in the
  * menu (only while it's installed, only the office with the marketing area), its listing in Apps,
  * the "Ask automatically" form read from the starter rules (features/marketing/askForm.ts),
- * Marketing's code keeping to core's subpaths and today's wording, and review asks offered only the
- * ways they can go, alike on every page.
+ * Marketing's code keeping to core's subpaths and today's wording, review asks offered only the
+ * ways they can go, alike on every page, and the Referrals tab's credit form
+ * (features/marketing/referralForm.ts) and what it saves.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
-import { ASK_CONDITIONS } from "@crewtavo/core/marketing";
+import { ASK_CONDITIONS, DEFAULT_REFERRAL_MESSAGE, referralSettings } from "@crewtavo/core/marketing";
 import { ROLES, STAFF } from "@crewtavo/core/roles";
 import { describe, expect, it } from "vitest";
 import { NAV_GROUPS, navVisible } from "../src/components/shell/nav";
 import { APP_INFO } from "../src/features/apps/catalog";
 import { askBody, askRules, daysInOrder, type AskRuleRow } from "../src/features/marketing/askForm";
+import { messageError, referralForm, referralPatch, rewardChanged, rewardError, rewardValue } from "../src/features/marketing/referralForm";
 
 const MARKETING = NAV_GROUPS.flat().find((item) => item.to === "/marketing")!;
 const APPS = NAV_GROUPS.flat().find((item) => item.to === "/apps")!;
@@ -185,5 +187,118 @@ describe("Marketing's code", () => {
   it("shares the review message with the server, word for word", () => {
     for (const [file, text] of files) expect(text, file).not.toContain("would you leave us a quick review");
     expect(source("../src/features/marketing/Reviews.tsx")).toContain("DEFAULT_REVIEW_MESSAGE");
+  });
+});
+
+describe("the Referrals tab's credit, offer and email", () => {
+  const saved = { referrals: { reward: { kind: "percent", value: 10 }, offer: "10% off your first mow", message: "Hi {{link}} {{rewards}}", extra: "kept" }, marketing: { enabled: true } };
+
+  it("reads settings.referrals into the form, an unset credit as an empty box", () => {
+    expect(referralForm(saved)).toEqual({ kind: "percent", value: "10", offer: "10% off your first mow", message: "Hi {{link}} {{rewards}}" });
+    expect(referralForm({})).toEqual({ kind: "amount", value: "", offer: "", message: DEFAULT_REFERRAL_MESSAGE });
+  });
+
+  it("takes a percentage from 1 to 100 and an amount up to $10,000, to the cent", () => {
+    expect(rewardError({ kind: "percent", value: "0.5" })).toBe("Pick a percentage from 1 to 100.");
+    expect(rewardError({ kind: "percent", value: "101" })).toBe("Pick a percentage from 1 to 100.");
+    expect(rewardError({ kind: "percent", value: "12.5" })).toBeNull();
+    expect(rewardError({ kind: "amount", value: "10001" })).toBe("Enter an amount up to $10,000.");
+    expect(rewardError({ kind: "amount", value: "1.2.3" })).toBe("Enter an amount up to $10,000.");
+    expect(rewardError({ kind: "amount", value: "" })).toBeNull();
+    expect(rewardValue({ value: "49.999" })).toBe(50);
+    expect(rewardValue({ value: "12.345" })).toBe(12.35);
+    expect(rewardValue({ value: "" })).toBe(0);
+    expect(messageError({ message: "No link here" })).toBe("Include {{link}} so clients get their own link to share.");
+    expect(messageError({ message: "Here: {{link}}" })).toBeNull();
+  });
+
+  it("saves settings.referrals in the shape the server reads, keeping the rest", () => {
+    const patch = referralPatch({ kind: "amount", value: "25.5", offer: "  A free edge trim ", message: " Share it: {{link}} " }, saved);
+    expect(patch).toEqual({ referrals: { reward: { kind: "amount", value: 25.5 }, offer: "A free edge trim", message: "Share it: {{link}}", extra: "kept" } });
+    expect(referralSettings({ ...saved, ...patch })).toEqual({ reward: { kind: "amount", value: 25.5 }, offer: "A free edge trim", message: "Share it: {{link}}" });
+    // The default isn't written down, and an empty offer is none.
+    expect(referralPatch({ kind: "percent", value: "10", offer: " ", message: DEFAULT_REFERRAL_MESSAGE }, {})).toEqual({ referrals: { reward: { kind: "percent", value: 10 }, offer: null, message: null } });
+  });
+
+  it("knows when the credit changed, so it can say friends referred already keep theirs", () => {
+    expect(rewardChanged(referralForm(saved), saved)).toBe(false);
+    expect(rewardChanged({ ...referralForm(saved), value: "15" }, saved)).toBe(true);
+    expect(rewardChanged({ ...referralForm(saved), kind: "amount" }, saved)).toBe(true);
+    expect(rewardChanged({ ...referralForm(saved), offer: "Something else" }, saved)).toBe(false);
+    // Setting the first credit, nobody was offered one to keep.
+    expect(rewardChanged({ ...referralForm({}), value: "50" }, {})).toBe(false);
+    expect(rewardChanged({ ...referralForm({}), kind: "percent", value: "10" }, { referrals: { reward: { kind: "amount", value: 0 } } })).toBe(false);
+  });
+
+  it("writes settings.referrals, and never the old referral_reward or referral_offer", () => {
+    const tab = source("../src/features/marketing/Referrals.tsx");
+    expect(tab).toContain("save.mutate((current) => referralPatch(form, current))");
+    expect(source("../src/features/marketing/MarketingPage.tsx")).toContain("<Referrals />");
+    for (const file of ["../src/features/marketing/Referrals.tsx", "../src/features/marketing/referralForm.ts", "../src/features/marketing/MarketingPage.tsx", "../src/features/clients/ClientPage.tsx"]) {
+      expect(source(file), file).not.toMatch(/referral_reward|referral_offer|rewards_pending/);
+    }
+    // Referrals change through the database's functions, never a direct update.
+    expect(tab).not.toContain('from("referrals").update');
+    expect(tab).toContain('fn: "referral_set_given"');
+  });
+
+  it("says in the uninstall copy that referral credits still go on invoices", () => {
+    const uninstall = source("../src/features/marketing/useMarketingSwitch.ts");
+    expect(uninstall).toContain("review asks, their reminders, referral asks and campaigns");
+    expect(uninstall).toContain("Referral credits clients have earned, or earn later from links already shared, still go on their invoices.");
+    expect(source("../src/features/marketing/MarketingPage.tsx")).toContain("Referral credits clients have earned, or earn later from links already shared, still go on their invoices.");
+  });
+
+  it("is offered in the rule editor and Automations as an email action", () => {
+    const rule = source("../src/features/automations/RulePage.tsx");
+    expect(rule).toContain('request_referral: "gift"');
+    expect(rule).toContain('case "request_referral": return { type };');
+    expect(rule).toContain('<Link to="/marketing?tab=referrals">referral settings</Link>');
+    expect(source("../src/features/automations/AutomationsPage.tsx")).toContain('a.type === "request_referral"');
+  });
+
+  it("pages the referral list, so older referrals and their credits stay in reach", () => {
+    const tab = source("../src/features/marketing/Referrals.tsx");
+    expect(tab).not.toContain(".limit(200)");
+    expect(tab).not.toContain("Show all");
+    expect(tab).toContain('{ count: "exact" }');
+    expect(tab).toContain("Showing {rows.length.toLocaleString()} of {total.toLocaleString()}");
+    expect(tab).toContain(">Load more</Button>");
+  });
+
+  it("counts what was given outside Crewtavo apart from what's left", () => {
+    const tab = source("../src/features/marketing/Referrals.tsx");
+    expect(tab).toContain("given_amount");
+    expect(tab).toContain('Number(r.reward_amount) - Number(r.given_amount) - applied');
+  });
+
+  it("keeps the pills lined up when a referral has nothing in its menu", () => {
+    const tab = source("../src/features/marketing/Referrals.tsx");
+    expect(tab).toContain('return <span aria-hidden="true" style={{ width: "var(--control-sm)", flexShrink: 0 }} />;');
+    expect(tab).toContain("<RowMenu");
+  });
+
+  it("doesn't call a credit given when it's only turned back on", () => {
+    const tab = source("../src/features/marketing/Referrals.tsx");
+    expect(tab).not.toContain('"Credit given"');
+    expect(tab).toContain("${v.referrer} gets the credit when ${v.friend} pays.");
+  });
+
+  it("shows top referrers' trouble loading, and every amount in cents", () => {
+    const tab = source("../src/features/marketing/Referrals.tsx");
+    expect(tab).toContain("{stats.error && <ErrorState compact error={stats.error} onRetry={() => stats.refetch()} />}");
+    expect(tab).not.toMatch(/formatMoney\(/);
+  });
+
+  it("doesn't let asks be switched on before email is connected", () => {
+    const tab = source("../src/features/marketing/Referrals.tsx");
+    expect(tab).toContain("disabled={!canSave || save.isPending || (!on && (!ready || !emailReady))}");
+    expect(tab).toContain("refusal !== REFERRAL_EMAIL_NOT_CONNECTED");
+  });
+
+  it("says one status per referral, in StatusPill's words", () => {
+    const tab = source("../src/features/marketing/Referrals.tsx");
+    expect(tab).toContain("<EntityStatus kind={pill.kind} status={pill.status} />");
+    expect(source("../src/components/ui/StatusPill.tsx")).toContain('credit: { pending: "Pending", earned: "Earned", applied: "Applied", issued: "Given", none: "No credit" }');
   });
 });

@@ -195,6 +195,9 @@ export interface InvoiceView {
     due_on: string | null;
     subtotal: number;
     discount_amount: number;
+    /** Referral credits (an older server sends none). */
+    credit_amount?: number;
+    credits?: Array<{ amount: number; note: string }>;
     tax_amount: number;
     total: number;
     retainage_amount: number;

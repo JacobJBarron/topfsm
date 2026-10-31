@@ -72,7 +72,7 @@ export function DiscountRows({
           <span className="muted small">{offerLabel(promo)}</span>
           {canChangePromo && <Button size="sm" variant="ghost" loading={remove.isPending} onClick={() => remove.mutate()}>Remove</Button>}
         </span>
-        <span>−{formatMoneyCents(shown)}</span>
+        <span className="nowrap">−{formatMoneyCents(shown)}</span>
       </div>
     );
   }

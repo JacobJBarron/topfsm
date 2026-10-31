@@ -310,7 +310,7 @@ async function stillClearing(old: Ctx, row: Linked & { invoice_id: string | null
 
 type Billable = BillableInvoice & { id: string; status: string; notes: string | null; client_id: string; due_on: string | null };
 const BILLABLE =
-  "id, number, status, subject, notes, client_id, due_on, subtotal, discount_amount, tax_rate, tax_amount, retainage_pct, retainage_amount, amount_paid, balance_due, promo:promo_codes(code), lines:invoice_line_items(name, quantity, unit, unit_price, sort)";
+  "id, number, status, subject, notes, client_id, due_on, subtotal, discount_amount, credit_amount, tax_rate, tax_amount, retainage_pct, retainage_amount, amount_paid, balance_due, promo:promo_codes(code), credits:referral_credits(amount, note), lines:invoice_line_items(name, quantity, unit, unit_price, sort)";
 
 async function billable(ctx: Ctx, invoiceId: string): Promise<Billable | null> {
   const { data, error } = await ctx.admin.from("invoices").select(BILLABLE).eq("company_id", ctx.companyId).eq("id", invoiceId).maybeSingle();

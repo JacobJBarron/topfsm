@@ -70,6 +70,21 @@ describe("stripe line items", () => {
     expect(total(items)).toBe(9614 + 1500);
   });
 
+  it("shows each referral credit under its note, as much of it as the invoice takes, and still adds up", () => {
+    // $160 less a $10 promo less $55 of credits, taxed at 5%: $95 + $4.75.
+    const items = stripeLineItems(invoice({
+      discount_amount: 10, promo: { code: "SPRING" }, credit_amount: 55, tax_rate: 0.05, tax_amount: 4.75, balance_due: 99.75,
+      credits: [{ amount: 50, note: "Referral credit: thanks for referring Maria" }, { amount: 20, note: "Referral credit: thanks for referring Nia" }],
+    }));
+    expect(items.slice(2, 5)).toEqual([
+      { description: "Discount (SPRING)", amount: -1000 },
+      { description: "Referral credit: thanks for referring Maria", amount: -5000 },
+      { description: "Referral credit: thanks for referring Nia", amount: -500 },
+    ]);
+    expect(items.some((i) => i.description === "Rounding")).toBe(false);
+    expect(total(items)).toBe(9975);
+  });
+
   it("names the tax rate as it's kept, to 0.0001%", () => {
     const tax = (tax_rate: number) =>
       stripeLineItems(invoice({ tax_rate, tax_amount: 14.2, balance_due: 174.2 })).find((i) => i.description.startsWith("Tax"))?.description;

@@ -83,6 +83,8 @@ export interface JobberInvoice {
   issued_on: string;
   due_on: string | null;
   discount_amount: number;
+  /** Referral credits on it: Jobber has one discount, so they go into it. */
+  credit_amount?: number;
   tax_rate: number;
   total: number;
   amount_paid: number;
@@ -543,11 +545,12 @@ export function jobberExport(input: JobberInput): JobberExport {
       inv.retainage_amount > 0 && `Retainage held: ${dollars(inv.retainage_amount)}.`,
       inv.notes?.trim(),
     ].filter(Boolean);
+    const discount = Math.round((inv.discount_amount + (inv.credit_amount ?? 0)) * 100) / 100;
     invoiceRows.push({
       ...clientBlock(client, propertyFor(inv.property_id, client.id)),
       "Invoice Number": inv.number ?? "", "Invoice Subject": inv.subject?.trim() || `Invoice ${inv.number ?? ""}`.trim(),
       "Invoice Status (Draft/Sent/Paid)": status, "Invoice Issued Date": inv.issued_on, "Invoice Due Date": inv.due_on ?? "",
-      ...(inv.discount_amount > 0 && { "Invoice Discount Type (Unit/Percentage)": "Unit", "Invoice Discount Amount (Unit/Percentage)": inv.discount_amount }),
+      ...(discount > 0 && { "Invoice Discount Type (Unit/Percentage)": "Unit", "Invoice Discount Amount (Unit/Percentage)": discount }),
       ...(inv.tax_rate > 0 && { "Invoice New Tax Rate Name": taxName(inv.tax_rate), "Invoice New Tax Rate (Percentage)": percent(inv.tax_rate), "Tax Method (Inclusive/Exclusive)": "Exclusive" }),
       "Invoice Internal Note": internal.join("\n\n"),
       ...lineCells(inv.lines, "total"),

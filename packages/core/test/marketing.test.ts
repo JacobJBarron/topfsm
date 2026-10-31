@@ -2,7 +2,9 @@
  * Crewtavo - Marketing (src/marketing.ts): its switch, the review settings and their defaults, quiet
  * hours and reminder times in the company's time zone (across a daylight saving change), which
  * channels an ask goes by and who isn't asked, what a due reminder does, how Recent requests reads,
- * the starter rules the Reviews form reads and writes, and STOP and START texts.
+ * the starter rules the Reviews form reads and writes, STOP and START texts, and referrals: their
+ * settings, credits worked out as the database works them, what the referral email says, who isn't
+ * asked, the line under each referral, and the starter rule that asks a week after a job.
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -33,6 +35,22 @@ import {
   textsOff,
   EMAIL_NOT_CONNECTED,
   TEXTS_NOT_SET_UP,
+  creditLine,
+  creditMoney,
+  creditText,
+  DEFAULT_REFERRAL_MESSAGE,
+  isReferralRule,
+  referralAskRefusal,
+  referralCredit,
+  referralPill,
+  referralRewards,
+  referralRewardWords,
+  REFERRAL_RULE,
+  referralRuleTiming,
+  referralSettings,
+  referralsReady,
+  referrerLine,
+  type CreditReferral,
   type AskRule,
   type Reach,
   type ReminderClient,
@@ -422,5 +440,123 @@ describe("texts from clients", () => {
       ["STOP STOP", null], ["ſtop", null], ["¡STOP", null], ["stöp", null], ["stop2", null], ["OPT\u00a0OUT", null], ["\u00a0STOP", null], ["", null],
     ];
     for (const [body, word] of cases) expect(smsKeyword(body), JSON.stringify(body)).toBe(word);
+  });
+});
+
+describe("referrals", () => {
+  it("reads settings.referrals, kept in range as the database keeps a new referral's terms", () => {
+    expect(referralSettings({ referrals: { reward: { kind: "amount", value: 50 }, offer: " 10% off ", message: "Hi {{link}}" } }))
+      .toEqual({ reward: { kind: "amount", value: 50 }, offer: "10% off", message: "Hi {{link}}" });
+    expect(referralSettings({ referrals: { reward: { kind: "percent", value: 12.5 } } }).reward).toEqual({ kind: "percent", value: 12.5 });
+    // The same cases as supabase/tests/referral_credits_test.sql (private.referral_terms).
+    expect(referralSettings({ referrals: { reward: { kind: "percent", value: 120 } } }).reward).toEqual({ kind: "percent", value: 0 });
+    expect(referralSettings({ referrals: { reward: { kind: "percent", value: 0.5 } } }).reward).toEqual({ kind: "percent", value: 0 });
+    expect(referralSettings({ referrals: { reward: { kind: "amount", value: 20_000 } } }).reward).toEqual({ kind: "amount", value: 0 });
+    expect(referralSettings({ referrals: { reward: { kind: "gift", value: 50 } } }).reward).toEqual({ kind: "amount", value: 0 });
+    expect(referralSettings({ referrals: { reward: { kind: "amount", value: "50" } } }).reward).toEqual({ kind: "amount", value: 0 });
+    expect(referralSettings(null)).toEqual({ reward: { kind: "amount", value: 0 }, offer: null, message: DEFAULT_REFERRAL_MESSAGE });
+    // The old keys were moved by a migration and aren't read.
+    expect(referralSettings({ referral_reward: { amount: 50 }, referral_offer: "Old" })).toEqual({ reward: { kind: "amount", value: 0 }, offer: null, message: DEFAULT_REFERRAL_MESSAGE });
+  });
+
+  it("is ready with a credit or an offer", () => {
+    expect(referralsReady({ referrals: { reward: { kind: "amount", value: 50 } } })).toBe(true);
+    expect(referralsReady({ referrals: { offer: "A free edge trim" } })).toBe(true);
+    expect(referralsReady({ referrals: { reward: { kind: "percent", value: 0 } } })).toBe(false);
+    expect(referralsReady({})).toBe(false);
+  });
+
+  it("works a credit out to the cent, half away from zero, as the database does", () => {
+    // 10% of $480.55 less a $30 promo: $45.055, which is $45.06.
+    expect(referralCredit("percent", 10, 450.55)).toBe(45.06);
+    expect(referralCredit("percent", 10, "450.55")).toBe(45.06);
+    expect(referralCredit("percent", 12.5, 99.99)).toBe(12.5);
+    expect(referralCredit("percent", 15, 0.1)).toBe(0.02);
+    expect(referralCredit("percent", 10, 0)).toBe(0);
+    expect(referralCredit("amount", 50, 12)).toBe(50);
+  });
+
+  it("says what each side gets", () => {
+    expect(referralRewardWords({ kind: "amount", value: 50 })).toBe("a $50 credit");
+    expect(referralRewardWords({ kind: "amount", value: 12.5 })).toBe("a $12.50 credit");
+    expect(referralRewardWords({ kind: "percent", value: 10 })).toBe("10% of their first job back as a credit");
+    expect(referralRewardWords({ kind: "amount", value: 0 })).toBe("");
+    expect(referrerLine({ kind: "amount", value: 50 })).toBe("You'll get a $50 credit on your next invoice once they pay their first one.");
+    expect(referrerLine({ kind: "percent", value: 12.5 })).toBe("You'll get 12.5% of their first job back as a credit on your next invoice.");
+    expect(referrerLine({ kind: "percent", value: 0 })).toBe("");
+    expect(creditMoney(1250)).toBe("$1,250");
+    expect(creditMoney("45.06")).toBe("$45.06");
+  });
+
+  it("writes {{rewards}} as the friend's offer and the client's credit, each on its own line, or nothing", () => {
+    const offer = "10% off your first service";
+    expect(referralRewards({ referrals: { reward: { kind: "amount", value: 50 }, offer } }))
+      .toBe("For your friends: “10% off your first service”\nYou'll get a $50 credit on your next invoice once they pay their first one.");
+    expect(referralRewards({ referrals: { reward: { kind: "percent", value: 10 }, offer } }))
+      .toBe("For your friends: “10% off your first service”\nYou'll get 10% of their first job back as a credit on your next invoice.");
+    expect(referralRewards({ referrals: { reward: { kind: "amount", value: 50 } } })).toBe("You'll get a $50 credit on your next invoice once they pay their first one.");
+    expect(referralRewards({ referrals: { offer } })).toBe("For your friends: “10% off your first service”");
+    expect(referralRewards({})).toBe("");
+    expect(DEFAULT_REFERRAL_MESSAGE).toContain("{{link}}");
+    expect(DEFAULT_REFERRAL_MESSAGE).toContain("{{rewards}}");
+  });
+
+  it("says why a client isn't asked for referrals", () => {
+    const ana = { display_name: "Ana Smith", email: "ana@example.com", status: "active", marketing_opt_out: false };
+    expect(referralAskRefusal(ana)).toBeNull();
+    expect(referralAskRefusal({ ...ana, marketing_opt_out: true })).toBe("Ana Smith unsubscribed from marketing, so they aren't asked for referrals.");
+    expect(referralAskRefusal({ ...ana, status: "archived" })).toBe("Ana Smith is archived. Restore them to ask for a referral.");
+    expect(referralAskRefusal({ ...ana, email: "not an address" })).toBe("Ana Smith has no email address.");
+    expect(referralAskRefusal(ana, false)).toBe("Email isn't connected yet, so referral asks can't be sent. An admin can connect it in Settings → Email.");
+    // The client's own reason comes first.
+    expect(referralAskRefusal({ ...ana, email: null }, false)).toBe("Ana Smith has no email address.");
+  });
+
+  it("says what a referral's credit is and where it went", () => {
+    const base: CreditReferral = { status: "won", reward_status: "earned", reward_kind: "amount", reward_value: 50, reward_amount: 50, given_amount: 0, no_reward_reason: null, auto_apply: true };
+    const inv = (number: number, amount: number) => ({ amount, invoice: { id: `inv-${number}`, number } });
+    const text = (r: Partial<CreditReferral>, credits: Parameters<typeof creditLine>[1] = []) => creditText(creditLine({ ...base, ...r }, credits));
+    expect(text({ status: "new", reward_status: "pending", reward_amount: 0 })).toBe("$50 credit once they pay their first invoice");
+    expect(text({ status: "quoted", reward_status: "pending", reward_kind: "percent", reward_value: 10, reward_amount: 0 })).toBe("10% of their first job, worked out when they pay their first invoice");
+    expect(text({})).toBe("$50 credit, goes on their next invoice");
+    expect(text({ auto_apply: false })).toBe("$50 credit, kept off invoices");
+    expect(text({}, [inv(1042, 30)])).toBe("$30 of $50 on invoice #1042, $20 to go");
+    expect(text({ reward_status: "applied" }, [inv(1042, 50)])).toBe("$50 credit on invoice #1042");
+    expect(text({ reward_status: "applied", reward_amount: 45.06 }, [inv(1042, 20), inv(1050, 25.06)])).toBe("$45.06 credit on invoices #1042 and #1050");
+    expect(text({ reward_status: "issued", given_amount: 50 })).toBe("$50 credit, given outside Crewtavo");
+    expect(text({ reward_status: "issued", reward_amount: 80, given_amount: 50 }, [inv(7, 30)])).toBe("$30 on invoice #7, $50 given outside Crewtavo");
+    // Marked given, then the part on an invoice came off: that part is owed again, the given part isn't.
+    expect(text({ reward_amount: 80, given_amount: 50 })).toBe("$50 of $80 given outside Crewtavo, $30 to go");
+    expect(text({ reward_amount: 80, given_amount: 50, auto_apply: false })).toBe("$50 of $80 given outside Crewtavo, $30 kept off invoices");
+    expect(text({ reward_amount: 80, given_amount: 50 }, [inv(9, 10)])).toBe("$10 of $80 on invoice #9, $50 given outside Crewtavo, $20 to go");
+    expect(text({ reward_status: "applied", reward_amount: 80, given_amount: 50 }, [inv(9, 30)])).toBe("$30 on invoice #9, $50 given outside Crewtavo");
+    // Without the Invoices area, the invoice isn't named.
+    expect(text({ reward_status: "applied" }, [{ amount: 50, invoice: null }])).toBe("$50 credit on an invoice");
+    expect(text({ reward_status: "none", no_reward_reason: "self" })).toBe("No credit: they referred themselves");
+    expect(text({ reward_status: "none", no_reward_reason: "already_client" })).toBe("No credit: they were already a client");
+    expect(text({ status: "lost", reward_status: "none", no_reward_reason: "lost" })).toBe("No credit: the work was lost");
+    expect(creditLine({ ...base, reward_status: "applied" }, [inv(1042, 50)])).toEqual(["$50 credit ", "on invoice ", { invoice: { id: "inv-1042", number: 1042 } }]);
+  });
+
+  it("shows one pill: the credit's once there is one, the referral's own otherwise", () => {
+    expect(referralPill({ status: "new", reward_status: "pending" })).toEqual({ kind: "referral", status: "new" });
+    expect(referralPill({ status: "won", reward_status: "pending" })).toEqual({ kind: "referral", status: "won" });
+    expect(referralPill({ status: "won", reward_status: "earned" })).toEqual({ kind: "credit", status: "earned" });
+    expect(referralPill({ status: "won", reward_status: "issued" })).toEqual({ kind: "credit", status: "issued" });
+    expect(referralPill({ status: "lost", reward_status: "none" })).toEqual({ kind: "referral", status: "lost" });
+    // With no credit (none was set, or they referred themselves), the friend's progress still shows.
+    expect(referralPill({ status: "new", reward_status: "none" })).toEqual({ kind: "referral", status: "new" });
+    expect(referralPill({ status: "quoted", reward_status: "none" })).toEqual({ kind: "referral", status: "quoted" });
+    expect(referralPill({ status: "won", reward_status: "none" })).toEqual({ kind: "referral", status: "won" });
+  });
+
+  it("knows the starter rule that asks a week after a job, and says when it goes", () => {
+    expect(REFERRAL_RULE).toMatchObject({ template_key: "referral_after_job", trigger: "job.completed", delay_minutes: 10080, actions: [{ type: "request_referral" }] });
+    expect(isReferralRule(REFERRAL_RULE)).toBe(true);
+    expect(isReferralRule({ ...REFERRAL_RULE, conditions: [] })).toBe(false);
+    expect(isReferralRule({ ...REFERRAL_RULE, actions: [{ type: "request_referral" }, { type: "add_tag", tag: "Asked" }] })).toBe(false);
+    expect(isReferralRule(null)).toBe(false);
+    expect(referralRuleTiming(REFERRAL_RULE)).toBe("Goes out a week after a job is completed.");
+    expect(referralRuleTiming({ ...REFERRAL_RULE, delay_minutes: 4320 })).toBe("Goes out 3 days after a job is completed.");
   });
 });

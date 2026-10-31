@@ -260,6 +260,14 @@ insert into public.payments (company_id, client_id, invoice_id, amount, method) 
 insert into public.payouts (company_id, processor_ref, amount, status, arrival_on) values (:'co', 'po_t1070', 100, 'paid', current_date);
 insert into public.recurrence_skips (company_id, job_id, recurrence_key) values (:'co', :'j1', 'k1');
 insert into public.referrals (company_id, referrer_client_id, referred_name) values (:'co', :'c1', 'Neighbor Ned');
+-- A referral credit Ann earned, which goes on her new invoice as its line goes in, one taken off
+-- another invoice, and an ask for referrals.
+insert into public.referrals (company_id, referrer_client_id, referred_name, reward_value, reward_amount, reward_status, earned_at)
+values (:'co', :'c1', 'Neighbor Nia', 50, 50, 'earned', now()) returning id as earned_ref \gset
+insert into public.invoices (company_id, client_id) values (:'co', :'c1') returning id as credit_invoice \gset
+insert into public.invoice_line_items (company_id, invoice_id, name, quantity, unit_price) values (:'co', :'credit_invoice', 'Gutter cleaning', 1, 200);
+insert into public.referral_credit_skips (company_id, referral_id, invoice_id) values (:'co', :'earned_ref', :'roof_invoice');
+insert into public.referral_asks (company_id, client_id) values (:'co', :'c1');
 insert into public.review_requests (company_id, client_id) values (:'co', :'c1');
 insert into public.roof_packages (company_id, name) values (:'co', 'Good') returning id as roof_package \gset
 insert into public.roof_package_items (company_id, package_id, service_id, kind) values (:'co', :'roof_package', :'shingles_service', 'included');
@@ -479,7 +487,7 @@ select t1070.check(array(
   select p.proname || '(' || oidvectortypes(p.proargtypes) || ')' from pg_proc p join pg_namespace n on n.oid = p.pronamespace
   where n.nspname = 'public' and has_function_privilege('authenticated', p.oid, 'execute') order by 1) = array[
   'accept_terms(uuid, text)', 'answer_sub_offer(uuid, boolean, text, integer, uuid)', 'apply_promo_code(text, uuid, text, uuid, uuid[])',
-  'apply_quote_options(uuid, jsonb, text, uuid[], jsonb)', 'campaign_audience(uuid, jsonb)', 'careers_set_enabled(uuid, boolean)',
+  'apply_quote_options(uuid, jsonb, text, uuid[], jsonb)', 'apply_referral_credit(uuid, uuid)', 'campaign_audience(uuid, jsonb)', 'careers_set_enabled(uuid, boolean)',
   'change_sub_offer(uuid, jsonb, timestamp with time zone)', 'chat_create_channel(uuid, text, text, text, text, uuid)', 'chat_mark_read(uuid)', 'chat_members(uuid)', 'chat_overview(uuid)',
   'chat_save_roles(uuid, jsonb, jsonb)', 'chat_set_enabled(uuid, boolean)', 'company_basics(uuid)', 'convert_quote_to_job(uuid)',
   'create_company(text, text, text)', 'create_invoice_for_job(uuid, text, numeric)', 'dashboard(uuid)',
@@ -489,8 +497,11 @@ select t1070.check(array(
   'equipment_conflicts(uuid, uuid[], date, timestamp with time zone, timestamp with time zone, uuid)', 'global_search(uuid, text, integer)',
   'job_material_costs(uuid)', 'job_pay_accept(uuid, uuid[])', 'job_pay_cancel(uuid)', 'job_pay_costs(uuid[])', 'job_pay_covers(uuid, uuid, uuid)', 'job_pay_mark_done(uuid, date)',
   'job_pay_mark_paid(uuid[], text, date, text, numeric)', 'job_pay_start(uuid, uuid, uuid, uuid[])', 'job_pay_suggest(uuid, uuid, uuid, uuid[])',
-  'job_pay_unmark_paid(uuid[])', 'job_scope(uuid)', 'last_review_ask(uuid, uuid)', 'marketing_set_enabled(uuid, boolean)', 'marketing_summary(uuid)', 'material_choices(uuid)', 'my_crew_ids(uuid)', 'my_sub_offers(boolean, uuid)', 'my_sub_pay_totals(uuid)',
-  'promo_code_usage(uuid)', 'put_quote_package(uuid, uuid, jsonb, boolean)', 'remove_promo_code(text, uuid)', 'remove_quote_option(uuid, uuid)',
+  'job_pay_unmark_paid(uuid[])', 'job_scope(uuid)', 'last_referral_ask(uuid, uuid)', 'last_review_ask(uuid, uuid)', 'marketing_set_enabled(uuid, boolean)', 'marketing_summary(uuid)', 'material_choices(uuid)', 'my_crew_ids(uuid)', 'my_sub_offers(boolean, uuid)', 'my_sub_pay_totals(uuid)',
+  'promo_code_usage(uuid)', 'put_quote_package(uuid, uuid, jsonb, boolean)',
+  'referral_auto_apply(uuid, boolean)', 'referral_credits_for(uuid, uuid)', 'referral_give_credit(uuid)', 'referral_no_reward(uuid)', 'referral_set_given(uuid)',
+  'referral_stats(uuid, timestamp with time zone, timestamp with time zone)',
+  'remove_promo_code(text, uuid)', 'remove_quote_option(uuid, uuid)', 'remove_referral_credit(uuid)',
   'search_sops(uuid, text, integer, boolean)', 'send_sub_offer(uuid, timestamp with time zone)', 'set_sub_reminders(uuid, boolean)',
   'set_sub_sign_in_countries(uuid, text[])', 'sign_quote(uuid, jsonb, uuid, numeric)',
   'storage_overview(uuid)', 'storage_set_allowance(uuid, uuid, text, bigint)', 'storage_set_limit(uuid, text, bigint)', 'sub_1099_totals(uuid, integer)', 'sub_wc_audit(uuid, date, date)', 'time_entry_places(uuid, uuid[])',
@@ -509,6 +520,12 @@ select t1070.check(not exists (select 1 from unnest(array['public.sign_in_code_s
 select t1070.check(not exists (select 1 from unnest(array['public.storage_snapshot(uuid, uuid)', 'public.storage_set_default(uuid, bigint, text)']) as f
   where has_function_privilege('authenticated', f, 'execute') or has_function_privilege('anon', f, 'execute')),
   'the storage check before an upload, and the default limit, are the server''s alone');
+-- And so are the referral page's lead and recording a referral ask (20261031000100_referral_credits.sql,
+-- 20261031000120_referral_asks.sql): the server checks the link, Turnstile and the 6 months first.
+select t1070.check(not exists (select 1 from unnest(array['public.record_referral(uuid, uuid, text, text, text, jsonb, text)',
+    'public.begin_referral_ask(uuid, uuid, boolean, integer, uuid)']) as f
+  where has_function_privilege('authenticated', f, 'execute') or has_function_privilege('anon', f, 'execute')),
+  'recording a referral and a referral ask are the server''s alone');
 
 -- The owner sees where Cy clocked in, so the check on a sub below is about a real entry with a place.
 begin;
@@ -576,7 +593,17 @@ select t1070.expect_error(format('select * from public.trash_delete_forever(%L, 
 select t1070.expect_error(format('select public.storage_overview(%L)', :'co'), 'storage_overview refuses');
 select t1070.expect_error(format('select public.storage_set_limit(%L, %L)', :'co', 'none'), 'storage_set_limit refuses');
 select t1070.expect_error(format('select public.storage_set_allowance(%L, %L, null, 1)', :'co', 'd1070000-0000-0000-0000-000000000005'), 'storage_set_allowance refuses');
+-- Referral credits and their numbers are the office's.
+select t1070.expect_error(format('select public.apply_referral_credit(%L, %L)', gen_random_uuid(), gen_random_uuid()), 'apply_referral_credit refuses');
+select t1070.expect_error(format('select public.remove_referral_credit(%L)', gen_random_uuid()), 'remove_referral_credit refuses');
+select t1070.expect_error(format('select public.referral_auto_apply(%L)', gen_random_uuid()), 'referral_auto_apply refuses');
+select t1070.expect_error(format('select public.referral_set_given(%L)', gen_random_uuid()), 'referral_set_given refuses');
+select t1070.expect_error(format('select public.referral_no_reward(%L)', gen_random_uuid()), 'referral_no_reward refuses');
+select t1070.expect_error(format('select public.referral_give_credit(%L)', gen_random_uuid()), 'referral_give_credit refuses');
+select t1070.expect_error(format('select public.referral_stats(%L)', :'co'), 'referral_stats refuses');
+select t1070.check(not exists (select 1 from public.referral_credits_for(:'co', :'c1')), 'referral_credits_for finds nothing');
 select t1070.check((select (public.marketing_summary(:'co') ->> 'opted_out')::int = 0
+  and public.last_referral_ask(:'co', :'c1') is null and public.marketing_summary(:'co') -> 'referral_revenue' = 'null'::jsonb
   and public.last_review_ask(:'co', :'c1') is null
   and (public.dashboard(:'co') -> 'receivables' ->> 'total')::numeric = 0
   and (public.dashboard(:'co') -> 'workflow' -> 'quotes' ->> 'draft')::int = 0

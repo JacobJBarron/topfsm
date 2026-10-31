@@ -67,7 +67,7 @@ export function AutomationsPage() {
   if (!canEdit) return <NoAccess title="Automations" />;
 
   const active = rules.data?.filter((r) => r.enabled).length ?? 0;
-  const usesEmail = rules.data?.some((r) => r.enabled && r.actions.some((a) => a.type === "send_email" || a.type === "request_review"));
+  const usesEmail = rules.data?.some((r) => r.enabled && r.actions.some((a) => a.type === "send_email" || a.type === "request_review" || a.type === "request_referral"));
   const usesSms = rules.data?.some((r) => r.enabled && r.actions.some((a) => a.type === "send_sms" || (a.type === "request_review" && a.channel !== "email")));
 
   return (

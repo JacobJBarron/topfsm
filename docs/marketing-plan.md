@@ -2,8 +2,10 @@
 
 Proposed 30 October 2026. Phase A, the app and review reminders, is built
 (`supabase/migrations/20261030000200_marketing_app.sql` to `20261030000600_review_ask_followups.sql`,
-`packages/core/src/marketing.ts`, `apps/api/src/services/reviews.ts`, Marketing → Reviews). Phases B to E
-aren't. This is the plan.
+`packages/core/src/marketing.ts`, `apps/api/src/services/reviews.ts`, Marketing → Reviews). Phase B,
+referral credits and asks, is built (`20261031000100_referral_credits.sql`,
+`20261031000110_referral_lost.sql`, `20261031000120_referral_asks.sql`, `apps/api/src/services/referrals.ts`,
+Marketing → Referrals, the invoice page's credit rows). Phases C to E aren't. This is the plan.
 
 The goal: Crewtavo's own version of Jobber's Marketing Suite (Reviews, Referrals, Campaigns and
 social posting), following how Jobber does each one, shipped as one built-in app in Apps that owns
@@ -97,13 +99,14 @@ both off for new businesses: `review_after_job` and `review_recurring`.
 (`services/campaigns.ts:79-100`) but not review asks. A STOP text is filed as an ordinary message
 (`apps/api/src/routes/messages.ts:74-104`).
 
-**Referrals stop at "won".** The referral page makes a lead, a request and a `referrals` row
-(`public.ts:1232-1279`), which moves to quoted and won with the friend's quote
-(`supabase/migrations/20261017000300_marketing.sql:165-180`). Nothing sets lost, the reward is
-marked given by hand, and nothing asks a client for a referral.
+**Referrals stopped at "won"** before phase B. The referral page made a lead, a request and a
+`referrals` row, which moved to quoted and won with the friend's quote
+(`supabase/migrations/20261017000300_marketing.sql:165-180`). Nothing set lost, the reward was
+marked given by hand, and nothing asked a client for a referral.
 
-**Invoices already take a discount** (`invoices.discount_amount`, used by promo codes), which is
-where a referral credit lands.
+**Invoices already take a discount** (`invoices.discount_amount`), but it holds a promo code's
+discount or the office's typed one, so a referral credit has a column of its own beside it
+(`invoices.credit_amount`, below).
 
 **Campaigns** are email blasts to `campaign_audience` (status, tags, no visit in N days), sent 25
 at a time with one-click unsubscribe (`services/campaigns.ts:39-130`). Opens and clicks aren't
@@ -141,22 +144,117 @@ counted.
   them stop. Twilio blocks those texts anyway, but Crewtavo then knows and shows it.
 - **Google only, like Jobber.** The review link setting stays one Google link.
 
-### 2. Referral credits and asks (phase B)
+### 2. Referral credits and asks (phase B, built)
 
-- **The reward becomes a credit,** set on the Referrals tab: a fixed amount, or a percentage of the
-  friend's first invoice.
+- **The reward is a credit,** set on the Referrals tab: a fixed amount (up to $10,000), or a
+  percentage (1 to 100) of the friend's first job, after discounts and before tax.
+  - **Its terms are fixed when the friend arrives** (`referrals.reward_kind`, `reward_value`), so a
+    changed setting doesn't change what was promised: "Friends already referred keep the credit they
+    were offered."
 - **It's earned when the friend pays their first invoice in full,** not when a quote is approved.
-  `referrals.reward_status` becomes pending → earned → applied, or none.
-- **Applied to the referrer's next invoice** as a discount, with a line saying what it's for. The
-  office can also apply it by hand or mark it given, as today.
-- **Asking:** **Ask for referrals** sends a client their link by email, by hand or from a new
-  starter rule after a job is closed (off by default, once per client every 6 months). Jobber sends
-  no reminders here, and neither do we.
-- **Lost:** the friend's request archived or quote lost marks the referral lost.
-- **The Referrals tab shows the numbers:**
-  - leads, jobs and revenue from referrals
-  - credits pending, earned and applied
-  - top referrers
+  - The first paid invoice that charged something: a standard or visits invoice whose charges
+    after discounts are above $0. A deposit or progress invoice doesn't count, since the work isn't
+    done yet, and a percent of a job's final invoice counts the deposits and progress billing it
+    takes off, so it's the whole job. A $0 invoice doesn't count either: the next one is the first.
+  - `reward_amount` is fixed then: the amount, or the percent rounded to cents.
+  - `reward_status`: pending (the friend hasn't paid) → earned → applied, plus issued ("Given",
+    outside Crewtavo) and none, with `no_reward_reason`: not set, self, already a client, lost or
+    by hand.
+  - **No credit** for a friend who is the referrer, or was already a client. Both are decided by
+    email and phone (its last 10 digits, as texts are matched) when the friend arrives: the
+    referrer's own, or another client's who has had a job or a non-void invoice. When they pay,
+    the referrer match is checked again, and a friend with a job from before, or an invoice dated
+    before the referral (a Stripe history import), was already a client. The office can overrule
+    a wrong match with **Give a credit anyway**, and then the friend's first paid invoice from the
+    day they were referred earns it.
+  - **No duplicate lead** when the friend is that client: the same email, or the same phone and
+    name. Their request goes on that client, at an address of theirs that matches or a new one. A
+    phone alone may be someone else at home, and an archived client stays archived, so those are a
+    new lead as before.
+  - An activity, `referral.earned`, on the referrer: the office sees it in the feed (only the
+    office with Marketing or Invoices, since it carries the credit) and Automations can send a
+    thank-you, with `{{referral.name}}`, `{{referral.credit}}` and `{{referral.invoice}}`. It says
+    how much went on which invoice and what's still to go ("$10.00 went on invoice #3, and $15.00
+    goes on their next one"); its data names the referrer's invoice (`invoice_id`,
+    `invoice_number`) apart from the one the friend paid (`friend_invoice_id`).
+  - **Not paid after all:** a payment removed, refunded or a dispute lost takes the credit back. It
+    comes off the referrer's invoices that can still change and is pending again, so the friend's
+    next paid invoice earns it. Another paid invoice of the friend's keeps it earned. Part of it
+    used already (on a paid invoice, or given outside Crewtavo) stays where it is, the rest is kept
+    off invoices for the office to decide, and the office hears either way (`referral.unpaid`).
+- **Applied to the referrer's next invoice by itself** (`referral_credits`, one row for each invoice
+  a credit is on, with its note, "Referral credit: thanks for referring Maria"):
+  - **Where:** the referrer's open draft first, then their oldest invoice awaiting payment or past
+    due. It has to have no payments, not be made in Stripe or have a bank payment on its way, not
+    be a deposit or retainage release, and not be in QuickBooks or Zoho Books already (or on its
+    way there): those keep the total they were sent, so the credit waits for the next invoice. A
+    draft gets it as its lines go in, so it's on before the invoice is sent.
+  - **When:** the moment it's earned, and whenever one of the referrer's invoices is made or changed
+    (at commit, so a new invoice has all its lines first).
+  - **Never more than the invoice:** up to what's left of its charges after discounts. Tax is still
+    owed, so the total is never negative. What doesn't fit stays earned for the next invoice, so a
+    credit can be split over two.
+  - **If the room shrinks** before it's paid (a promo added, a discount typed), the newest credit
+    is cut back and the rest goes on the next open invoice.
+  - **Given back** when its invoice is voided, deleted or moved to another client before it's paid,
+    and it goes on the next open invoice. Once the invoice is paid, the credit stays. A void invoice
+    keeps the figures it was sent with: its page and paper still show the credit, as **Referral
+    credit**.
+  - **On the invoice:** a credit row after the discount on the invoice page, the paper, the Client
+    Hub and Stripe's line items. Payments and the Hub's pay button read the balance, which already
+    has it. QuickBooks and Zoho get it with the discount.
+  - **Two at once:** every path takes the referrer's lock first, then the referral, then invoices
+    nobody else is changing (one being changed gets the credit when its change commits), and the
+    database re-checks the sums on every write. A problem placing a credit never fails a payment or
+    an invoice save: the credit stays earned.
+- **By hand:**
+  - **Apply to an invoice…** a chosen open invoice of the referrer, one already in QuickBooks too
+    (the page says to change it there).
+  - **Remove** it from an unpaid invoice: it's earned again and goes on their next invoice, never
+    back on that one by itself.
+  - **Keep off invoices** and **Apply automatically again**.
+  - **Mark given** for a credit given outside Crewtavo (what isn't on invoices, or a set amount
+    before the friend pays), and **No credit for this one**. What was given is recorded
+    (`given_amount`): a part on an invoice that comes off later is earned again, not counted as given.
+- **Asking:** **Ask for referrals** emails a client their link, from the Referrals tab or the client's
+  page, and a new starter rule, `referral_after_job`, asks a week after a job is completed (after the
+  review ask and its reminders; off by default, not after recurring work). Jobber sends no
+  reminders here, and neither do we.
+  - **Email only.** The message is `settings.referrals.message`, with `{{link}}` and `{{rewards}}`
+    (what the friend gets, then what the client gets, each on its own line). The offer is written
+    to the friend ("10% off your first service"), so the email and the Client Hub quote it: "For
+    your friends: “10% off your first service”".
+  - **Ask automatically** turns on only while Marketing is installed, there's a credit or an offer,
+    and email is connected. It always turns off.
+  - **At most once per client every 6 months** (`referral_asks`). Every ask that went counts, by hand
+    too, as review asks do. Asking by hand isn't held to it but says when they were last asked.
+    Copying the link records nothing.
+  - **Not asked:** clients who opted out of marketing, archived clients, clients with no email, or
+    while Referrals has no credit and no offer. An automatic ask waits while the client's review
+    reminders are still going out.
+  - Recurring clients aren't asked automatically; the tab says to ask them by hand. A rule on the
+    recurring-visit trigger, as `review_recurring` does for reviews, is a follow-up.
+- **Lost:** the friend's request archived, or their quote marked lost with no other open quote, job
+  or invoice, marks the referral lost, and a credit still to come with it. Earned credits stay. A
+  friend who has paid for work or had a job completed isn't lost. It comes back when the work does:
+  a quote sent or approved, the request restored, or an invoice paid. Any paid invoice wins the
+  referral, a deposit too, whatever its credit; the credit still waits for the first invoice that
+  isn't a deposit or progress billing.
+- **The Referrals tab shows the numbers** (`referral_stats`, which Metrics' Clients tab uses too):
+  - what referred clients have paid before tax, as a percent credit counts it (needs the Invoices
+    area), and credits earned, applied and given, all to the cent
+  - how many friends haven't paid yet
+  - top referrers, by jobs won and then revenue
+  - a friend who was the referrer or already a client isn't a lead, a job won or revenue, there or
+    in Marketing's overview
+  - every referral, newest first, a page at a time, with the friend's progress (**New lead**,
+    **Quoted**, **Won**, **Lost**) until there's a credit, then the credit's (**Earned**, **Applied**,
+    **Given**), and where it went
+- **The Client Hub** tells a client the credit that goes on their next invoice, not one the office
+  keeps off invoices.
+- **Marketing uninstalled:** no referral asks and no "refer a friend" in the Client Hub, but links
+  already shared keep working, referrals still earn, and earned credits still go on invoices: the
+  business promised them.
 
 ### 3. Automated campaigns (phase C)
 
@@ -216,18 +314,26 @@ counted.
 ## Data model
 
 - `companies.settings.marketing`: `{ enabled }`. `companies.settings.reviews`: `{ recurring_after_visits,
-  reminders: [{ days }], channel }`. `companies.settings.referrals`: `{ reward: { kind: "amount" | "percent", value }, offer }`.
+  reminders: [{ days }], channel }`. `companies.settings.referrals`: `{ reward: { kind: "amount" | "percent", value }, offer, message }`,
+  in place of `settings.referral_reward` and `settings.referral_offer` (moved by the migration).
 - `review_requests`: `reminders_sent`, `next_reminder_at`, `reminders_failed`, `reminder_error` (why the
   last reminder failed) and `reminder_note` (why reminders stopped).
 - `clients`: `review_opt_out boolean`, `sms_opt_out_at timestamptz`.
-- `referrals`: `reward_status` (pending, earned, applied, none), `reward_invoice_id`, `earned_at`.
+- `referrals`: `reward_status` (pending, earned, applied, issued, none), `reward_kind`, `reward_value`,
+  `earned_at`, `earned_invoice_id` (the friend's paid invoice), `applied_at`, `given_amount`, `auto_apply`,
+  `credit_anyway`, `no_reward_reason`, `lost_at`. Changed only through the database's functions.
+- `referral_credits` (referral, invoice, amount, note) in place of a `reward_invoice_id`, since a credit
+  can be split over invoices, and `referral_credit_skips` (invoices someone took a credit off).
+  `invoices.credit_amount` is what an invoice takes of its credits, worked out with its totals.
+- `referral_asks`: each ask for referrals, automatic or not, sent or failed.
 - `campaigns`: `kind` (one_off, automated), opens and clicks per recipient on
   `campaign_recipients` (`opened_at`, `clicked_at`), and a `campaign_bookings` table for the
   revenue.
 - Automations:
   - a trigger `client.inactive`, checked daily
-  - an action `request_referral`
+  - an action `request_referral`, and a trigger `referral.earned`
   - the recurring-visit count read from settings
+  - twelve starter rules, with `referral_after_job`
 - Phase D adds `reviews`. Phase E adds `social_posts` and `attachments.shareable`.
 
 ## Build order
@@ -256,6 +362,27 @@ counted.
 - **Automatic asks go to a client at most once every 6 months,** instead of once a month.
 - **Clients who texted STOP have texts off,** shown on their page, including STOPs from before.
 
+## Release notes for phase B
+
+- **Referral credits are earned when the friend pays.** Set a **$ amount** or a **% of their first job**
+  in **Marketing → Referrals**. The credit goes on the client's next invoice by itself once their
+  friend pays their first invoice, with a line saying what it's for. Rewards marked given before
+  stay given, and ones waiting on a friend who has already paid are earned now and go on the
+  client's open invoice. A friend's payment removed or refunded takes the credit back.
+- **Ask for referrals** emails a client their own link, from **Marketing → Referrals** or the client's
+  page. Turn on **Ask automatically** to ask a week after each job, at most once every 6 months.
+- **Credits on invoices** show after the discount, on the invoice, its paper, the Client Hub and
+  Stripe. **Apply referral credit** and **Remove** are on the invoice page, and a referral's menu can
+  apply it to an invoice you choose, keep it off invoices, mark it given or say no credit.
+- **No credit** for a client who refers themselves or a friend who was already a client, with
+  **Give a credit anyway** when that's wrong.
+- **Lost referrals:** a friend's request archived, or their last quote lost, marks the referral lost
+  until the work comes back.
+- **The numbers:** what referred clients paid, credits earned, applied and given, and top referrers,
+  on the Referrals tab, with **Referrals** on **Metrics → Clients**.
+- **Uninstalling Marketing** stops referral asks too. Credits clients have earned still go on their
+  invoices.
+
 ## Decisions on the open questions (30 October 2026)
 
 The build went ahead on the plan's leans:
@@ -263,7 +390,7 @@ The build went ahead on the plan's leans:
 1. **New businesses start with Marketing installed,** as everyone has it today.
 2. **Opting out of marketing also stops review asks,** as well as campaigns.
 3. **A referral credit is applied to the referrer's next invoice by itself.** The office can still
-   apply it by hand or mark it given.
+   apply it by hand or mark it given. Phase B's rules for where and when are under decision 2.
 4. **Reminders follow Jobber:** 3 and 5 days after the ask, at 1:30pm in the company's time zone.
 5. **No Facebook review link.** The review link stays one Google link, as in Jobber.
 
