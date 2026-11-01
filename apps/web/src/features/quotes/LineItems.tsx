@@ -10,6 +10,7 @@
  * counts it for that option. Jobs and invoices have no options.
  */
 import { countsOn, lineTotal, optionLabels, optionLines, toCents } from "@crewtavo/core/money";
+import { promoCodeOf, removedPromoWords } from "@crewtavo/core/promos";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/Button";
@@ -23,6 +24,7 @@ import { formatMoneyCents, formatNumber } from "@/lib/format";
 import { useListAnimation } from "@/lib/motion";
 import { can, hasRole, useSession } from "@/lib/session";
 import { toast, type ToastTone } from "@/lib/toast";
+import { readJobDiscounts } from "../jobs/JobDiscountNote";
 import styles from "./LineItems.module.css";
 
 type Table = "quote_line_items" | "job_line_items" | "invoice_line_items";
@@ -46,7 +48,19 @@ export interface Line {
   option_id?: string | null;
   /** Add-ons that share one are a single choice: the client picks one of them. */
   option_group?: string | null;
+  /** An invoice line that's a job's promo code discount (supabase/migrations/20261031000600_promo_once_per_job.sql). */
+  discount_quote_id?: string | null;
+  /** A job line that's a promo code's discount: the quote it's from. */
+  discount_key?: string | null;
 }
+
+/**
+ * A promo code's discount line on a job or an invoice. It stays the code's: its price and quantity
+ * aren't typed (a price can't be typed below zero, and the database keeps it money off), and it isn't
+ * duplicated, or the copy would come off every visit as a plain discount.
+ */
+export const isPromoLine = (table: Table, line: Pick<Line, "discount_quote_id" | "discount_key">) =>
+  (table === "job_line_items" && Boolean(line.discount_key)) || (table === "invoice_line_items" && Boolean(line.discount_quote_id));
 
 const COPY_FIELDS = ["name", "description", "quantity", "unit", "unit_price", "taxable", "service_id"] as const;
 /** The workflow color of the record the lines are on, for their toasts. */
@@ -112,6 +126,7 @@ export function LineItems({
   options = [],
   saveStatus,
   onOfferOptions,
+  promoJob = null,
 }: {
   table: Table;
   parent: Parent;
@@ -130,6 +145,8 @@ export function LineItems({
   saveStatus?: SaveStatusHandle;
   /** On a quote that offers no options yet: "Offer options" in the add row, beside "Custom item". */
   onOfferOptions?: () => void;
+  /** An invoice's job, for what the toast says when one of its promo lines is removed: where the discount went. */
+  promoJob?: { id: string; repeats: boolean } | null;
 }) {
   const session = useSession();
   const { company } = session;
@@ -199,14 +216,21 @@ export function LineItems({
 
   const remove = useMutation({
     mutationFn: async (line: Line) => {
+      // A job's promo line on a draft: where its discount goes is read before and after (the database
+      // moves it as the line comes off), so the toast can say. The draft's other lines say whether it
+      // still takes the code off (an every-visit code has a copy on each visit).
+      const key = table === "invoice_line_items" && promoJob ? line.discount_quote_id : null;
+      const before = key && promoJob ? await readJobDiscounts(promoJob.id) : null;
       unwrap(await supabase().from(table).delete().eq("id", line.id));
-      return line;
+      const after = key && promoJob ? await readJobDiscounts(promoJob.id) : null;
+      const rest = lines.filter((l) => l.id !== line.id);
+      return { line, note: key && promoJob ? removedPromoWords(key, parentId, before, after, promoJob.repeats, rest) : null };
     },
     // Gone at once (the totals follow), and put back from the toast: a new row with the same fields.
-    onSuccess: (line) => {
+    onSuccess: ({ line, note }) => {
       onChanged();
       toast.success("Line removed", {
-        description: line.name,
+        description: note ?? line.name,
         tone,
         countdown: true,
         action: {
@@ -224,7 +248,8 @@ export function LineItems({
             if (table === "invoice_line_items") delete row.unit_cost;
             // Back on the option it was on (that option may have gone since: then it can't come back).
             const { error } = await supabase().from(table).insert(row as never);
-            if (error) toast.error("Couldn't put the line back");
+            // A promo line comes back off the draft its discount moved to, but not off an invoice sent since: the database says which.
+            if (error) toast.error("Couldn't put the line back", error.code === "22023" ? { description: error.message } : undefined);
             onChanged();
           },
         },
@@ -259,7 +284,7 @@ export function LineItems({
                   { label: "Edit", icon: "edit", hidden: openId === line.id, onSelect: () => setOpenId(line.id) },
                   { label: "Move up", icon: "chevronUp", disabled: i === 0, onSelect: () => move.mutate({ id: line.id, dir: -1 }) },
                   { label: "Move down", icon: "chevronDown", disabled: i === shown.length - 1, onSelect: () => move.mutate({ id: line.id, dir: 1 }) },
-                  { label: "Duplicate", icon: "copy", onSelect: () => duplicate.mutate(line) },
+                  { label: "Duplicate", icon: "copy", hidden: isPromoLine(table, line), onSelect: () => duplicate.mutate(line) },
                   { separator: true },
                   { label: "Remove", icon: "trash", danger: true, onSelect: () => remove.mutate(line) },
                 ]}
@@ -384,7 +409,7 @@ function ServicePicker({ services, loading, onPick }: { services: Array<{ id: st
   );
 }
 
-function NumberField({ value, onCommit, onEdit, onUnchanged, label, step = "any", align = "right", prefix }: { value: number; onCommit: (v: number) => void; onEdit?: () => void; onUnchanged?: () => void; label: string; step?: string; align?: "right" | "left"; prefix?: string }) {
+function NumberField({ value, onCommit, onEdit, onUnchanged, label, step = "any", align = "right", prefix, disabled = false, describedBy }: { value: number; onCommit: (v: number) => void; onEdit?: () => void; onUnchanged?: () => void; label: string; step?: string; align?: "right" | "left"; prefix?: string; disabled?: boolean; describedBy?: string }) {
   const [draft, setDraft] = useState(String(value));
   useEffect(() => setDraft(String(value)), [value]);
   const commit = () => {
@@ -406,7 +431,9 @@ function NumberField({ value, onCommit, onEdit, onUnchanged, label, step = "any"
       <input
         className="input"
         aria-label={label}
+        aria-describedby={describedBy}
         inputMode="decimal"
+        disabled={disabled}
         value={draft}
         onChange={(e) => {
           setDraft(e.target.value.replace(/[^0-9.]/g, ""));
@@ -479,6 +506,8 @@ function LineRow({ table, line, editable, withOptions, showCosts, place, viewing
 }) {
   const [draft, setDraft] = useState(line);
   useEffect(() => setDraft(line), [line]);
+  const promoHint = useId();
+  const promo = isPromoLine(table, line);
   const save = useMutation({
     // With a save status in the header, a failure says so there instead of in a toast, unless it
     // was turned down (an approved quote's lines, say): then the toast says why, as trying again won't help.
@@ -547,13 +576,13 @@ function LineRow({ table, line, editable, withOptions, showCosts, place, viewing
         <input className="input" aria-label="Item name" value={draft.name} maxLength={200} onChange={(e) => { setDraft({ ...draft, name: e.target.value }); edited(); }} onBlur={commitText("name")} onKeyDown={blurOnEnter} style={{ fontWeight: 700 }} autoFocus={Boolean(onDone)} onFocus={(e) => line.name === "New item" && e.target.select()} />
       </div>
       <div className="num" role="cell"><span className="cell-label" aria-hidden="true">Qty</span>
-        <NumberField label="Quantity" value={Number(draft.quantity)} onEdit={edited} onUnchanged={unchanged} onCommit={(v) => set({ quantity: v })} />
+        <NumberField label="Quantity" value={Number(draft.quantity)} disabled={promo} describedBy={promo ? promoHint : undefined} onEdit={edited} onUnchanged={unchanged} onCommit={(v) => set({ quantity: v })} />
       </div>
       <div role="cell"><span className="cell-label" aria-hidden="true">Unit</span>
         <input className="input" aria-label="Unit" value={draft.unit} maxLength={20} onChange={(e) => { setDraft({ ...draft, unit: e.target.value }); edited(); }} onBlur={commitText("unit")} onKeyDown={blurOnEnter} />
       </div>
       <div className="num" role="cell"><span className="cell-label" aria-hidden="true">Price</span>
-        <NumberField label="Unit price" step="0.01" prefix="$" value={Number(draft.unit_price)} onEdit={edited} onUnchanged={unchanged} onCommit={(v) => set({ unit_price: v })} />
+        <NumberField label="Unit price" step="0.01" prefix="$" value={Number(draft.unit_price)} disabled={promo} describedBy={promo ? promoHint : undefined} onEdit={edited} onUnchanged={unchanged} onCommit={(v) => set({ unit_price: v })} />
       </div>
       <div className="total" role="cell"><span className="cell-label">Total</span>{excluded ? <span className="muted">Not included</span> : formatMoneyCents(amount)}</div>
       <div role="cell" style={{ paddingTop: 3 }}>{actions}</div>
@@ -573,6 +602,7 @@ function LineRow({ table, line, editable, withOptions, showCosts, place, viewing
           rows={1}
         />
         <div className="opts">
+          {promo && <span id={promoHint} className="muted">{promoCodeOf(line.name) ? `Set by promo code ${promoCodeOf(line.name)}.` : "Set by a promo code."} To take it off, remove the line.</span>}
           {place && (
             <select
               className="select input-sm"

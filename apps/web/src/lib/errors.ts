@@ -57,7 +57,7 @@ export function friendlyDbError(error: DbErrorLike): ApiError {
       : new ApiError("That refers to something that no longer exists. Refresh and try again.", 400, code);
   }
   if (code === "23502") return new ApiError("Fill in all the required fields.", 400, code);
-  if (code === "23514") return new ApiError("One of the values isn't allowed. Check the form and try again.", 400, code);
+  if (code === "23514") return new ApiError(checkMessage(error) ?? "One of the values isn't allowed. Check the form and try again.", 400, code);
   if (code === "22P02" || code === "22007" || code === "22008") return new ApiError("Something you entered doesn't look right. Check the form and try again.", 400, code);
   if (code === "22003") return new ApiError("A number is too large.", 400, code);
   if (code === "PGRST116") return new ApiError("We couldn't find that. It may have been deleted.", 404, code);
@@ -73,6 +73,19 @@ export function friendlyDbError(error: DbErrorLike): ApiError {
   }
   reportError(new Error(`Database error${code ? ` ${code}` : ""}: ${raw}`));
   return new ApiError("Something went wrong. Try again.", 500, code);
+}
+
+/** Check constraints that say something more useful than "not allowed", by name. */
+const CHECKS: Record<string, string> = {
+  // A promo code's discount line on a job or an invoice (20261031000600_promo_once_per_job.sql).
+  job_line_items_discount_check: "A promo code's line has to take money off. To drop the discount, remove the line.",
+  invoice_line_items_discount_check: "A promo code's line has to take money off. To drop the discount, remove the line.",
+};
+
+/** The sentence for the check constraint named in the error, if it has one. */
+function checkMessage(error: DbErrorLike): string | undefined {
+  const name = /check constraint "([^"]+)"/.exec(`${error.message ?? ""} ${error.details ?? ""}`)?.[1];
+  return name ? CHECKS[name] : undefined;
 }
 
 /**

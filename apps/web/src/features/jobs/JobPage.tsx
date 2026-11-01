@@ -1,5 +1,6 @@
 import type { TablesUpdate } from "@crewtavo/core/database";
 import { askRefusal, marketingOn } from "@crewtavo/core/marketing";
+import { contractDiscountNote } from "@crewtavo/core/promos";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -29,6 +30,7 @@ import { MaterialsCard, useJobMaterials } from "./JobMaterials";
 import { PhotosCard } from "../files/PhotosCard";
 import { PlansCard } from "../plans/PlansCard";
 import { InvoiceJobDialog, JobDetailsDialog, type JobRecord } from "./JobDialogs";
+import { JobDiscountNote } from "./JobDiscountNote";
 import { jobCosts } from "./jobCosts";
 import { JobPayCard, seesJobPay } from "./JobPayCard";
 import { repeatText } from "./repeatText";
@@ -78,7 +80,7 @@ export function JobPage() {
       unwrapOne(
         await supabase()
           .from("jobs")
-          .select("*, financials:job_financials(contract_total), client:clients(id, display_name, phone, email, status, review_opt_out, marketing_opt_out, sms_opt_out_at, reviewed_at), property:properties(id, line1, city, region, postal_code, lat, lng), quote:quotes!jobs_company_id_quote_id_fkey(id, number, deposit_amount), crew:crews(name), lines:job_line_items(id, name, description, quantity, unit, unit_price, unit_cost, unit_labor_cost, taxable, sort, service_id), visits(id, title, kind, status, scheduled_on, starts_at, ends_at, crew_id, notes, hold_reason, invoice_id, completed_at, crew:crews(name, color), assignees:visit_assignees(user_id))")
+          .select("*, financials:job_financials(contract_total), client:clients(id, display_name, phone, email, status, review_opt_out, marketing_opt_out, sms_opt_out_at, reviewed_at), property:properties(id, line1, city, region, postal_code, lat, lng), quote:quotes!jobs_company_id_quote_id_fkey(id, number, deposit_amount), crew:crews(name), lines:job_line_items(id, name, description, quantity, unit, unit_price, unit_cost, unit_labor_cost, taxable, sort, service_id, source_quote_id, discount_billing, discount_key), visits(id, title, kind, status, scheduled_on, starts_at, ends_at, crew_id, notes, hold_reason, invoice_id, completed_at, crew:crews(name, color), assignees:visit_assignees(user_id))")
           .eq("id", id)
           .order("sort", { referencedTable: "job_line_items" })
           .order("scheduled_on", { referencedTable: "visits" })
@@ -162,6 +164,9 @@ export function JobPage() {
     live.filter((i) => i.kind !== "retainage").reduce((s, i) => s + Number(i.retainage_amount), 0) -
     live.filter((i) => i.kind === "retainage").reduce((s, i) => s + Number(i.subtotal), 0);
   const finalInvoice = j.kind !== "recurring" ? live.find((i) => i.kind === "standard")?.number ?? null : null;
+  // Work that repeats takes a once-per-job promo code off its first invoice only, which the job says.
+  const repeats = j.kind === "recurring" || j.billing_mode === "per_visit";
+  const contractNote = repeats ? contractDiscountNote(j.lines) : null;
   // By email, or by text when email can't reach them, as the client's page offers it: not to a client
   // who opted out or is archived. Marketing uninstalled, nobody's asked.
   const ready = { email: session.config.features.email, sms: session.config.features.sms };
@@ -299,6 +304,7 @@ export function JobPage() {
             <section className="stack">
               <h2 className="section-title">Line items</h2>
               <LineItems table="job_line_items" parent="job_id" parentId={j.id} lines={j.lines} editable={canSell && ["active", "requires_invoicing"].includes(j.status)} onChanged={refresh} />
+              {repeats && <JobDiscountNote jobId={j.id} lines={j.lines} seesInvoices={seesInvoices} canSwitch={canSell && j.status === "active"} onChanged={refresh} />}
               {addButtons}
             </section>
           )}
@@ -343,7 +349,10 @@ export function JobPage() {
                   <ProfitBar price={contract} labor={labor} crew={crew} expenses={expenses} materials={materials} />
                   {/* The figures roll to their new values as line items, time and costs change. */}
                   <div className="totals" style={{ marginTop: 6 }}>
-                    <div className="line"><span>Price</span><AnimatedNumber value={contract} format={MONEY_CENTS} /></div>
+                    <div className="line" style={{ alignItems: "flex-start" }}>
+                      <span>Price{contractNote && <span className="muted small" style={{ display: "block" }}>{contractNote}</span>}</span>
+                      <AnimatedNumber value={contract} format={MONEY_CENTS} />
+                    </div>
                     <div className="line"><span>{cost.actualLabor ? "Line item materials" : "Line item costs"}</span><AnimatedNumber value={materials} format={MONEY_CENTS} /></div>
                     <div className="line"><span>Labor ({(costs.data?.hours ?? 0).toFixed(1)} h)</span><AnimatedNumber value={labor} format={MONEY_CENTS} /></div>
                     <div className="line"><span>Sub and crew pay</span><AnimatedNumber value={crew} format={MONEY_CENTS} /></div>
@@ -366,7 +375,15 @@ export function JobPage() {
             </div>
             <dl className="kv">
               <dt>Job number</dt><dd>#{j.number}</dd>
-              {canSell && <><dt>Contract</dt><dd><AnimatedNumber value={contract} format={MONEY_CENTS} /></dd></>}
+              {canSell && (
+                <>
+                  <dt>Contract</dt>
+                  <dd>
+                    <AnimatedNumber value={contract} format={MONEY_CENTS} />
+                    {contractNote && <span className="muted small" style={{ display: "block" }}>{contractNote}</span>}
+                  </dd>
+                </>
+              )}
               <dt>Billing</dt><dd>{statusLabel(j.billing_mode)}</dd>
               {j.kind === "recurring" && <><dt>Repeats</dt><dd>{j.recurrence_rule ? repeatText(j.recurrence_rule) : "—"}{j.starts_on ? `, from ${formatDate(j.starts_on)}` : ""}{j.ends_on ? ` to ${formatDate(j.ends_on)}` : ""}</dd></>}
               {j.crew && <><dt>Crew</dt><dd>{j.crew.name}</dd></>}

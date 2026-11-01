@@ -11,6 +11,7 @@
  */
 import { addressLines, contractValues, fillIn, resolveSections, sectionsHash, type ContractInput, type ContractOption, type LibrarySection } from "@crewtavo/core/contracts";
 import { pickTemplate, templateSettings, type TemplateSettings } from "@crewtavo/core/documents";
+import { promoRuleWords } from "@crewtavo/core/promos";
 import { countsOn, lineTotal, optionBaseTotal, optionTierLabels, optionTotals, quoteTotals, toCents, type Amount, type OptionLine } from "@crewtavo/core/money";
 import { SITE_ADJUSTMENT_NAME } from "@crewtavo/core/estimates";
 import { isPackagePicturePath, packagePictureSrc } from "@crewtavo/core/presets";
@@ -300,7 +301,8 @@ export interface DocumentQuote {
   approval?: unknown;
   /** The option shown (quotes.option_id), when it offers options. */
   option_id?: string | null;
-  promo?: { code?: string | null } | null;
+  /** `every_visit`: whether it comes off every visit of recurring work or once (left out by older callers). */
+  promo?: { code?: string | null; every_visit?: boolean | null } | null;
   client?: { display_name: string } | null;
   property?: Address;
 }
@@ -437,7 +439,7 @@ export function quoteDocument(quote: DocumentQuote, lines: readonly DocumentQuot
     lines: documentLines(lines, shown),
     subtotal: Number(quote.subtotal ?? 0),
     discount,
-    discountLabel: discount > 0 && quote.promo?.code ? `Promo code ${quote.promo.code}` : undefined,
+    discountLabel: discount > 0 && quote.promo?.code ? `Promo code ${quote.promo.code}${quote.promo.every_visit != null ? ` · ${promoRuleWords(quote.promo.every_visit)}` : ""}` : undefined,
     tax: Number(quote.tax_amount ?? 0),
     total: Number(quote.total ?? 0),
     deposit: deposit > 0 ? deposit : null,

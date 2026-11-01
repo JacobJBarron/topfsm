@@ -49,6 +49,10 @@ describe("stripe form encoding", () => {
       "customer=cus_1&metadata%5Binvoice%5D=abc&expand%5B0%5D=charge.balance_transaction&custom_fields%5B0%5D%5Bname%5D=Invoice&custom_fields%5B0%5D%5Bvalue%5D=%234&auto_advance=false",
     );
   });
+
+  it("sends an empty string, which tells Stripe not to inherit a value", () => {
+    expect(stripeForm({ discounts: "" }).toString()).toBe("discounts=");
+  });
 });
 
 describe("stripe line items", () => {

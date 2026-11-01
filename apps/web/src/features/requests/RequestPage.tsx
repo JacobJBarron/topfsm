@@ -1,4 +1,4 @@
-import { fieldLabel } from "@crewtavo/core/websiteForms";
+import { fieldLabel, fieldRole } from "@crewtavo/core/websiteForms";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -39,7 +39,7 @@ export function RequestPage() {
       unwrapOne(
         await supabase()
           .from("requests")
-          .select("id, number, title, details, status, source, website_form_id, answers, promo_code, web_visit, created_at, client:clients(id, display_name, email, phone), property:properties(id, line1, city, region, postal_code, lat, lng), form:intake_forms(name, questions), visits(id, title, kind, status, scheduled_on, starts_at, ends_at, crew_id, notes, assignees:visit_assignees(user_id)), quotes(id, number, title, status, total)")
+          .select("id, number, title, details, status, source, website_form_id, answers, promo_code, rejected_promo_code, promo_problem, web_visit, created_at, client:clients(id, display_name, email, phone), property:properties(id, line1, city, region, postal_code, lat, lng), form:intake_forms(name, questions), visits(id, title, kind, status, scheduled_on, starts_at, ends_at, crew_id, notes, assignees:visit_assignees(user_id)), quotes(id, number, title, status, total)")
           .eq("id", id)
           .maybeSingle(),
         "This request",
@@ -93,7 +93,11 @@ export function RequestPage() {
   if (request.isPending) return <DetailSkeleton />;
   if (request.error || !r) return <PageError error={request.error} onRetry={() => request.refetch()} back={<BackLink to="/requests">Requests</BackLink>} />;
 
-  const answers = Object.entries((r.answers ?? {}) as Record<string, unknown>).filter(([, v]) => v !== "" && v != null && !(Array.isArray(v) && !v.length));
+  // A website form's promo code shows as the Promo code row, so it isn't listed twice (it stays in the answers).
+  const promoShown = Boolean(r.website_form_id && (r.promo_code || r.rejected_promo_code));
+  const answers = Object.entries((r.answers ?? {}) as Record<string, unknown>).filter(
+    ([key, v]) => v !== "" && v != null && !(Array.isArray(v) && !v.length) && !(promoShown && fieldRole(key) === "promo"),
+  );
   const questions = ((r.form?.questions ?? []) as Array<{ key: string; label: string }>).reduce<Record<string, string>>((m, q) => ({ ...m, [q.key]: q.label }), {});
   const open = !["converted", "archived"].includes(r.status);
   const assessment = (): VisitInput => ({ request_id: r.id, property_id: r.property?.id ?? null, title: `Assessment: ${r.title}`, kind: "assessment", context: { label: `Request #${r.number} · ${r.client?.display_name ?? ""}`, to: `/requests/${r.id}` } });
@@ -216,6 +220,15 @@ export function RequestPage() {
               <dt>Property</dt><dd>{r.property ? addressLine(r.property) : "—"}</dd>
               <dt>Received</dt><dd>{formatDateTime(r.created_at)}{r.form ? ` via ${r.form.name}` : ""}</dd>
               {r.promo_code && <><dt>Promo code</dt><dd><span className="promo-code">{r.promo_code}</span></dd></>}
+              {!r.promo_code && r.rejected_promo_code && (
+                <>
+                  <dt>Promo code</dt>
+                  <dd>
+                    <span className="promo-code promo-code-rejected">{r.rejected_promo_code}</span>
+                    <span className="muted small" style={{ display: "block", marginTop: 4 }}>Not applied: {r.promo_problem ?? "That code isn't valid."}</span>
+                  </dd>
+                </>
+              )}
               {r.web_visit && <WebVisitRows visit={r.web_visit as unknown as WebVisit} />}
             </dl>
           </div>

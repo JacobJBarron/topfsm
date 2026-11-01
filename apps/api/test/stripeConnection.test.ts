@@ -177,7 +177,7 @@ interface Key {
   live: boolean;
   webhooks: boolean;
 }
-const stripe = { sides: new Map<string, Side>(), keys: new Map<string, Key>(), calls: [] as string[], n: 0, finalizing: null as (() => Promise<void>) | null };
+const stripe = { sides: new Map<string, Side>(), keys: new Map<string, Key>(), calls: [] as string[], posts: [] as Array<{ path: string; body: URLSearchParams }>, n: 0, finalizing: null as (() => Promise<void>) | null };
 
 /** A key for `account` (live or test by its prefix). `webhooks: false` is a restricted key without that permission. */
 function stripeKey(key: string, account: string, options: { webhooks?: boolean } = {}) {
@@ -210,6 +210,7 @@ async function fakeStripe(input: string | URL, init: RequestInit = {}): Promise<
   if (!k) return json({ error: { message: "Invalid API Key provided" } }, 401);
   const s = side(key);
   const body = new URLSearchParams(typeof init.body === "string" ? init.body : "");
+  if (method === "POST") stripe.posts.push({ path, body });
   const noInvoice = (id: string) => json({ error: { message: `No such invoice: '${id}'`, code: "resource_missing", param: "id" } }, 404);
   let m: RegExpMatchArray | null;
 
@@ -339,6 +340,7 @@ beforeEach(() => {
   stripe.sides.clear();
   stripe.keys.clear();
   stripe.calls.length = 0;
+  stripe.posts.length = 0;
   stripe.n = 0;
   stripe.finalizing = null;
   db = fakeDb({
@@ -878,6 +880,40 @@ describe("money Stripe reports", () => {
     for (const invoice of [card!, check!]) await event("invoice.paid", { id: invoice.id });
     expect(paidIn(INV).map((p) => [p.amount, p.method, p.notes ?? null])).toEqual([[140, "card", null], [20, "other", "Credit note in Stripe"]]);
     expect(paidIn(INV2).map((p) => [p.amount, p.method, p.notes ?? null])).toEqual([[140, "other", "Marked paid in Stripe"], [20, "other", "Credit note in Stripe"]]);
+  });
+});
+
+describe("coupons on a customer in Stripe", () => {
+  const event = (type: string, object: Row) => handleStripeEvent(env, db.db, { companyId: CO }, { id: `evt_${++stripe.n}`, type, data: { object } });
+
+  it("never come off a Crewtavo invoice: it asks for no discounts, and its items take none", async () => {
+    await connect(stripeKey("sk_live_A", "acct_A"));
+    expect(await syncStripeInvoice(env, db.db, CO, INV)).toBe("created");
+    const made = stripe.posts.filter((p) => p.path === "/v1/invoices");
+    expect(made).toHaveLength(1);
+    // An empty string, Stripe's way of saying "don't inherit the customer's discount".
+    expect(made[0]!.body.has("discounts")).toBe(true);
+    expect(made[0]!.body.get("discounts")).toBe("");
+    const items = stripe.posts.filter((p) => p.path === "/v1/invoiceitems");
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.map((p) => p.body.get("discountable"))).toEqual(items.map(() => "false"));
+  });
+
+  it("paid for less than was owed anyway, the rest stays owed and Pay asks for it", async () => {
+    await connect(stripeKey("sk_live_A", "acct_A"));
+    await syncStripeInvoice(env, db.db, CO, INV);
+    const [made] = rowsFor(INV);
+    // Say Stripe took $20 off all the same (a discount added to it in Stripe's dashboard).
+    Object.assign(stripeInvoice(made!.stripe_id)!, { amount_due: 14000 });
+    payInStripe(made!.stripe_id);
+    await event("invoice.paid", { id: made!.stripe_id });
+    expect(db.tables.payments).toEqual([expect.objectContaining({ invoice_id: INV, amount: 140, processor: "stripe" })]);
+    // The database's totals make it partly paid, with $20 owed (supabase/tests/rls_and_workflow.sql).
+    owe(INV, 20);
+    expect(await syncStripeInvoice(env, db.db, CO, INV)).toBe("created");
+    const rest = rowsFor(INV).find((r) => r.status === "open")!;
+    expect(rest).toMatchObject({ amount_due: 20 });
+    expect(await stripeCheckout(env, db.db, CO, INV, 0)).toBe(rest.hosted_url);
   });
 });
 

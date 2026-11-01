@@ -11,6 +11,7 @@
  */
 import { greetingName } from "@crewtavo/core/automations";
 import { lineTotal } from "@crewtavo/core/money";
+import { promoRuleWords } from "@crewtavo/core/promos";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
@@ -1160,6 +1161,7 @@ function LinesCard({ token, data, lines, optionId, chosen, onChoose, editable, t
           canChange={editable}
           // A price agreed at the visit has its discount in it already, so no code goes on top.
           canAdd={editable && !q.site_priced}
+          showRule
           choice={{ ...(optionId ? { option_id: optionId } : {}), selected_line_ids: ticked }}
           onChanged={onChanged}
         />
@@ -1259,6 +1261,7 @@ function InvoiceHub({ token, data, onChanged, printing }: { token: string; data:
   const inv = data.invoice;
   const [params] = useSearchParams();
   const balance = Number(inv.balance_due);
+  const promoCanChange = !data.preview && !data.from_stripe && !data.processing && balance > 0 && inv.payments.length === 0;
   const [tipChoice, setTipChoice] = useState<number | "custom">(0);
   const [customTip, setCustomTip] = useState("");
   const tip = !data.tips ? 0 : tipChoice === "custom" ? Math.max(Math.round(Number(customTip) * 100) / 100 || 0, 0) : Math.round(balance * tipChoice) / 100;
@@ -1298,7 +1301,10 @@ function InvoiceHub({ token, data, onChanged, printing }: { token: string; data:
             token={token}
             promo={inv.promo}
             discount={Math.min(Number(inv.discount_amount), Math.max(Number(inv.subtotal), 0))}
-            canChange={!data.preview && !data.from_stripe && balance > 0 && inv.payments.length === 0}
+            // Not while a bank payment clears: the client is paying what Stripe asked for (the server says so too).
+            canChange={promoCanChange}
+            // One code to an invoice: its job's code is on a line already.
+            canAdd={promoCanChange && !data.promo_line}
             onChanged={onChanged}
           />
           {(doc.data.credits ?? []).map((c, i) => <div key={i} className="line"><span>{c.label}</span><span className="nowrap">−{formatMoneyCents(c.amount)}</span></div>)}
@@ -1357,15 +1363,16 @@ function InvoiceHub({ token, data, onChanged, printing }: { token: string; data:
  * The discount line: an applied promo code (removable while it can change), or a box to enter one
  * (while `canAdd`, which is `canChange` unless said otherwise). On a quote, `choice` is what the client
  * is choosing (the option picked and the add-ons ticked), which the code's minimum order is checked
- * against.
+ * against, and `showRule` says whether the code comes off once or every visit of recurring work.
  */
-function HubDiscount({ token, promo, discount, canChange, canAdd = canChange, choice, onChanged }: {
+function HubDiscount({ token, promo, discount, canChange, canAdd = canChange, choice, showRule = false, onChanged }: {
   token: string;
   promo: HubPromoInfo;
   discount: number;
   canChange: boolean;
   canAdd?: boolean;
   choice?: { option_id?: string; selected_line_ids: string[] };
+  showRule?: boolean;
   onChanged: () => void;
 }) {
   const [entering, setEntering] = useState(false);
@@ -1385,7 +1392,7 @@ function HubDiscount({ token, promo, discount, canChange, canAdd = canChange, ch
       <div className="line" style={{ alignItems: "flex-start" }}>
         <span className="promo-applied">
           <span className="promo-code">{promo.code}</span>
-          <span className="muted small">{promo.description ?? (promo.kind === "percent" ? `${Number(promo.value)}% off` : "Discount")}</span>
+          <span className="muted small">{promo.description ?? (promo.kind === "percent" ? `${Number(promo.value)}% off` : "Discount")}{showRule && promo.every_visit != null ? ` · ${promoRuleWords(promo.every_visit)}` : ""}</span>
           {canChange && <button type="button" className="btn btn-sm btn-ghost no-print" disabled={remove.isPending} onClick={() => remove.mutate()}>Remove</button>}
         </span>
         <span className="nowrap">−{formatMoneyCents(discount)}</span>

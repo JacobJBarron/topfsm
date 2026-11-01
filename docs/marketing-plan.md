@@ -18,7 +18,9 @@ results, is built (`20261031000200_automated_campaigns.sql`, `20261031000210_cam
 `apps/api/src/lib/shareImage.ts`, `apps/api/src/lib/reviewCard.ts`, Apps → Facebook & Instagram, Marketing → Social, OK to share on
 photos). Follow-ups from checking all five end to end are built too (`20261031000500_review_ask_fixes.sql`,
 `20261031000510_credit_covered_invoices.sql`, `20261031000520_campaign_fixes.sql`, `20261031000530_social_review_relink.sql`,
-`20261031000540_campaign_stop_counts.sql`).
+`20261031000540_campaign_stop_counts.sql`), and so are fixes to promo codes on recurring work, website
+forms and Stripe (`20261031000600_promo_once_per_job.sql` to `20261031000640_void_draft_not_sent.sql`,
+release notes below).
 This is the plan.
 
 The goal: Crewtavo's own version of Jobber's Marketing Suite (Reviews, Referrals, Campaigns and
@@ -1092,6 +1094,81 @@ What was decided building it:
   you cancel while it's posting never goes later.
 - **Scheduled review posts survive reconnecting:** a review removed and brought in again is the post's
   again.
+
+## Release notes for promo code fixes
+
+Built in `20261031000600_promo_once_per_job.sql`, `20261031000610_promo_bank_payments.sql`,
+`20261031000620_website_form_promo.sql`, `20261031000630_promo_undo_and_signed_rule.sql` and
+`20261031000640_void_draft_not_sent.sql`, with `packages/core/src/promos.ts` and the job page's note
+(`apps/web/src/features/jobs/JobDiscountNote.tsx`).
+
+- **Promo codes come off once per job.** On recurring work a code now comes off the first invoice
+  only, however invoices are made (one visit at a time, a batch of visits, or out of order), and a
+  deposit, progress or retainage invoice never takes it, nor a draft with a payment, in Stripe or
+  with a promo code of its own. If that invoice is voided or deleted before it's paid, or the code is
+  taken off a draft, it goes on the next one. The question before voiding or deleting says so, and the
+  toast says which invoice it moved to, or that it waits for the next. Taken off a draft, it never
+  goes back on that draft by itself, but the toast's **Undo** puts it back there and takes it off the
+  draft it moved to; once that invoice is sent, it stays there and Undo says so, as it does when the
+  draft took a promo code of its own meanwhile. To keep it on every visit, turn on
+  **Marketing → Promo codes** → a code → **Take it off every visit of recurring work**; the form says
+  what each choice does, with the code's own value. Turning it on or off for a code that jobs already
+  use asks whether to change those jobs too (**Change them too**, or **Change it too** for one job, /
+  **Only new jobs**); closing that question saves nothing.
+- **Existing codes are once per job now.** Repeating was almost certainly a mistake, so every code
+  starts with the switch off. Recurring jobs that already took a code off an invoice don't take it
+  again, a job with no invoices yet takes it once, and invoices already made keep what they have: a
+  draft someone took the code off, or cut it on, keeps it that way. A change order's typed discount
+  is never taken for its code's. The job page says which rule a job follows and where the code went,
+  and **Take it off every visit instead** puts one job back the way it was. A job whose invoices were
+  made while the code came off every visit (from before, or before its code or the job was switched)
+  says so beside them: "It's on invoices #4, #5 and #6, made while it came off every visit. Later
+  invoices don't take it." A recurring job's **Contract** and its **Job costing** price say they
+  include the one-time discount.
+- **A discount never takes an invoice below $0, and never comes off twice.** A visit priced under the
+  code takes what it can, and the rest goes on the next invoice; an every-visit code comes off up to
+  the visit's price, and comes back when the visit's price does (a line removed and put back, a price
+  lowered and raised). Changing the **Taxable** box on a discount line, on the job or a draft, doesn't
+  take it off again.
+- **A promo code's line stays the code's.** Its price and quantity can't be typed (remove the line to
+  take it off), and it has no **Duplicate**, since a copy would come off every visit.
+- **Quotes say how a code comes off:** "Promo code WEEKLY25 · one-time discount" or "· off every visit",
+  on the quote, its paper and the Client Hub. While the quote is open it follows the code's switch.
+  Once the client approves it (or it's made a job straight away), it keeps the rule it was approved
+  with (`quotes.promo_every_visit`), and so does the job made from it: switching the code later, or
+  the job on its page, doesn't change what a signed quote says. Quotes approved before this said
+  nothing about it, and still don't.
+- **A code deleted before its quote becomes a job still comes off as the code said.** Deleting a code
+  leaves its rule on the quotes still using it, so a recurring job made from one later takes the
+  discount off its first invoice only (named **Discount**, since the code is gone), not every visit.
+  A discount the office types over it is a plain discount again. Codes deleted before this left a
+  typed discount, which can't be told from one the office typed.
+- **One promo code to an invoice.** An invoice that has its job's code on a line doesn't take a second
+  code on top, in the office (no **Add promo code**) or the Client Hub; the database refuses it too.
+  The other way round, the job's code passes over a draft that has a code of its own and waits for
+  the next draft without one, or the next invoice.
+- **Website forms check promo codes.** A field named promo, promo_code, promocode, coupon, coupon_code
+  or discount_code (in any case, with spaces or dashes) is checked. A valid code is ready to apply on
+  the quote. One that isn't valid still keeps the request, and the request, the quote and the office's
+  email say why.
+- **Booking forms on your website pick up `?promo=`** from the page's link, so a link like
+  yoursite.com/quote?promo=SPRING15 fills in the code. **A form already on your site needs the code
+  copied again** from **Online booking → Embed** and pasted over the old one: the old code doesn't hand
+  on `?promo=`. On Wix, GoDaddy and Google Sites, which put the code in a frame of its own, share the
+  form's own link with `?promo=` and the code on the end instead. `utm_*` isn't handed on: the form
+  doesn't read it, and with Website Analytics installed a booking is already linked to the visit that
+  brought it in, campaign link included (`bookingVisit`).
+- **Stripe invoices ignore coupons on a Stripe customer,** so clients pay exactly what Crewtavo billed.
+  Coupons you attached to a customer in Stripe no longer come off Crewtavo invoices. Use a Crewtavo
+  promo code instead.
+- **Promo codes can't change while a bank payment is clearing,** on the invoice page and in the Client
+  Hub. One still clearing in a Stripe account Crewtavo has since left holds it up for 30 days at most,
+  as it holds up **Pay**.
+- **A draft voided isn't "Sent".** Voiding a draft gave it a sent date; it no longer does. Invoices
+  voided before keep theirs.
+- **Still to do:** the embedding page on crewtavo.com (in crewtavo-website) needs the `?promo=` line and
+  the note about pasting the code again, and Stripe's `discounts` and `discountable` were checked in its
+  current API reference but not against the pinned `2024-06-20` version in test mode.
 
 ## Decisions on the open questions (30 October 2026)
 

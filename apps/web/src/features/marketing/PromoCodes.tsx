@@ -1,8 +1,10 @@
 /** Promo codes: a percent or dollar amount off, for quotes, invoices, booking forms and the Client Hub. */
 import type { Tables } from "@crewtavo/core/database";
+import { repeatChoices } from "@crewtavo/core/promos";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/Button";
+import { choose } from "@/components/ui/Confirm";
 import { Dialog } from "@/components/ui/Dialog";
 import { Field, FormChecks, FormError } from "@/components/ui/Field";
 import { Menu } from "@/components/ui/Menu";
@@ -60,10 +62,12 @@ export function PromoCodes() {
   });
   type Codes = NonNullable<typeof codes.data>;
   const key = ["promo-codes", session.company.id];
-  // Gone at once, with Undo. Quotes and invoices that used it keep their discount either way.
+  // Gone at once, with Undo. Quotes and invoices that used it keep their discount either way, and a
+  // quote that becomes a job later still takes it off as the code said (once, or every visit).
   const deleteCode = (promo: Promo) =>
     undoable({
       title: "Promo code deleted",
+      description: "Quotes and invoices that used it keep their discount.",
       hide: () => {
         void queryClient.cancelQueries({ queryKey: key });
         queryClient.setQueryData<Codes>(key, (old) => old && { ...old, rows: old.rows.filter((r) => r.id !== promo.id) });
@@ -100,6 +104,7 @@ export function PromoCodes() {
             const rules = [
               Number(p.min_subtotal) > 0 && `orders over ${formatMoney(p.min_subtotal)}`,
               p.new_clients_only ? "new customers only" : p.once_per_client && "once per client",
+              p.every_visit && "every visit",
               p.starts_on && p.starts_on > today && `starts ${formatDate(p.starts_on)}`,
               p.ends_on && `${p.ends_on < today ? "ended" : "ends"} ${formatDate(p.ends_on)}`,
             ].filter(Boolean);
@@ -144,6 +149,7 @@ export function PromoCodes() {
 
 function PromoDialog({ promo, onClose, onSaved }: { promo: Promo | null; onClose: () => void; onSaved: () => void }) {
   const session = useSession();
+  const queryClient = useQueryClient();
   const [f, setF] = useState({
     code: promo?.code ?? "",
     kind: (promo?.kind ?? "percent") as "percent" | "amount",
@@ -155,13 +161,16 @@ function PromoDialog({ promo, onClose, onSaved }: { promo: Promo | null; onClose
     max_uses: promo?.max_uses ? String(promo.max_uses) : "",
     once_per_client: promo?.once_per_client ?? true,
     new_clients_only: promo?.new_clients_only ?? false,
+    every_visit: promo?.every_visit ?? false,
   });
   const value = Number(f.value);
+  const choices = repeatChoices(f.kind, f.value);
   const codeOk = /^[A-Z0-9-]{3,24}$/.test(f.code);
   const valueError = f.value && (!(value > 0) || (f.kind === "percent" && value > 100)) ? (f.kind === "percent" ? "Enter a percent between 1 and 100." : "Enter an amount more than $0.") : null;
   const datesError = f.starts_on && f.ends_on && f.ends_on < f.starts_on ? "The end date is before the start date." : null;
   const save = useMutation({
-    meta: { inline: true, success: promo ? "Promo code saved" : "Promo code created" },
+    // Null: the question about jobs using it was closed without an answer, so nothing was saved.
+    meta: { inline: true, success: (jobs: number | null) => (jobs === null ? null : jobs ? `Promo code saved, and ${jobs === 1 ? "1 job" : `${jobs} jobs`} changed too` : promo ? "Promo code saved" : "Promo code created") },
     mutationFn: async () => {
       if (!codeOk) throw new Error("Use 3 to 24 letters, numbers or dashes for the code.");
       if (!(value > 0) || valueError) throw new Error(f.kind === "percent" ? "Enter a percent between 1 and 100." : "Enter an amount more than $0.");
@@ -177,14 +186,41 @@ function PromoDialog({ promo, onClose, onSaved }: { promo: Promo | null; onClose
         max_uses: Number(f.max_uses) > 0 ? Math.round(Number(f.max_uses)) : null,
         once_per_client: f.new_clients_only || f.once_per_client,
         new_clients_only: f.new_clients_only,
+        every_visit: f.every_visit,
       };
+      // Jobs already using the code keep the rule they started with, unless the office says otherwise.
+      // Both buttons save; closing the question (Escape, the X) saves nothing, as closing a confirm does.
+      let alsoJobs = false;
+      if (promo && f.every_visit !== promo.every_visit) {
+        const using = unwrap(await supabase().rpc("promo_code_jobs", { p_promo: promo.id, p_every_visit: f.every_visit }));
+        if (using > 0) {
+          const one = using === 1;
+          const choice = await choose({
+            title: `Change the ${one ? "job" : `${using} jobs`} already using ${promo.code} too?`,
+            body: f.every_visit
+              ? `On ${one ? "that job" : "those jobs"} it comes off the first invoice only. Change ${one ? "it" : "them"} too, and it comes off every visit from ${one ? "its" : "their"} next invoice.`
+              : `On ${one ? "that job" : "those jobs"} it comes off every visit. Change ${one ? "it" : "them"} too, and it comes off once: on ${one ? "its" : "their"} next invoice, unless an invoice has it already.`,
+            confirmLabel: one ? "Change it too" : "Change them too",
+            cancelLabel: "Only new jobs",
+          });
+          if (choice === null) return null;
+          alsoJobs = choice;
+        }
+      }
       const result = promo
         ? await supabase().from("promo_codes").update(row).eq("id", promo.id)
         : await supabase().from("promo_codes").insert({ ...row, company_id: session.company.id });
       if (result.error?.code === "23505") throw new Error(`You already have a code called ${f.code}.`);
       unwrap(result);
+      return alsoJobs && promo ? unwrap(await supabase().rpc("set_promo_code_jobs", { p_promo: promo.id, p_every_visit: f.every_visit })) : 0;
     },
-    onSuccess: () => {
+    onSuccess: (jobs) => {
+      if (jobs === null) return;
+      // Jobs changed too: their pages (the discount's note, the Contract's) and the Jobs list's price for a visit.
+      if (jobs) {
+        queryClient.invalidateQueries({ queryKey: ["job"] });
+        queryClient.invalidateQueries({ queryKey: ["jobs", session.company.id] });
+      }
       onSaved();
       onClose();
     },
@@ -232,6 +268,16 @@ function PromoDialog({ promo, onClose, onSaved }: { promo: Promo | null; onClose
             <input type="checkbox" className="switch" checked={f.new_clients_only} onChange={(e) => setF({ ...f, new_clients_only: e.target.checked })} />
             New customers only
           </label>
+          <label className="switch-row">
+            <input type="checkbox" className="switch" checked={f.every_visit} aria-describedby="promo-every-visit" onChange={(e) => setF({ ...f, every_visit: e.target.checked })} />
+            Take it off every visit of recurring work
+          </label>
+          {/* Both choices, whichever way the switch is, with the code's own value. */}
+          <span id="promo-every-visit" className="muted small" style={{ display: "grid", gap: 2 }}>
+            <span><strong>Off:</strong> {choices.once}</span>
+            <span><strong>On:</strong> {choices.everyVisit}</span>
+            {promo && <span>If jobs already use the code, saving a change asks whether to change them too.</span>}
+          </span>
         </div>
         <FormError error={save.error} />
         <div className="form-actions">

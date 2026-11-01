@@ -192,6 +192,34 @@ describe("a message from the website's own form", () => {
     expect((await app.request("/f/NOT-A-KEY", { method: "POST" }, env)).status).toBe(404);
   });
 
+  it("checks a promo code field by its usual names, and keeps the request when the code isn't valid", async () => {
+    const promo = (code: string) => (code.toUpperCase() === "SPRING15" ? { promo_code: "SPRING15", rejected_promo_code: null, promo_problem: null } : { promo_code: null, rejected_promo_code: code, promo_problem: "That code expired on October 1." });
+    const db = fakeDb({
+      tables: { website_forms: () => form() },
+      rpc: { website_form_request: (args: { p_promo?: string }) => ({ request_id: REQUEST_ID, number: 7, client_id: "c1", property_id: null, new_property: false, matched: false, ...promo(args.p_promo ?? "") }) },
+    });
+    expect((await post("email=jane%40example.com&Promo+Code=+spring15+")).status).toBe(303);
+    const res = await post("email=gil%40example.com&coupon-code=old10&message=Hi");
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe(THANKS);
+    expect((await post({ email: "kit@example.com", discount_code: "SPRING15" }, { Accept: "application/json" })).status).toBe(200);
+    const made = db.rpcs.filter((r) => r.name === "website_form_request");
+    expect(made.map((r) => r.args.p_promo)).toEqual(["spring15", "old10", "SPRING15"]);
+    // The typed code stays an answer, so it's never lost.
+    expect(made.map((r) => r.args.p_answers)).toEqual([{ "Promo Code": "spring15" }, { "coupon-code": "old10" }, { discount_code: "SPRING15" }]);
+
+    await Promise.all(current.background);
+    const texts = current.emails.filter((e) => e.to === "office@greenlawn.example").map((e) => e.text as string);
+    expect(texts[0]).toContain("Promo code SPRING15, ready to apply on the quote.");
+    expect(texts[1]).toContain("Promo code old10 wasn't applied: that code expired on October 1.");
+  });
+
+  it("leaves p_promo out when the form has no promo field", async () => {
+    const db = withForm();
+    await post("email=jane%40example.com&discount=10");
+    expect(db.rpcs.find((r) => r.name === "website_form_request")!.args.p_promo).toBeUndefined();
+  });
+
   it("is refused politely when too many come at once", async () => {
     fakeDb({ tables: { website_forms: () => form() }, rpc: { rate_limit_hit: () => false } });
     const res = await post("email=jane%40example.com");
@@ -241,8 +269,22 @@ describe("the app's page", () => {
     expect(await res.json()).toEqual({
       enabled: true,
       email_ready: true,
+      promo_codes: false,
       forms: [expect.objectContaining({ url: `https://crm.greenlawn.example/f/${KEY}`, last_message_at: "2026-10-26T12:00:00Z" })],
     });
+  });
+
+  it("says whether the business has promo codes, for the form to paste", async () => {
+    const db = fakeDb({
+      tables: {
+        companies: () => ({ settings: { website_forms: { enabled: true } } }),
+        website_forms: () => [],
+        promo_codes: () => ({ data: null, count: 2, error: null }),
+      },
+    });
+    const res = await app.request("/api/website-forms", { headers }, env);
+    expect(((await res.json()) as { promo_codes: boolean }).promo_codes).toBe(true);
+    expect(db.queries.find((q) => q.table === "promo_codes")!.calls).toEqual(expect.arrayContaining([["eq", "company_id", COMPANY], ["eq", "active", true]]));
   });
 
   it("keeps emails, the thank-you page and websites in one spelling", async () => {

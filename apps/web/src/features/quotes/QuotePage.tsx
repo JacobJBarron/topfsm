@@ -16,6 +16,7 @@ import type { TemplateSettings } from "@crewtavo/core/documents";
 import { inRangeMode, sitePriceSet } from "@crewtavo/core/estimates";
 import { optionBaseTotal, optionTotals, taxPercent, taxRateFromPercent, type Amount, type OptionLine, type TotalsPromo } from "@crewtavo/core/money";
 import { isPackagePicturePath } from "@crewtavo/core/presets";
+import { quotePromoRule } from "@crewtavo/core/promos";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -93,12 +94,21 @@ const NO_QUOTE = { template_id: null, approval: null };
 const LOST_REASONS = ["Price was too high", "Went with another company", "Timing didn't work", "No response", "Scope changed", "Other"];
 /** The totals card's figures, to the cent as the quote prints them, rolling to their new values. */
 
-/** The quote, with every line (every option's) and what its paper and contract are filled in from. Its options are useQuoteOptions. */
+/**
+ * The quote, with every line (every option's) and what its paper and contract are filled in from. Its
+ * options are useQuoteOptions. Its code's `every_visit` is the rule it was approved with once it's
+ * signed, so its words don't change after (core quotePromoRule).
+ */
 async function loadQuote(id: string) {
+  const q = await loadQuoteRow(id);
+  return q.promo ? { ...q, promo: { ...q.promo, every_visit: quotePromoRule(q) } } : q;
+}
+
+async function loadQuoteRow(id: string) {
   return unwrapOne(
     await supabase()
       .from("quotes")
-      .select("id, number, title, status, message, subtotal, discount_amount, tax_rate, tax_amount, total, deposit_amount, valid_until, sent_at, approved_at, approval, lost_reason, request_id, created_at, template_id, option_id, section_ids, roof_package_id, promo_code_id, promo:promo_codes(code, kind, value, description), request:requests(promo_code), client:clients(id, display_name, email, phone, billing_address, sms_opt_out_at), property:properties(id, line1, city, region, postal_code, lat, lng), lines:quote_line_items(id, name, description, quantity, unit, unit_price, unit_cost, taxable, optional, selected, option_group, option_id, formula, sort, service_id), jobs!jobs_company_id_quote_id_fkey(id, number), change_order_for, change_job:jobs!quotes_change_order_fkey(id, number, title), package:roof_packages!quotes_roof_package_fkey(name, warranty), range_low, range_high, range_accepted_at, priced_on_site_at, exact_sent_at")
+      .select("id, number, title, status, message, subtotal, discount_amount, tax_rate, tax_amount, total, deposit_amount, valid_until, sent_at, approved_at, approval, lost_reason, request_id, created_at, template_id, option_id, section_ids, roof_package_id, promo_code_id, promo_every_visit, promo:promo_codes(code, kind, value, description, every_visit), request:requests(promo_code, website_form_id, rejected_promo_code, promo_problem), client:clients(id, display_name, email, phone, billing_address, sms_opt_out_at), property:properties(id, line1, city, region, postal_code, lat, lng), lines:quote_line_items(id, name, description, quantity, unit, unit_price, unit_cost, taxable, optional, selected, option_group, option_id, formula, sort, service_id), jobs!jobs_company_id_quote_id_fkey(id, number), change_order_for, change_job:jobs!quotes_change_order_fkey(id, number, title), package:roof_packages!quotes_roof_package_fkey(name, warranty), range_low, range_high, range_accepted_at, priced_on_site_at, exact_sent_at")
       .eq("id", id)
       .order("sort", { referencedTable: "quote_line_items" })
       .maybeSingle(),
@@ -678,6 +688,8 @@ export function QuotePage() {
               canEditDiscount={editable}
               canChangePromo={editable && !sitePriced}
               suggestedCode={sitePriced ? null : q.request?.promo_code}
+              suggestedFrom={q.request?.website_form_id ? "website" : "booking"}
+              rejected={!sitePriced && q.request?.rejected_promo_code ? { code: q.request.rejected_promo_code, problem: q.request.promo_problem } : null}
               onSaveDiscount={(v) => saveField({ discount_amount: v })}
               onEditDiscount={save.edited}
               onUnchangedDiscount={unchanged}

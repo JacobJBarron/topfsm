@@ -33,7 +33,7 @@ type Row = Record<string, any>;
 /** Supabase in memory: tables of rows, inserts that keep what they're given, the person's role, and what database functions answer. */
 function supabase(role = "owner", answers: Record<string, unknown> = {}) {
   const db: Record<string, Row[]> = { clients: [], properties: [], jobs: [], visits: [], assistant_calls: [] };
-  const sent: Array<{ method: string; table: string; body: any }> = [];
+  const sent: Array<{ method: string; table: string; body: any; query?: URLSearchParams }> = [];
   const memberships: URL[] = [];
   let id = 0;
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -51,7 +51,7 @@ function supabase(role = "owner", answers: Record<string, unknown> = {}) {
     if (table === "memberships") memberships.push(url);
     if (table === "memberships") return Response.json([{ company_id: "company-1", role, role_id: null, company: { timezone: "America/New_York", settings: {} } }]);
     if (!url.pathname.startsWith("/rest/v1/")) return Response.json([]);
-    sent.push({ method, table, body });
+    sent.push({ method, table, body, query: url.searchParams });
     const rows = (db[table] ??= []);
     if (method === "POST") {
       const made = (Array.isArray(body) ? body : [body]).map((r: Row) => ({ id: r.id ?? `${table}-${++id}`, ...r }));
@@ -187,6 +187,20 @@ describe("tools", () => {
     expect(invites.calls).toEqual([]);
     const change = await call("full", "change_role", { user_id: "00000000-0000-4000-8000-000000000009", role: "subcontractor" });
     expect(change.error).toMatch(/^Invalid arguments\. /);
+  });
+
+  it("leave a promo code's discount on a job when its lines are replaced", async () => {
+    const { db, sent } = supabase();
+    const JOB = "6f4cc1b2-7e43-4c1d-9a8e-3c2f1d0b9a99";
+    db.jobs = [{ id: JOB, company_id: "company-1", kind: "recurring", starts_on: "2026-06-01", recurrence_rule: "FREQ=WEEKLY;BYDAY=MO" }];
+    expect(await call("full", "update_job", { job_id: JOB, lines: [{ name: "Mowing", unit_price: 45 }] })).toEqual({ saved: true });
+    // Taken off and put back as a plain line, it would come off every visit again (20261031000600_promo_once_per_job.sql).
+    const removed = sent.find((s) => s.method === "DELETE" && s.table === "job_line_items")!;
+    expect(removed.query!.get("job_id")).toBe(`eq.${JOB}`);
+    expect(removed.query!.get("discount_key")).toBe("is.null");
+    const added = sent.find((s) => s.method === "POST" && s.table === "job_line_items")!;
+    expect(added.body).toEqual([expect.objectContaining({ name: "Mowing", unit_price: 45 })]);
+    expect(added.body[0]).not.toHaveProperty("discount_billing");
   });
 
   it("invite people without handing the assistant their link", async () => {

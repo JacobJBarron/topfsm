@@ -920,14 +920,14 @@ isOneToOne: false
                   ]
                 },"invoice_line_items": {
                   Row: {
-                    "company_id": string,"description": string | null,"id": string,"invoice_id": string,"name": string,"quantity": number,"service_id": string | null,"sort": number,"taxable": boolean,"unit": string,"unit_price": number
+                    "company_id": string,"description": string | null,"discount_quote_id": string | null,"id": string,"invoice_id": string,"name": string,"quantity": number,"service_id": string | null,"sort": number,"taxable": boolean,"unit": string,"unit_price": number
                   }
                   ComputedFields: never
                   Insert: {
-                    "company_id": string,"description"?: string | null,"id"?: string,"invoice_id": string,"name": string,"quantity"?: number,"service_id"?: string | null,"sort"?: number,"taxable"?: boolean,"unit"?: string,"unit_price"?: number
+                    "company_id": string,"description"?: string | null,"discount_quote_id"?: string | null,"id"?: string,"invoice_id": string,"name": string,"quantity"?: number,"service_id"?: string | null,"sort"?: number,"taxable"?: boolean,"unit"?: string,"unit_price"?: number
                   }
                   Update: {
-                    "company_id"?: string,"description"?: string | null,"id"?: string,"invoice_id"?: string,"name"?: string,"quantity"?: number,"service_id"?: string | null,"sort"?: number,"taxable"?: boolean,"unit"?: string,"unit_price"?: number
+                    "company_id"?: string,"description"?: string | null,"discount_quote_id"?: string | null,"id"?: string,"invoice_id"?: string,"name"?: string,"quantity"?: number,"service_id"?: string | null,"sort"?: number,"taxable"?: boolean,"unit"?: string,"unit_price"?: number
                   }
                   Relationships: [
                     {
@@ -1008,6 +1008,32 @@ isOneToOne: false
       referencedColumns: ["company_id","id"]
     }
                   ]
+                },"job_discount_skips": {
+                  Row: {
+                    "company_id": string,"created_at": string,"created_by": string | null,"discount_key": string,"held": number,"held_elsewhere": number,"invoice_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "company_id": string,"created_at"?: string,"created_by"?: string | null,"discount_key": string,"held"?: number,"held_elsewhere"?: number,"invoice_id": string
+                  }
+                  Update: {
+                    "company_id"?: string,"created_at"?: string,"created_by"?: string | null,"discount_key"?: string,"held"?: number,"held_elsewhere"?: number,"invoice_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "job_discount_skips_company_id_fkey"
+      columns: ["company_id"]
+isOneToOne: false
+      referencedRelation: "companies"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "job_discount_skips_company_id_invoice_id_fkey"
+      columns: ["company_id","invoice_id"]
+isOneToOne: false
+      referencedRelation: "invoices"
+      referencedColumns: ["company_id","id"]
+    }
+                  ]
                 },"job_financials": {
                   Row: {
                     "company_id": string,"contract_total": number,"job_id": string,"updated_at": string
@@ -1030,14 +1056,14 @@ isOneToOne: true
                   ]
                 },"job_line_items": {
                   Row: {
-                    "company_id": string,"description": string | null,"id": string,"job_id": string,"name": string,"quantity": number,"service_id": string | null,"sort": number,"source_quote_id": string | null,"taxable": boolean,"unit": string,"unit_cost": number | null,"unit_labor_cost": number | null,"unit_price": number
+                    "company_id": string,"description": string | null,"discount_billing": string | null,"discount_key": string | null,"id": string,"job_id": string,"name": string,"quantity": number,"service_id": string | null,"sort": number,"source_quote_id": string | null,"taxable": boolean,"unit": string,"unit_cost": number | null,"unit_labor_cost": number | null,"unit_price": number
                   }
                   ComputedFields: never
                   Insert: {
-                    "company_id": string,"description"?: string | null,"id"?: string,"job_id": string,"name": string,"quantity"?: number,"service_id"?: string | null,"sort"?: number,"source_quote_id"?: string | null,"taxable"?: boolean,"unit"?: string,"unit_cost"?: number | null,"unit_labor_cost"?: number | null,"unit_price"?: number
+                    "company_id": string,"description"?: string | null,"discount_billing"?: string | null,"discount_key"?: string | null,"id"?: string,"job_id": string,"name": string,"quantity"?: number,"service_id"?: string | null,"sort"?: number,"source_quote_id"?: string | null,"taxable"?: boolean,"unit"?: string,"unit_cost"?: number | null,"unit_labor_cost"?: number | null,"unit_price"?: number
                   }
                   Update: {
-                    "company_id"?: string,"description"?: string | null,"id"?: string,"job_id"?: string,"name"?: string,"quantity"?: number,"service_id"?: string | null,"sort"?: number,"source_quote_id"?: string | null,"taxable"?: boolean,"unit"?: string,"unit_cost"?: number | null,"unit_labor_cost"?: number | null,"unit_price"?: number
+                    "company_id"?: string,"description"?: string | null,"discount_billing"?: string | null,"discount_key"?: string | null,"id"?: string,"job_id"?: string,"name"?: string,"quantity"?: number,"service_id"?: string | null,"sort"?: number,"source_quote_id"?: string | null,"taxable"?: boolean,"unit"?: string,"unit_cost"?: number | null,"unit_labor_cost"?: number | null,"unit_price"?: number
                   }
                   Relationships: [
                     {
@@ -1622,14 +1648,14 @@ isOneToOne: false
                   ]
                 },"promo_codes": {
                   Row: {
-                    "active": boolean,"code": string,"company_id": string,"created_at": string,"created_by": string | null,"description": string | null,"ends_on": string | null,"id": string,"kind": string,"max_uses": number | null,"min_subtotal": number,"new_clients_only": boolean,"once_per_client": boolean,"starts_on": string | null,"updated_at": string,"value": number
+                    "active": boolean,"code": string,"company_id": string,"created_at": string,"created_by": string | null,"description": string | null,"ends_on": string | null,"every_visit": boolean,"id": string,"kind": string,"max_uses": number | null,"min_subtotal": number,"new_clients_only": boolean,"once_per_client": boolean,"starts_on": string | null,"updated_at": string,"value": number
                   }
                   ComputedFields: never
                   Insert: {
-                    "active"?: boolean,"code": string,"company_id": string,"created_at"?: string,"created_by"?: string | null,"description"?: string | null,"ends_on"?: string | null,"id"?: string,"kind": string,"max_uses"?: number | null,"min_subtotal"?: number,"new_clients_only"?: boolean,"once_per_client"?: boolean,"starts_on"?: string | null,"updated_at"?: string,"value": number
+                    "active"?: boolean,"code": string,"company_id": string,"created_at"?: string,"created_by"?: string | null,"description"?: string | null,"ends_on"?: string | null,"every_visit"?: boolean,"id"?: string,"kind": string,"max_uses"?: number | null,"min_subtotal"?: number,"new_clients_only"?: boolean,"once_per_client"?: boolean,"starts_on"?: string | null,"updated_at"?: string,"value": number
                   }
                   Update: {
-                    "active"?: boolean,"code"?: string,"company_id"?: string,"created_at"?: string,"created_by"?: string | null,"description"?: string | null,"ends_on"?: string | null,"id"?: string,"kind"?: string,"max_uses"?: number | null,"min_subtotal"?: number,"new_clients_only"?: boolean,"once_per_client"?: boolean,"starts_on"?: string | null,"updated_at"?: string,"value"?: number
+                    "active"?: boolean,"code"?: string,"company_id"?: string,"created_at"?: string,"created_by"?: string | null,"description"?: string | null,"ends_on"?: string | null,"every_visit"?: boolean,"id"?: string,"kind"?: string,"max_uses"?: number | null,"min_subtotal"?: number,"new_clients_only"?: boolean,"once_per_client"?: boolean,"starts_on"?: string | null,"updated_at"?: string,"value"?: number
                   }
                   Relationships: [
                     {
@@ -1760,14 +1786,14 @@ isOneToOne: false
                   ]
                 },"quotes": {
                   Row: {
-                    "approval": Json | null,"approved_at": string | null,"change_order_for": string | null,"client_id": string,"company_id": string,"converted_at": string | null,"created_at": string,"created_by": string | null,"deposit_amount": number,"discount_amount": number,"exact_sent_at": string | null,"id": string,"lost_reason": string | null,"message": string | null,"number": number | null,"option_id": string | null,"pipeline_stage": string | null,"priced_on_site_at": string | null,"promo_code_id": string | null,"property_id": string | null,"range_accepted_at": string | null,"range_high": number | null,"range_lines": Json | null,"range_low": number | null,"range_sent_at": string | null,"request_id": string | null,"roof_package_id": string | null,"salesperson_id": string | null,"section_ids": (string)[],"sent_at": string | null,"status": string,"subtotal": number,"tax_amount": number,"tax_rate": number,"template_id": string | null,"title": string,"total": number,"updated_at": string,"valid_until": string | null
+                    "approval": Json | null,"approved_at": string | null,"change_order_for": string | null,"client_id": string,"company_id": string,"converted_at": string | null,"created_at": string,"created_by": string | null,"deposit_amount": number,"discount_amount": number,"exact_sent_at": string | null,"id": string,"lost_reason": string | null,"message": string | null,"number": number | null,"option_id": string | null,"pipeline_stage": string | null,"priced_on_site_at": string | null,"promo_code_id": string | null,"promo_every_visit": boolean | null,"property_id": string | null,"range_accepted_at": string | null,"range_high": number | null,"range_lines": Json | null,"range_low": number | null,"range_sent_at": string | null,"request_id": string | null,"roof_package_id": string | null,"salesperson_id": string | null,"section_ids": (string)[],"sent_at": string | null,"status": string,"subtotal": number,"tax_amount": number,"tax_rate": number,"template_id": string | null,"title": string,"total": number,"updated_at": string,"valid_until": string | null
                   }
                   ComputedFields: never
                   Insert: {
-                    "approval"?: Json | null,"approved_at"?: string | null,"change_order_for"?: string | null,"client_id": string,"company_id": string,"converted_at"?: string | null,"created_at"?: string,"created_by"?: string | null,"deposit_amount"?: number,"discount_amount"?: number,"exact_sent_at"?: string | null,"id"?: string,"lost_reason"?: string | null,"message"?: string | null,"number"?: number | null,"option_id"?: string | null,"pipeline_stage"?: string | null,"priced_on_site_at"?: string | null,"promo_code_id"?: string | null,"property_id"?: string | null,"range_accepted_at"?: string | null,"range_high"?: number | null,"range_lines"?: Json | null,"range_low"?: number | null,"range_sent_at"?: string | null,"request_id"?: string | null,"roof_package_id"?: string | null,"salesperson_id"?: string | null,"section_ids"?: (string)[],"sent_at"?: string | null,"status"?: string,"subtotal"?: number,"tax_amount"?: number,"tax_rate"?: number,"template_id"?: string | null,"title": string,"total"?: number,"updated_at"?: string,"valid_until"?: string | null
+                    "approval"?: Json | null,"approved_at"?: string | null,"change_order_for"?: string | null,"client_id": string,"company_id": string,"converted_at"?: string | null,"created_at"?: string,"created_by"?: string | null,"deposit_amount"?: number,"discount_amount"?: number,"exact_sent_at"?: string | null,"id"?: string,"lost_reason"?: string | null,"message"?: string | null,"number"?: number | null,"option_id"?: string | null,"pipeline_stage"?: string | null,"priced_on_site_at"?: string | null,"promo_code_id"?: string | null,"promo_every_visit"?: boolean | null,"property_id"?: string | null,"range_accepted_at"?: string | null,"range_high"?: number | null,"range_lines"?: Json | null,"range_low"?: number | null,"range_sent_at"?: string | null,"request_id"?: string | null,"roof_package_id"?: string | null,"salesperson_id"?: string | null,"section_ids"?: (string)[],"sent_at"?: string | null,"status"?: string,"subtotal"?: number,"tax_amount"?: number,"tax_rate"?: number,"template_id"?: string | null,"title": string,"total"?: number,"updated_at"?: string,"valid_until"?: string | null
                   }
                   Update: {
-                    "approval"?: Json | null,"approved_at"?: string | null,"change_order_for"?: string | null,"client_id"?: string,"company_id"?: string,"converted_at"?: string | null,"created_at"?: string,"created_by"?: string | null,"deposit_amount"?: number,"discount_amount"?: number,"exact_sent_at"?: string | null,"id"?: string,"lost_reason"?: string | null,"message"?: string | null,"number"?: number | null,"option_id"?: string | null,"pipeline_stage"?: string | null,"priced_on_site_at"?: string | null,"promo_code_id"?: string | null,"property_id"?: string | null,"range_accepted_at"?: string | null,"range_high"?: number | null,"range_lines"?: Json | null,"range_low"?: number | null,"range_sent_at"?: string | null,"request_id"?: string | null,"roof_package_id"?: string | null,"salesperson_id"?: string | null,"section_ids"?: (string)[],"sent_at"?: string | null,"status"?: string,"subtotal"?: number,"tax_amount"?: number,"tax_rate"?: number,"template_id"?: string | null,"title"?: string,"total"?: number,"updated_at"?: string,"valid_until"?: string | null
+                    "approval"?: Json | null,"approved_at"?: string | null,"change_order_for"?: string | null,"client_id"?: string,"company_id"?: string,"converted_at"?: string | null,"created_at"?: string,"created_by"?: string | null,"deposit_amount"?: number,"discount_amount"?: number,"exact_sent_at"?: string | null,"id"?: string,"lost_reason"?: string | null,"message"?: string | null,"number"?: number | null,"option_id"?: string | null,"pipeline_stage"?: string | null,"priced_on_site_at"?: string | null,"promo_code_id"?: string | null,"promo_every_visit"?: boolean | null,"property_id"?: string | null,"range_accepted_at"?: string | null,"range_high"?: number | null,"range_lines"?: Json | null,"range_low"?: number | null,"range_sent_at"?: string | null,"request_id"?: string | null,"roof_package_id"?: string | null,"salesperson_id"?: string | null,"section_ids"?: (string)[],"sent_at"?: string | null,"status"?: string,"subtotal"?: number,"tax_amount"?: number,"tax_rate"?: number,"template_id"?: string | null,"title"?: string,"total"?: number,"updated_at"?: string,"valid_until"?: string | null
                   }
                   Relationships: [
                     {
@@ -1982,14 +2008,14 @@ isOneToOne: false
                   ]
                 },"requests": {
                   Row: {
-                    "answers": NonNullable<Json>,"assigned_to": string | null,"client_id": string,"company_id": string,"created_at": string,"created_by": string | null,"details": string | null,"id": string,"intake_form_id": string | null,"number": number | null,"preferred_times": NonNullable<Json>,"promo_code": string | null,"property_id": string | null,"source": string,"status": string,"title": string,"updated_at": string,"web_visit": Json | null,"website_form_id": string | null
+                    "answers": NonNullable<Json>,"assigned_to": string | null,"client_id": string,"company_id": string,"created_at": string,"created_by": string | null,"details": string | null,"id": string,"intake_form_id": string | null,"number": number | null,"preferred_times": NonNullable<Json>,"promo_code": string | null,"promo_problem": string | null,"property_id": string | null,"rejected_promo_code": string | null,"source": string,"status": string,"title": string,"updated_at": string,"web_visit": Json | null,"website_form_id": string | null
                   }
                   ComputedFields: never
                   Insert: {
-                    "answers"?: NonNullable<Json>,"assigned_to"?: string | null,"client_id": string,"company_id": string,"created_at"?: string,"created_by"?: string | null,"details"?: string | null,"id"?: string,"intake_form_id"?: string | null,"number"?: number | null,"preferred_times"?: NonNullable<Json>,"promo_code"?: string | null,"property_id"?: string | null,"source"?: string,"status"?: string,"title": string,"updated_at"?: string,"web_visit"?: Json | null,"website_form_id"?: string | null
+                    "answers"?: NonNullable<Json>,"assigned_to"?: string | null,"client_id": string,"company_id": string,"created_at"?: string,"created_by"?: string | null,"details"?: string | null,"id"?: string,"intake_form_id"?: string | null,"number"?: number | null,"preferred_times"?: NonNullable<Json>,"promo_code"?: string | null,"promo_problem"?: string | null,"property_id"?: string | null,"rejected_promo_code"?: string | null,"source"?: string,"status"?: string,"title": string,"updated_at"?: string,"web_visit"?: Json | null,"website_form_id"?: string | null
                   }
                   Update: {
-                    "answers"?: NonNullable<Json>,"assigned_to"?: string | null,"client_id"?: string,"company_id"?: string,"created_at"?: string,"created_by"?: string | null,"details"?: string | null,"id"?: string,"intake_form_id"?: string | null,"number"?: number | null,"preferred_times"?: NonNullable<Json>,"promo_code"?: string | null,"property_id"?: string | null,"source"?: string,"status"?: string,"title"?: string,"updated_at"?: string,"web_visit"?: Json | null,"website_form_id"?: string | null
+                    "answers"?: NonNullable<Json>,"assigned_to"?: string | null,"client_id"?: string,"company_id"?: string,"created_at"?: string,"created_by"?: string | null,"details"?: string | null,"id"?: string,"intake_form_id"?: string | null,"number"?: number | null,"preferred_times"?: NonNullable<Json>,"promo_code"?: string | null,"promo_problem"?: string | null,"property_id"?: string | null,"rejected_promo_code"?: string | null,"source"?: string,"status"?: string,"title"?: string,"updated_at"?: string,"web_visit"?: Json | null,"website_form_id"?: string | null
                   }
                   Relationships: [
                     {
@@ -3407,6 +3433,9 @@ isOneToOne: false
         isOneToOne: false
         isSetofReturn: true
       } },
+"job_promo_discounts":
+{ Args: { "p_job": string }; Returns: Json
+                           },
 "job_scope":
 { Args: { "p_job": string }; Returns: {
               "description": string,"id": string,"name": string,"quantity": number,"sort": number,"unit": string
@@ -3456,6 +3485,9 @@ isOneToOne: false
                            },
 "postpone_automation_run":
 { Args: { "p_busy"?: boolean,"p_id": number,"p_note"?: string,"p_result": Json,"p_token": string,"p_until": string }; Returns: boolean
+                           },
+"promo_code_jobs":
+{ Args: { "p_every_visit": boolean,"p_promo": string }; Returns: number
                            },
 "promo_code_usage":
 { Args: { "p_company": string }; Returns: {
@@ -3583,8 +3615,14 @@ isOneToOne: false
         isOneToOne: true
         isSetofReturn: false
       } },
+"set_job_discount_billing":
+{ Args: { "p_every_visit": boolean,"p_job": string,"p_key": string }; Returns: number
+                           },
 "set_photo_shareable":
 { Args: { "p_attachment": string,"p_shareable": boolean }; Returns: Json
+                           },
+"set_promo_code_jobs":
+{ Args: { "p_every_visit": boolean,"p_promo": string }; Returns: number
                            },
 "set_review_client":
 { Args: { "p_by": string,"p_client": string,"p_company": string,"p_review": string }; Returns: Json
@@ -3750,7 +3788,7 @@ isOneToOne: false
 { Args: { "p_agent": string,"p_company": string,"p_ip": string }; Returns: Json
                            },
 "website_form_request":
-{ Args: { "p_address"?: Json,"p_answers"?: Json,"p_company_name"?: string,"p_contact"?: Json,"p_details"?: string,"p_email"?: string,"p_form": string,"p_name"?: string,"p_phone"?: string,"p_title"?: string,"p_web_visit"?: Json }; Returns: Json
+{ Args: { "p_address"?: Json,"p_answers"?: Json,"p_company_name"?: string,"p_contact"?: Json,"p_details"?: string,"p_email"?: string,"p_form": string,"p_name"?: string,"p_phone"?: string,"p_promo"?: string,"p_title"?: string,"p_web_visit"?: Json }; Returns: Json
                            },
 "website_forms_set_enabled":
 { Args: { "p_company": string,"p_enabled": boolean }; Returns: boolean

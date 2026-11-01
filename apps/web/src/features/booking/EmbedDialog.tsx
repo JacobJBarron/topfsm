@@ -7,8 +7,21 @@ import { copyText } from "@/lib/clipboard";
 import { embedCode, nextEmbedCode } from "./embed";
 import styles from "./EmbedDialog.module.css";
 
-/** A site builder and where the code goes in it. A site built by a developer gets DeveloperSteps instead. */
-interface Builder { id: string; label: string; steps?: ReactNode[]; note?: ReactNode }
+/**
+ * A site builder and where the code goes in it. A site built by a developer gets DeveloperSteps
+ * instead. `framed`: the builder puts the code in a frame of its own, so the page's ?promo= never
+ * reaches the script (embed.ts).
+ */
+interface Builder { id: string; label: string; steps?: ReactNode[]; note?: ReactNode; framed?: boolean }
+
+/** What a link with ?promo= does, where the script runs on the page itself. The code is pasted inline, so a form put on a site before the script handed codes on needs it again. */
+const PAGE_PROMO = (
+  <>A link to your page like <code className={styles.inline}>yoursite.com/quote?promo=SPRING15</code> fills in the code on the form. Already have the form on your site? Copy the code again and paste it over the old one, so these links work.</>
+);
+/** Where the builder frames the code: the form's own link (below) takes the code instead. */
+const FRAMED_PROMO = (
+  <>Codes in your page's link don't reach the form on this site builder. To share a promo code, use this form's own link below with <code className={`${styles.inline} nowrap`}>?promo=</code> and the code on the end.</>
+);
 
 // From each builder's help pages (October 2026). Keep in step with the embedding page in the website docs.
 const BUILDERS: Builder[] = [
@@ -31,6 +44,7 @@ const BUILDERS: Builder[] = [
       <>Drag the box's bottom edge down until the whole form shows. Wix keeps the box at the size you give it.</>,
       <>Publish.</>,
     ],
+    framed: true,
   },
   {
     id: "wordpress",
@@ -50,6 +64,7 @@ const BUILDERS: Builder[] = [
       <>Paste the code into <strong>Custom Code</strong> and click <strong>Done</strong>.</>,
       <>Publish.</>,
     ],
+    framed: true,
   },
   {
     id: "google-sites",
@@ -59,6 +74,7 @@ const BUILDERS: Builder[] = [
       <>Paste the code, click <strong>Next</strong>, then <strong>Insert</strong>.</>,
       <>Drag the box's bottom edge down until the whole form shows, then <strong>Publish</strong>.</>,
     ],
+    framed: true,
   },
   { id: "developer", label: "Built by a developer" },
   {
@@ -67,7 +83,7 @@ const BUILDERS: Builder[] = [
     steps: [
       <>Find the block for adding your own code. It's usually called <strong>Embed</strong>, <strong>HTML</strong>, <strong>Custom code</strong> or <strong>Code</strong>.</>,
       <>Paste the code into it where the form should go, and publish.</>,
-      <>If the form shows in a box with its own scroll bar, the site builder left out the part that fits it to the form. It still works; make the box taller if you can.</>,
+      <>If the form shows in a box with its own scroll bar, the site builder left out the part that fits it to the form. It still works; make the box taller if you can. Codes in your page's link won't reach it then either, so share the form's own link below with the code.</>,
     ],
   },
 ];
@@ -98,6 +114,7 @@ export function EmbedDialog({ name, url, onClose }: { name: string; url: string;
           <DeveloperSteps name={name} url={url} />
         )}
         {builder.note && <p className="muted small" style={{ margin: 0 }}>{builder.note}</p>}
+        <p className="muted small" style={{ margin: 0 }}>{builder.framed ? FRAMED_PROMO : PAGE_PROMO}</p>
         <div className={`stack-sm ${styles.panel}`}>
           <strong>Can't add code? Link to the form instead</strong>
           <span className="muted small">Any website can have a button, like “Get a quote”, that opens the form's link. It works on every plan.</span>
@@ -105,6 +122,7 @@ export function EmbedDialog({ name, url, onClose }: { name: string; url: string;
             <code className="code-pill grow">{url}</code>
             <Button size="sm" icon="copy" aria-label="Copy link" onClick={() => copyText(url, "Link copied")}>Copy</Button>
           </span>
+          <span className="muted small">With a promo code, add it on the end: <code className={styles.inline}>{`${url}?promo=SPRING15`}</code></span>
         </div>
       </div>
     </Dialog>

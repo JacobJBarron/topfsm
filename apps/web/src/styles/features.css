@@ -959,6 +959,8 @@ button.material-result:focus-visible { outline: none; box-shadow: var(--ring); }
 /* Promo codes */
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: var(--tracking-caps); }
 .promo-code { flex: none; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--fs-13); font-weight: 600; letter-spacing: var(--tracking-caps); color: var(--ink); padding: 5px 9px; border-radius: var(--radius-sm); background: var(--fill-2); border: 1px dashed var(--border); }
+/* A code typed on a website form that wasn't valid: struck through and muted, so it doesn't read as one that works. */
+.promo-code-rejected { color: var(--text-3); background: transparent; text-decoration: line-through; }
 .promo-applied { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .promo-entry { display: flex; gap: 6px; align-items: center; }
 .promo-entry .input { text-transform: uppercase; }

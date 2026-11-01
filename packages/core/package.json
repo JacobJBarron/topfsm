@@ -56,7 +56,8 @@
     "./marketing": "./src/marketing.ts",
     "./campaigns": "./src/campaigns.ts",
     "./reviews": "./src/reviews.ts",
-    "./social": "./src/social.ts"
+    "./social": "./src/social.ts",
+    "./promos": "./src/promos.ts"
   },
   "scripts": {
     "test": "vitest run",

@@ -45,6 +45,8 @@ export interface WebsiteFormsSetup {
   enabled: boolean;
   /** Whether this Crewtavo can send email: without it, messages only show in Requests. */
   email_ready: boolean;
+  /** The business has a promo code turned on, so the form to paste has a box for one. Older servers leave it out. */
+  promo_codes?: boolean;
   forms: WebsiteForm[];
 }
 
@@ -108,7 +110,7 @@ export function WebsiteFormsPanel({ kind = "contact" }: { kind?: FormKind }) {
       </section>
     );
   }
-  const { forms, email_ready } = setup.data;
+  const { forms, email_ready, promo_codes = false } = setup.data;
   const submitAdd = (e: FormEvent) => {
     e.preventDefault();
     if (adding?.trim()) add.mutate(adding.trim());
@@ -124,7 +126,7 @@ export function WebsiteFormsPanel({ kind = "contact" }: { kind?: FormKind }) {
           </div>
         </div>
       )}
-      {forms.map((form, i) => <FormCard key={form.id} form={form} first={i === 0} kind={kind} />)}
+      {forms.map((form, i) => <FormCard key={form.id} form={form} first={i === 0} kind={kind} promoBox={promo_codes} />)}
       <section className="card card-pad stack-sm" aria-labelledby="website-forms-add" style={{ gap: 10 }}>
         <h2 id="website-forms-add" className="section-title" style={{ fontSize: 16 }}>{forms.length ? "Another form" : "Add a form"}</h2>
         <span className="muted small">
@@ -147,7 +149,7 @@ export function WebsiteFormsPanel({ kind = "contact" }: { kind?: FormKind }) {
 }
 
 /** One form: its address and how to use it, then who gets its email, then the rest. */
-function FormCard({ form, first, kind }: { form: WebsiteForm; first: boolean; kind: FormKind }) {
+function FormCard({ form, first, kind, promoBox }: { form: WebsiteForm; first: boolean; kind: FormKind; promoBox: boolean }) {
   const careers = kind === "careers";
   const queryClient = useQueryClient();
   const [name, setName] = useState(form.name);
@@ -191,7 +193,7 @@ function FormCard({ form, first, kind }: { form: WebsiteForm; first: boolean; ki
 
   // A careers form sends its résumé along: multipart, or the file never leaves the browser.
   const opening = careers ? `<form action="${form.url}" method="POST" enctype="multipart/form-data">` : `<form action="${form.url}" method="POST">`;
-  const example = careers ? exampleApplicationForm(form.url) : exampleForm(form.url);
+  const example = careers ? exampleApplicationForm(form.url) : exampleForm(form.url, { promo: promoBox });
   const heading = `website-form-${form.id}`;
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -235,6 +237,7 @@ function FormCard({ form, first, kind }: { form: WebsiteForm; first: boolean; ki
         ) : (
           <span className="muted small">
             Fields named <strong>name</strong>, <strong>email</strong>, <strong>phone</strong>, <strong>address</strong> and <strong>message</strong> fill in the client and the request.
+            A field named <strong>promo</strong>, <strong>promo_code</strong>, <strong>promocode</strong>, <strong>coupon</strong>, <strong>coupon_code</strong> or <strong>discount_code</strong> (in any case, with spaces or dashes too) is checked as a promo code. A valid one is ready to apply on the quote.
             Anything else your form asks comes along with the message. Moving from Formspree? Change the action to this address: <code className={styles.inline}>_gotcha</code>, <code className={styles.inline}>_subject</code>, <code className={styles.inline}>_next</code> and <code className={styles.inline}>_replyto</code> work the same.
           </span>
         )}

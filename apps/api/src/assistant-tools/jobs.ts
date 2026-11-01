@@ -161,7 +161,7 @@ export const jobTools = {
   }),
   update_job: tool({
     description:
-      "Change a job: its title, instructions, crew, visit time and length, billing, how it repeats, first or last date, season, or its lines (lines replaces them all). Set ends_on to stop a recurring job, status archived to put it away. A recurring job's upcoming visits follow the change.",
+      "Change a job: its title, instructions, crew, visit time and length, billing, how it repeats, first or last date, season, or its lines (lines replaces them all, apart from a promo code's discount, which stays). Set ends_on to stop a recurring job, status archived to put it away. A recurring job's upcoming visits follow the change.",
     input: z.object({
       job_id: z.uuid(),
       ...jobFields,
@@ -189,7 +189,8 @@ export const jobTools = {
       };
       if (Object.keys(patch).length) await changed(ctx.db.from("jobs").update(patch).eq("id", a.job_id).eq("company_id", ctx.companyId).select("id"), "That job");
       if (a.lines) {
-        const { error } = await ctx.db.from("job_line_items").delete().eq("job_id", a.job_id);
+        // A promo code's discount stays as it is: put back as a plain line, it would come off every visit again.
+        const { error } = await ctx.db.from("job_line_items").delete().eq("job_id", a.job_id).is("discount_key", null);
         if (error) throw new Error(friendly(error.message));
         const lines = await jobLines(ctx, a.job_id, a.lines);
         if (lines.length) {

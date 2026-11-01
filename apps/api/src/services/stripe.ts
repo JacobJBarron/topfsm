@@ -26,7 +26,11 @@ export class StripeError extends Error {
 
 type Param = string | number | boolean | null | undefined | Param[] | { [key: string]: Param };
 
-/** Stripe's form encoding: nested objects as a[b]=1 and arrays as a[0]=x. Empty values are left out. */
+/**
+ * Stripe's form encoding: nested objects as a[b]=1 and arrays as a[0]=x. Null and undefined are left
+ * out; an empty string is sent, which is how Stripe is told to clear a value or not inherit one
+ * (discounts=).
+ */
 export function stripeForm(params: Record<string, Param>, prefix = "", out = new URLSearchParams()): URLSearchParams {
   for (const [key, value] of Object.entries(params)) {
     const name = prefix ? `${prefix}[${key}]` : key;

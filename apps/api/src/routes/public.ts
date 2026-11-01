@@ -9,6 +9,7 @@ import { hidesExactPrice, inRangeMode, isSiteAdjustment, optionsRange, priceRang
 import { marketingOn, referralSettings, referralsReady, referrerLine } from "@crewtavo/core/marketing";
 import { chosenTotals, countsOn, optionBaseTotal, optionTotals, type OptionLine } from "@crewtavo/core/money";
 import { isPackagePicturePath, packagePictureSrc } from "@crewtavo/core/presets";
+import { quotePromoRule } from "@crewtavo/core/promos";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../env";
@@ -287,7 +288,7 @@ publicRoutes.get("/hub/:token", async (c) => {
       await admin
         .from("quotes")
         .select(
-          "id, number, status, title, message, subtotal, discount_amount, tax_rate, tax_amount, total, deposit_amount, valid_until, sent_at, created_at, approved_at, approval, client_id, change_order_for, template_id, roof_package_id, option_id, section_ids, range_low, range_high, range_sent_at, range_lines, range_accepted_at, priced_on_site_at, exact_sent_at, promo_code_id, promo:promo_codes(code, kind, value, description, min_subtotal), client:clients(display_name, billing_address), property:properties(line1, city, region, postal_code)",
+          "id, number, status, title, message, subtotal, discount_amount, tax_rate, tax_amount, total, deposit_amount, valid_until, sent_at, created_at, approved_at, approval, client_id, change_order_for, template_id, roof_package_id, option_id, section_ids, range_low, range_high, range_sent_at, range_lines, range_accepted_at, priced_on_site_at, exact_sent_at, promo_code_id, promo_every_visit, promo:promo_codes(code, kind, value, description, min_subtotal, every_visit), client:clients(display_name, billing_address), property:properties(line1, city, region, postal_code)",
         )
         .eq("company_id", l.c)
         .eq("id", l.id)
@@ -307,6 +308,8 @@ publicRoutes.get("/hub/:token", async (c) => {
       l.pv ? null : homeLink(c, l.c, quote.client_id),
     ]);
     const lines = [...must(lineRows)].sort((a, b) => a.sort - b.sort);
+    // How the code comes off: as it was approved once it's signed, so a signed quote keeps its words (core quotePromoRule).
+    const promo = quote.promo && { ...quote.promo, every_visit: quotePromoRule(quote) };
     const shown = quote.option_id;
     const money = { taxRate: quote.tax_rate, discountAmount: quote.discount_amount, promo: quote.promo };
     // Each option's price before add-ons: what its range and its tier word come from.
@@ -405,7 +408,7 @@ publicRoutes.get("/hub/:token", async (c) => {
         total: exact ? quote.total : null,
         deposit_amount: exact ? quote.deposit_amount : null,
         valid_until: quote.valid_until, sent_at: quote.sent_at, created_at: quote.created_at, approved_at: quote.approved_at, client_id: quote.client_id, change_order_for: quote.change_order_for,
-        promo: quote.promo, client: quote.client ? { display_name: quote.client.display_name } : null, property: quote.property,
+        promo, client: quote.client ? { display_name: quote.client.display_name } : null, property: quote.property,
         package: roofPackage?.data ? { name: roofPackage.data.name } : null,
         approval: signed ? publicApproval(quote.approval, quote.approved_at) : null,
         // A price agreed on site is in effect, so a promo code can't go on it (the promo route says so).
@@ -428,7 +431,7 @@ publicRoutes.get("/hub/:token", async (c) => {
     await admin
       .from("invoices")
       .select(
-        "id, number, status, subject, notes, issued_on, due_on, subtotal, discount_amount, credit_amount, tax_amount, total, retainage_amount, amount_paid, balance_due, client_id, promo:promo_codes(code, kind, value, description), credits:referral_credits(amount, note, created_at), client:clients(display_name, billing_address), job:jobs(property:properties(line1, city, region, postal_code), quote:quotes!jobs_company_id_quote_id_fkey(approval, option_id, roof_package_id, option:quote_options!quotes_option_fkey(name, warranty))), lines:invoice_line_items(name, description, quantity, unit, unit_price, sort), payments(amount, tip_amount, received_at)",
+        "id, number, status, subject, notes, issued_on, due_on, subtotal, discount_amount, credit_amount, tax_amount, total, retainage_amount, amount_paid, balance_due, client_id, promo:promo_codes(code, kind, value, description), credits:referral_credits(amount, note, created_at), client:clients(display_name, billing_address), job:jobs(property:properties(line1, city, region, postal_code), quote:quotes!jobs_company_id_quote_id_fkey(approval, option_id, roof_package_id, option:quote_options!quotes_option_fkey(name, warranty))), lines:invoice_line_items(name, description, quantity, unit, unit_price, sort, discount_quote_id), payments(amount, tip_amount, received_at)",
       )
       .eq("company_id", l.c)
       .eq("id", l.id)
@@ -446,12 +449,15 @@ publicRoutes.get("/hub/:token", async (c) => {
   // The template's terms and invoice sections, filled in with the invoice's facts (the customer's
   // billing address and the job's address only go into the words, never out on their own). Its
   // {Option} and {Warranty} are those of the estimate the job came from (contracts.ts invoiceFill).
-  const { client, job, ...billed } = invoice;
+  const { client, job, lines: lineRows, ...billed } = invoice;
   const fill = await invoiceFill(admin, l.c, job?.quote);
   const facts = invoiceInput(invoice, client, job?.property ?? null, company, template, fill);
   const contract = await invoiceContract(admin, l.c, template, facts);
+  // A line with the job's promo code on it: the invoice takes no other code (apply_promo_code says so too).
+  const lines = lineRows.map(({ discount_quote_id: _key, ...line }) => line);
   return c.json({
-    kind: "invoice", company, template, contract, invoice: { ...billed, client: client ? { display_name: client.display_name } : null }, preview: Boolean(l.pv), tips,
+    kind: "invoice", company, template, contract, invoice: { ...billed, lines, client: client ? { display_name: client.display_name } : null }, preview: Boolean(l.pv), tips,
+    promo_line: lineRows.some((line) => line.discount_quote_id),
     drawings,
     can_pay: !l.pv && online.enabled && !online.processing && Number(invoice.balance_due) > 0,
     processing: online.processing,

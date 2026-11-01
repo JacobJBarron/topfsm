@@ -495,6 +495,32 @@ describe("signing online", () => {
   });
 });
 
+describe("how a quote's promo code comes off, in the Client Hub", () => {
+  const coded = (status: string, everyVisit: boolean, signedRule: boolean | null = null) =>
+    roofer({
+      status, range_low: null, range_high: null, approved_at: status === "sent" ? null : "2026-10-25T18:00:00Z",
+      approval: status === "sent" ? null : { name: "Dana Whitfield", signature: PNG, signed_at: "2026-10-25T18:00:00Z", total: 18304 },
+      promo_code_id: "p-1", discount_amount: 25, promo_every_visit: signedRule,
+      promo: { code: "WEEKLY25", kind: "amount", value: 25, description: null, min_subtotal: 0, every_visit: everyVisit },
+    });
+
+  it("says the code's rule while the quote is open", async () => {
+    coded("sent", false);
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).quote.promo).toMatchObject({ code: "WEEKLY25", every_visit: false });
+  });
+
+  it("keeps the rule the client approved, whatever the code says now", async () => {
+    // Approved while the code came off once; the code was switched to every visit since.
+    coded("converted", true, false);
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).quote.promo).toMatchObject({ code: "WEEKLY25", every_visit: false });
+    coded("approved", false, true);
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).quote.promo.every_visit).toBe(true);
+    // Approved before quotes said how a code comes off: it still says nothing.
+    coded("converted", true, null);
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).quote.promo.every_visit).toBeNull();
+  });
+});
+
 // Two options: an architectural shingle roof (shown) and a standing-seam metal one, each with an add-on,
 // on shared tear-off, drip edge and gutter guards. Without tax or a discount, the shingle roof is
 // $1,734 + $735 + $12,544 = $15,013 and the metal one $1,734 + $735 + $28,784 = $31,253.
@@ -992,6 +1018,25 @@ describe("an invoice in the Client Hub", () => {
     expect(body.invoice).not.toHaveProperty("job");
     const text = JSON.stringify(body);
     for (const hidden of ["billing_address", "PO Box 12", "Another business's words", "may cancel"]) expect(text).not.toContain(hidden);
+    expect(body.promo_line).toBe(false);
+  });
+
+  it("says when its job's promo code is on a line, so no other code goes on it, without sending the line's key", async () => {
+    withOptions();
+    state.tables.invoices = [{
+      id: INVOICE, company_id: ROOFER, number: 78, status: "sent", subject: "Weekly mowing", notes: null, issued_on: "2026-10-01", due_on: "2026-10-31",
+      subtotal: 20, discount_amount: 0, tax_amount: 0, total: 20, retainage_amount: 0, amount_paid: 0, balance_due: 20, client_id: CLIENT, promo: null,
+      client: { display_name: "Dana Whitfield", billing_address: null }, job: { property: null },
+      lines: [
+        { name: "Mowing", description: null, quantity: 1, unit: "visit", unit_price: 45, sort: 1, discount_quote_id: null },
+        { name: "Promo code WEEKLY25", description: null, quantity: 1, unit: "ea", unit_price: -25, sort: 2, discount_quote_id: QUOTE },
+      ],
+      payments: [], credit_amount: 0, credits: [],
+    }];
+    const body = await (await hub({ t: "invoice", id: INVOICE })).json();
+    expect(body.promo_line).toBe(true);
+    expect(body.invoice.lines.map((l: { name: string }) => l.name)).toEqual(["Mowing", "Promo code WEEKLY25"]);
+    expect(JSON.stringify(body.invoice.lines)).not.toContain("discount_quote_id");
   });
 });
 

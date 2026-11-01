@@ -1,3 +1,4 @@
+import { visitPrice } from "@crewtavo/core/promos";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useDeferredValue, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -44,7 +45,7 @@ export function JobsPage() {
     queryFn: async () => {
       let q = supabase()
         .from("jobs")
-        .select("id, number, title, status, kind, financials:job_financials(contract_total), client:clients(display_name), property:properties(line1, city), visits(id, status, scheduled_on)")
+        .select("id, number, title, status, kind, financials:job_financials(contract_total), lines:job_line_items(quantity, unit_price, discount_billing), client:clients(display_name), property:properties(line1, city), visits(id, status, scheduled_on)")
         .eq("company_id", company.id)
         .in("status", [...statuses])
         .order("created_at", { ascending: false })
@@ -117,7 +118,8 @@ export function JobsPage() {
                         {late > 0 && <span className="text-danger strong"> · {late} overdue</span>}
                       </div>
                     </td>
-                    {canSell && <td className="num">{j.kind === "recurring" ? <span className="muted small">{formatMoney(j.financials?.contract_total ?? 0)}/visit</span> : formatMoney(j.financials?.contract_total ?? 0)}</td>}
+                    {/* A visit's price: a once-per-job promo code comes off the first invoice only, not every visit. */}
+                    {canSell && <td className="num">{j.kind === "recurring" ? <span className="muted small">{formatMoney(visitPrice(j.financials?.contract_total, j.lines))}/visit</span> : formatMoney(j.financials?.contract_total ?? 0)}</td>}
                     <td><EntityStatus kind="job" status={j.status} /></td>
                   </tr>
                 );

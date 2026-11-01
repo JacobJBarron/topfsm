@@ -131,7 +131,7 @@ insert into public.routes (company_id, crew_id, route_date) values (:'co', :'cre
 insert into public.measurements (company_id, property_id, geojson) values (:'co', :'p1', '{"type": "FeatureCollection", "features": []}');
 insert into public.sop_categories (company_id, name) values (:'co', 'Safety') returning id as cat \gset
 insert into public.sop_pages (company_id, category_id, title, status) values (:'co', :'cat', 'Ladder safety', 'published');
-insert into public.promo_codes (company_id, code, kind, value) values (:'co', 'SPRING', 'percent', 10);
+insert into public.promo_codes (company_id, code, kind, value) values (:'co', 'SPRING', 'percent', 10) returning id as spring \gset
 insert into public.user_signatures (company_id, user_id, image) values (:'co', 'd1070000-0000-0000-0000-000000000001', 'data:image/png;base64,AAAA');
 insert into public.time_entries (company_id, user_id, category, started_at, ended_at) values
   (:'co', 'd1070000-0000-0000-0000-000000000004', 'shop', now() - interval '3 hours', now() - interval '2 hours'),
@@ -267,6 +267,8 @@ values (:'co', :'c1', 'Neighbor Nia', 50, 50, 'earned', now()) returning id as e
 insert into public.invoices (company_id, client_id) values (:'co', :'c1') returning id as credit_invoice \gset
 insert into public.invoice_line_items (company_id, invoice_id, name, quantity, unit_price) values (:'co', :'credit_invoice', 'Gutter cleaning', 1, 200);
 insert into public.referral_credit_skips (company_id, referral_id, invoice_id) values (:'co', :'earned_ref', :'roof_invoice');
+-- A draft a job's promo discount was taken off (20261031000600_promo_once_per_job.sql): the office's.
+insert into public.job_discount_skips (company_id, invoice_id, discount_key) values (:'co', :'credit_invoice', gen_random_uuid());
 insert into public.referral_asks (company_id, client_id) values (:'co', :'c1');
 insert into public.review_requests (company_id, client_id) values (:'co', :'c1');
 -- A Google review of Ann's, and the company's review sync.
@@ -510,12 +512,13 @@ select t1070.check(array(
   'equipment_conflicts(uuid, uuid[], date, timestamp with time zone, timestamp with time zone, uuid)', 'global_search(uuid, text, integer)', 'inactive_client_count(uuid, integer)',
   'job_material_costs(uuid)', 'job_pay_accept(uuid, uuid[])', 'job_pay_cancel(uuid)', 'job_pay_costs(uuid[])', 'job_pay_covers(uuid, uuid, uuid)', 'job_pay_mark_done(uuid, date)',
   'job_pay_mark_paid(uuid[], text, date, text, numeric)', 'job_pay_start(uuid, uuid, uuid, uuid[])', 'job_pay_suggest(uuid, uuid, uuid, uuid[])',
-  'job_pay_unmark_paid(uuid[])', 'job_scope(uuid)', 'last_referral_ask(uuid, uuid)', 'last_review_ask(uuid, uuid)', 'marketing_set_enabled(uuid, boolean)', 'marketing_summary(uuid)', 'material_choices(uuid)', 'my_crew_ids(uuid)', 'my_sub_offers(boolean, uuid)', 'my_sub_pay_totals(uuid)',
-  'promo_code_usage(uuid)', 'put_quote_package(uuid, uuid, jsonb, boolean)', 'record_photos(uuid, uuid, uuid)',
+  'job_pay_unmark_paid(uuid[])', 'job_promo_discounts(uuid)', 'job_scope(uuid)', 'last_referral_ask(uuid, uuid)', 'last_review_ask(uuid, uuid)', 'marketing_set_enabled(uuid, boolean)', 'marketing_summary(uuid)', 'material_choices(uuid)', 'my_crew_ids(uuid)', 'my_sub_offers(boolean, uuid)', 'my_sub_pay_totals(uuid)',
+  'promo_code_jobs(uuid, boolean)', 'promo_code_usage(uuid)', 'put_quote_package(uuid, uuid, jsonb, boolean)', 'record_photos(uuid, uuid, uuid)',
   'referral_auto_apply(uuid, boolean)', 'referral_credits_for(uuid, uuid)', 'referral_give_credit(uuid)', 'referral_no_reward(uuid)', 'referral_set_given(uuid)',
   'referral_stats(uuid, timestamp with time zone, timestamp with time zone)',
   'remove_promo_code(text, uuid)', 'remove_quote_option(uuid, uuid)', 'remove_referral_credit(uuid)', 'review_stats(uuid)',
-  'search_sops(uuid, text, integer, boolean)', 'send_sub_offer(uuid, timestamp with time zone)', 'set_photo_shareable(uuid, boolean)', 'set_sub_reminders(uuid, boolean)',
+  'search_sops(uuid, text, integer, boolean)', 'send_sub_offer(uuid, timestamp with time zone)', 'set_job_discount_billing(uuid, uuid, boolean)', 'set_photo_shareable(uuid, boolean)',
+  'set_promo_code_jobs(uuid, boolean)', 'set_sub_reminders(uuid, boolean)',
   'set_sub_sign_in_countries(uuid, text[])', 'sign_quote(uuid, jsonb, uuid, numeric)', 'social_photos(uuid, timestamp with time zone, uuid, integer, uuid)',
   'storage_overview(uuid)', 'storage_set_allowance(uuid, uuid, text, bigint)', 'storage_set_limit(uuid, text, bigint)', 'sub_1099_totals(uuid, integer)', 'sub_wc_audit(uuid, date, date)', 'time_entry_places(uuid, uuid[])',
   'trash_delete_forever(uuid, jsonb)', 'visit_contact(uuid)', 'web_analytics_save(uuid, jsonb)', 'web_stats(uuid, date, date)',
@@ -577,6 +580,11 @@ select t1070.expect_error(format('select public.create_company(%L)', 'Al''s Roof
 select t1070.expect_error(format('select public.create_invoice_for_job(%L)', :'j1'), 'create_invoice_for_job refuses, though they see the job');
 select t1070.expect_error(format('select public.convert_quote_to_job(%L)', :'q1'), 'convert_quote_to_job finds no quote');
 select t1070.expect_error(format('select public.apply_promo_code(%L, %L, %L)', 'quote', :'q1', 'SPRING'), 'apply_promo_code finds no quote');
+-- A job's promo discounts (20261031000600_promo_once_per_job.sql) are the office's and sales'.
+select t1070.expect_error(format('select public.job_promo_discounts(%L)', :'j1'), 'job_promo_discounts refuses, though they see the job');
+select t1070.expect_error(format('select public.set_job_discount_billing(%L, gen_random_uuid(), true)', :'j1'), 'set_job_discount_billing refuses');
+select t1070.expect_error(format('select public.promo_code_jobs(%L, true)', :'spring'), 'promo_code_jobs finds no code');
+select t1070.expect_error(format('select public.set_promo_code_jobs(%L, true)', :'spring'), 'set_promo_code_jobs finds no code');
 -- The estimate's options, its package and signing it on the iPad (20261025000100_contracts_and_options.sql)
 -- run as the caller, and a sub sees no quote.
 select t1070.expect_error(format('select public.apply_quote_options(%L, %L, %L)', :'q1', '[]', 'add'), 'apply_quote_options finds no quote');
