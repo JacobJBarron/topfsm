@@ -49,11 +49,8 @@ export function CategoriesDialog({ onClose, counts }: { onClose: () => void; cou
   });
   const remove = useMutation({
     meta: { success: "Category removed" },
-    mutationFn: async (id: string) => {
-      const cover = categories.data?.find((c) => c.id === id)?.cover_path;
-      unwrap(await supabase().from("sop_categories").delete().eq("id", id));
-      if (cover) void supabase().storage.from("files").remove([cover]);
-    },
+    // Its cover photo goes to the Trash with it, by itself (20261102000100_category_covers_kept.sql).
+    mutationFn: async (id: string) => unwrap(await supabase().from("sop_categories").delete().eq("id", id)),
     onSettled: refresh,
   });
 
@@ -127,13 +124,9 @@ function CategoryPhoto({ category }: { category: { id: string; name: string; cov
         if (!jpeg) throw new Error("Crewtavo can't open that picture here. Try a JPEG or PNG.");
         path = await uploadFile(company.id, "kb", new File([jpeg], "cover.jpg", { type: "image/jpeg" }));
       }
-      try {
-        unwrap(await supabase().from("sop_categories").update({ cover_path: path }).eq("id", category.id));
-      } catch (error) {
-        if (path) void supabase().storage.from("files").remove([path]);
-        throw error;
-      }
-      if (category.cover_path) void supabase().storage.from("files").remove([category.cover_path]);
+      // The cover it had goes to the Trash by itself. A new one uploaded for a save that fails is left
+      // behind: only the server deletes stored files.
+      unwrap(await supabase().from("sop_categories").update({ cover_path: path }).eq("id", category.id));
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["kb", company.id] }),
   });

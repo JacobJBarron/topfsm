@@ -1302,6 +1302,36 @@ select tdr.as_user(:'ann');
 select tdr.check(tdr.error_of('select * from public.unrecorded_files(10)') like '42501:%', 'nobody signed in asks for them, not even an owner (the server does)');
 commit;
 
+\o
+\echo 'A category''s cover photo'
+\o /dev/null
+
+-- ===== A category's cover photo ==================================================================
+-- Kept like a guide's: in use while its category has it, so the tidy-up never takes it, and into
+-- the Trash once it's replaced or the category is removed.
+insert into public.sop_categories (company_id, name, cover_path) values (:'co', 'Driveways', :'co' || '/kb/ee000000-0000-0000-0000-000000000011.jpg') returning id as category \gset
+insert into public.sop_categories (company_id, name, cover_path) values (:'co', 'Gutters', :'co' || '/kb/ee000000-0000-0000-0000-000000000013.jpg') returning id as category2 \gset
+insert into storage.objects (bucket_id, name, created_at) values
+  ('files', :'co' || '/kb/ee000000-0000-0000-0000-000000000011.jpg', now() - interval '3 days'),
+  ('files', :'co' || '/kb/ee000000-0000-0000-0000-000000000013.jpg', now() - interval '3 days');
+select tdr.check(private.stored_path_in_use(:'co', :'co' || '/kb/ee000000-0000-0000-0000-000000000011.jpg'), 'a category''s cover photo is in use');
+set role service_role;
+select coalesce(string_agg(tdr.files(paths), ','), '') as kb_strays from public.unrecorded_files(1000) where company_id = :'co' \gset
+reset role;
+select tdr.check(position('000000000011.jpg' in :'kb_strays') = 0 and position('000000000013.jpg' in :'kb_strays') = 0
+    and position('000000000002.jpg' in :'kb_strays') > 0,
+  'so the tidy-up leaves it, days on, and still takes a cover nobody has');
+begin;
+set local role authenticated;
+select tdr.as_user(:'ann');
+update public.sop_categories set cover_path = :'co' || '/kb/ee000000-0000-0000-0000-000000000012.jpg' where id = :'category';
+delete from public.sop_categories where id = :'category2';
+commit;
+select tdr.check((select source = 'kb_cover' and label = 'Category cover · Driveways' and file_name = 'Driveways cover.jpg' and source_id = :'category' and deleted_by = :'ann'
+  from public.trashed_files where path like '%000000000011.jpg'), 'one replaced goes in the Trash');
+select tdr.check((select label = 'Category cover · Gutters' and source_id = :'category2' from public.trashed_files where path like '%000000000013.jpg'),
+  'and so does one whose category is removed');
+
 -- Deleting the company takes everything with it.
 insert into public.trashed_files (company_id, path, source) values (:'co', :'co' || '/receipts/last.jpg', 'receipt');
 delete from public.companies where id = :'other';
