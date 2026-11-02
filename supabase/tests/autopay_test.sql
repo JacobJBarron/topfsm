@@ -2185,6 +2185,59 @@ select tautopay.check(not exists (select 1 from pg_proc p join pg_namespace n on
 
 -- ===== Tidy up =================================================================================
 
+-- ===== Work an AI assistant marks done ==========================================================
+
+-- An assistant's token carries the OAuth client it was given to (client_id). Work it marks done is
+-- never charged without the office's OK, however small: a visit isn't one autopay may charge by
+-- itself, and the charge says why, for a recurring job and for a one-off job's finished work.
+\set held 'An AI assistant marked the work done'
+\set assistant '{"sub": "a7a70000-0000-0000-0000-000000000003", "role": "authenticated", "client_id": "assistant-test"}'
+select tautopay.ready_client(:'co', 'Abe Assistant') as c_abe \gset
+select tautopay.job(:'co', :'c_abe') as j_abe \gset
+select tautopay.visit(:'co', :'j_abe') as abe1 \gset
+begin;
+select set_config('request.jwt.claims', :'assistant', true);
+update public.visits set status = 'completed' where id = :'abe1';
+commit;
+select tautopay.charge_of(:'j_abe') as abe_c \gset
+select tautopay.check((select visit_ids = '{}' and held = :'held' and status = 'waiting' from public.autopay_charges where id = :'abe_c'),
+  'a visit an assistant completes queues a charge that names no visit to charge by itself, and says why');
+select tautopay.due(:'abe_c');
+select public.autopay_bill(:'abe_c', tautopay.claim_one(:'co', :'abe_c')) as bill \gset
+select tautopay.check((:'bill'::jsonb) ->> 'outcome' = 'needs_approval' and tautopay.state(:'abe_c') = 'needs_approval: ' || :'held',
+  'so it waits for the office''s OK, under the limit too');
+select tautopay.check(tautopay.told(:'opal', 'Approve%Abe%') = 'Approve a $45.00 charge for Abe Assistant | ' || :'held', 'and the office is told why');
+begin;
+set local role authenticated;
+select tautopay.as_user(:'opal');
+select public.approve_autopay_charge(:'abe_c');
+commit;
+select tautopay.check(tautopay.charge(:'co', :'abe_c', 'paid') ->> 'outcome' = 'charge' and tautopay.state(:'abe_c') = 'paid', 'approved, it''s charged');
+
+select tautopay.ready_client(:'co', 'Ann Assistant') as c_ann \gset
+begin;
+set local role authenticated;
+select tautopay.as_user(:'opal');
+insert into public.jobs (company_id, client_id, title, autopay) values (:'co', :'c_ann', 'Gutter cleaning', true) returning id as j_ann \gset
+insert into public.job_line_items (company_id, job_id, name, unit_price) values (:'co', :'j_ann', 'Gutters', 30);
+commit;
+begin;
+select set_config('request.jwt.claims', :'assistant', true);
+update public.jobs set status = 'requires_invoicing' where id = :'j_ann';
+commit;
+select tautopay.charge_of(:'j_ann') as ann_c \gset
+select tautopay.due(:'ann_c');
+select public.autopay_bill(:'ann_c', tautopay.claim_one(:'co', :'ann_c')) as bill \gset
+select tautopay.check((select bill = 'standard' from public.autopay_charges where id = :'ann_c') and (:'bill'::jsonb) ->> 'outcome' = 'needs_approval'
+    and tautopay.state(:'ann_c') = 'needs_approval: ' || :'held',
+  'a one-off job''s work an assistant marks done waits for the office''s OK too');
+
+-- The same work marked done by a person is charged as before.
+select tautopay.visit(:'co', :'j_abe') as abe2 \gset
+update public.visits set status = 'completed' where id = :'abe2';
+select tautopay.check((select visit_ids = array[:'abe2']::uuid[] and held is null from public.autopay_charges where id = tautopay.charge_of(:'j_abe')),
+  'a person''s Complete still names the visit, with nothing held');
+
 delete from public.companies where id in (:'co', :'other');
 delete from auth.users where email like '%@autopay.test';
 

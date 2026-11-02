@@ -151,6 +151,7 @@ create table public.autopay_charges (
   approved_by uuid references auth.users (id) on delete set null,
   approved_at timestamptz,
   approved_amount numeric(12, 2),          -- the balance the office approved; more than this asks again
+  held text check (length(held) <= 200),   -- why it waits for the office's OK whatever the amount (autopay_queue)
   busy_since timestamptz,                  -- first 'busy' in a row; a day of them calls it off
   charged_amount numeric(12, 2),           -- what Stripe charged (its amount_due), for the receipt
   charged_at timestamptz,
@@ -585,7 +586,8 @@ end $$;
  * than one wait past when the row was made (a weekly visit with a 7-day wait would otherwise put
  * the charge off for ever). Nothing when the job isn't on autopay or the client has nothing to charge.
  * p_visit, the visit finished, joins the row's visit_ids: the visits autopay may charge without
- * asking (autopay_bill).
+ * asking (autopay_bill). Not when an AI assistant marked the work done: then the charge is held,
+ * saying so, and waits for the office's OK however small it is.
  */
 create function private.autopay_queue(p_job uuid, p_bill text, p_visit uuid default null) returns void
 language plpgsql security definer set search_path = '' as $$
@@ -594,7 +596,8 @@ declare
   v_pm uuid;
   v_autopay jsonb;
   v_wait interval;
-  v_visits uuid[] := case when p_visit is null then '{}'::uuid[] else array[p_visit] end;
+  v_assistant boolean := private.assistant_client() is not null;
+  v_visits uuid[] := case when p_visit is null or v_assistant then '{}'::uuid[] else array[p_visit] end;
 begin
   select * into j from public.jobs where id = p_job;
   if not found or not j.autopay or j.status = 'archived' then return; end if;
@@ -604,11 +607,13 @@ begin
   if v_pm is null then return; end if;
   select private.autopay_of(c.settings) into v_autopay from public.companies c where c.id = j.company_id;
   v_wait := case when v_autopay ->> 'timing' = 'days' then make_interval(days => private.autopay_days(v_autopay) + 1) else interval '1 day' end;
-  insert into public.autopay_charges (company_id, client_id, job_id, bill, payment_method_id, due_at, visit_ids)
-  values (j.company_id, j.client_id, j.id, p_bill, v_pm, private.autopay_due(j.company_id), v_visits)
+  insert into public.autopay_charges (company_id, client_id, job_id, bill, payment_method_id, due_at, visit_ids, held)
+  values (j.company_id, j.client_id, j.id, p_bill, v_pm, private.autopay_due(j.company_id), v_visits,
+          case when v_assistant then 'An AI assistant marked the work done' end)
   on conflict (job_id) where status = 'waiting' and invoice_id is null
   do update set due_at = least(greatest(public.autopay_charges.due_at, excluded.due_at), public.autopay_charges.created_at + v_wait),
                 payment_method_id = excluded.payment_method_id,
+                held = coalesce(public.autopay_charges.held, excluded.held),
                 visit_ids = case when excluded.visit_ids <@ public.autopay_charges.visit_ids then public.autopay_charges.visit_ids
                                  else public.autopay_charges.visit_ids || excluded.visit_ids end;
 end $$;

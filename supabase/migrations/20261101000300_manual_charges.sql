@@ -415,6 +415,13 @@ begin
   -- doesn't break it), from when the job's autopay went on, and from when the office last resumed it
   -- (resumed_at).
   if i.status = 'draft' and r.source = 'autopay' then
+    -- Work an AI assistant marked done (autopay_queue): the office looks first, whatever the amount.
+    if r.held is not null and r.approved_at is null then
+      update public.autopay_charges
+      set status = 'needs_approval', last_error = r.held, claim_token = null, locked_until = null, busy_since = null
+      where id = r.id;
+      return jsonb_build_object('outcome', 'needs_approval', 'reason', r.held, 'invoice_id', i.id);
+    end if;
     if r.bill = 'visits' and r.approved_at is null then
       select min(a.accepted_at) into v_accepted from public.autopay_authorizations a
       where a.company_id = r.company_id and a.client_id = r.client_id

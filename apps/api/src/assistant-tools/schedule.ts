@@ -64,7 +64,7 @@ export const scheduleTools = {
   }),
   update_visit: tool({
     description:
-      "Move or change a visit: its date, start time (or anytime: start_time null), length (any number of minutes), whether its time is fixed, crew, people (the whole list), equipment, status, title or notes. Moving a visit takes it out of its organized route. Moving one day of multi-day work moves the days after it too (shift_series, default true). A deleted recurring visit stays deleted; to skip one, use delete_visit.",
+      "Move or change a visit: its date, start time (or anytime: start_time null), length (any number of minutes), whether its time is fixed, crew, people (the whole list), equipment, status, title or notes. Moving a visit takes it out of its organized route. Moving one day of multi-day work moves the days after it too (shift_series, default true). A deleted recurring visit stays deleted; to skip one, use delete_visit. A visit you mark completed on a job charged automatically (autopay) waits for the office to approve its charge.",
     input: z.object({
       visit_id: z.uuid(),
       date: date.nullable().optional().describe("null puts it back on the waiting list."),
