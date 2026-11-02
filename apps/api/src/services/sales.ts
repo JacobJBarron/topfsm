@@ -16,7 +16,6 @@ import { asJson, dbError, HttpError, must } from "../lib/http";
 import { clientLinks, sentToClient } from "../lib/links";
 import { sendEmail, sendSms } from "../lib/notify";
 import { adminClient, type Db } from "../lib/supabase";
-import { materializeJob, recurringJob } from "../tasks";
 import { companyAddress } from "./automations";
 import { loadOptions, manualApproval } from "./contracts";
 import { logoImage } from "./logo";
@@ -283,6 +282,8 @@ export async function convertQuote(s: Pick<SalesScope, "db" | "companyId" | "env
     // dispatch still gets them now. The job is made either way: that task catches up if this fails.
     const admin = adminClient(s.env);
     try {
+      // Loaded here: tasks.ts loads every service, so importing it up top makes a cycle through this one.
+      const { materializeJob, recurringJob } = await import("../tasks");
       const job = await recurringJob(admin, data);
       if (job) await materializeJob(admin, job);
     } catch (error) {

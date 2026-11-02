@@ -19,6 +19,7 @@ vi.mock("../src/lib/notify", async (original) => ({
 vi.mock("../src/lib/links", async (original) => ({
   ...(await original<typeof import("../src/lib/links")>()),
   clientLink: async (_env: Env, baseUrl: string, link: { id: string }) => `${baseUrl}/u/${link.id}`,
+  clientLinks: async (_env: Env, baseUrl: string, link: { id: string }) => ({ own: `${baseUrl}/u/${link.id}`, office: `${baseUrl}/u/${link.id}` }),
 }));
 
 const CO = "00000000-0000-4000-8000-0000000000a1";

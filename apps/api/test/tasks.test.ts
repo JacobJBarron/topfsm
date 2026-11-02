@@ -267,7 +267,7 @@ describe("the nightly tidy-up", () => {
 
 describe("autopay", () => {
   it("charges what's due every 5 minutes, alongside the outbox that sends its receipts", async () => {
-    expect(CRON_TASKS["*/5 * * * *"]).toEqual(["outbox", "autopay"]);
+    expect(CRON_TASKS["*/5 * * * *"]).toEqual(["outbox", "reviews", "autopay"]);
     const result = { claimed: 2, charged: 1, processing: 0, needs_approval: 0, called_off: 0, failed: 1, needs_client: 0, busy: 0, retry: 0, lost: 0 };
     autopay.charge.mockResolvedValueOnce(result);
     expect(await runTask("autopay", env)).toEqual(result);

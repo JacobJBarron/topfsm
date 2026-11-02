@@ -115,7 +115,7 @@ describe("referrals", () => {
     expect(paidWords(0, 15, null)).not.toMatch(/nothing/i);
     expect(paidWords(0, 0, null)).toBe("Nothing to pay.");
     expect(paidWords(15.8, 0, "Oct 31, 2026")).toBe("Paid in full on Oct 31, 2026.");
-    expect(source("../src/features/invoices/InvoicePage.tsx")).toContain("{paidWords(paid, Number(inv.credit_amount),");
+    expect(source("../src/features/invoices/InvoicePage.tsx")).toContain(": paidWords(paid, Number(inv.credit_amount),");
   });
 });
 

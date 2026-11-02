@@ -251,8 +251,8 @@ function invoicePage(status: string | null, options: { draft?: boolean; last_err
   client.setQueryData(["invoice", "i1", "charge"], { manual: options.manual ?? null });
   client.setQueryData(["invoice", "i1"], {
     id: "i1", number: 2, status: options.draft ? "draft" : "sent", kind: "standard", subject: null, notes: null, issued_on: "2026-10-27", due_on: "2026-11-10", sent_at: options.draft ? null : "2026-10-27T23:00:00Z",
-    subtotal: 45, discount_amount: 0, tax_rate: 0, tax_amount: 0, total: 45, retainage_amount: 0, retainage_pct: 0, amount_paid: 0, balance_due: 45, written_off_at: null,
-    client_id: "cl1", promo: null, client: { id: "cl1", display_name: "Pat Lee", email: null, phone: null, billing_address: null }, job: null,
+    subtotal: 45, discount_amount: 0, credit_amount: 0, tax_rate: 0, tax_amount: 0, total: 45, retainage_amount: 0, retainage_pct: 0, amount_paid: 0, balance_due: 45, written_off_at: null,
+    credits: [], client_id: "cl1", promo: null, client: { id: "cl1", display_name: "Pat Lee", email: null, phone: null, billing_address: null }, job: null,
     lines: [{ id: "l1", name: "Weekly mow", description: null, quantity: 1, unit: "visit", unit_price: 45, taxable: false, sort: 0, service_id: null }],
     payments: [],
     stripe: status === "processing"
