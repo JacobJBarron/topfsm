@@ -406,7 +406,7 @@ describe("the client's Autopay card", () => {
     expect(code).toContain("const seesMoney = isOffice && can(session, \"invoices\");");
     expect(code).toContain("{seesMoney && autopayOn && <AutopayCard client={c} />}");
     expect(code).toMatch(/Send autopay invite by email.*disabled: !c\.email, hidden: !seesMoney \|\| !autopayOn/);
-    expect(code).toMatch(/Send autopay invite by text.*disabled: !c\.phone, hidden: !seesMoney \|\| !autopayOn/);
+    expect(code).toMatch(/Send autopay invite by text.*disabled: !c\.phone \|\| textsOff\(c\), hidden: !seesMoney \|\| !autopayOn/);
   });
 });
 

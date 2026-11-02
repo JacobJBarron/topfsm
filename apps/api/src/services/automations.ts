@@ -427,7 +427,7 @@ export async function withAutopayLink(env: Env, ctx: RunContext, trigger: string
 export async function officeVars(env: Env, ctx: RunContext, baseUrl: string | null): Promise<TemplateVars> {
   if (!baseUrl) return ctx.vars;
   const vars: TemplateVars = { ...ctx.vars };
-  if (vars.link && (ctx.subject === "quote" || ctx.subject === "invoice")) {
+  if (vars.link && (ctx.subject === "quote" || ctx.subject === "invoice" || ctx.subject === "client")) {
     vars.link = await clientLink(env, baseUrl, { c: ctx.company.id, t: ctx.subject, id: ctx.id, via: "office" });
   }
   const group = autopayVars(vars);

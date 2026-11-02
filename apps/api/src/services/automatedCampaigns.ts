@@ -22,7 +22,7 @@ import type { Env } from "../env";
 import { isEmail } from "../lib/email";
 import { emailReady } from "../lib/notify";
 import { adminClient, type Db } from "../lib/supabase";
-import { companyFooter, Skip, type RunContext } from "./automations";
+import { companyFooter, officeVars, Skip, type RunContext } from "./automations";
 import { emailClient } from "./marketingEmail";
 import { Busy, WaitUntil } from "./reviews";
 
@@ -249,8 +249,10 @@ export async function sendCampaignEmail(
   // recorded failed, so the next try sends it again), rather than failing for someone to retry.
   if (emailBusy(result)) throw new Busy(reason!);
   if (!result.sent) throw new Error(reason);
+  // The timeline's copy has the office's link: the client's own can say yes to a card, or tip on one.
+  const kept = { ...ctx, vars: await officeVars(env, ctx, baseUrl) };
   await admin.from("messages").insert({
-    company_id: ctx.company.id, client_id: client.id, channel: "email", direction: "out", subject, body: text,
+    company_id: ctx.company.id, client_id: client.id, channel: "email", direction: "out", subject: render(action.subject, kept), body: render(action.body, kept),
     related_type: ctx.subject, related_id: ctx.id, external_id: result.id ?? null, sent_by: null,
   });
   return `Emailed ${email}`;

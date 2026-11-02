@@ -866,9 +866,9 @@ describe("automation runs", () => {
   });
 
   /** A quote.sent or invoice.sent rule's run, as the database would queue it: quote #7 or invoice #2, for Pat. */
-  const sentRun = (subject: "quote" | "invoice", actions: unknown[]) => {
+  const sentRun = (subject: "quote" | "invoice" | "client", actions: unknown[]) => {
     const rows: Record<string, unknown> = {
-      automation_rules: { id: "rule-1", name: "Follow up", trigger: `${subject}.sent`, enabled: true, conditions: [], run_count: 0, actions },
+      automation_rules: { id: "rule-1", name: "Follow up", trigger: subject === "client" ? "client.created" : `${subject}.sent`, enabled: true, conditions: [], run_count: 0, actions },
       companies: { id: COMPANY, name: "Radford Lawn Care", timezone: "America/New_York", currency: "USD", trade_preset: "lawn_exterior", settings: {}, address: {} },
       quotes: {
         number: 7, title: "Spring cleanup", status: "sent", total: 300, tax_rate: 0, discount_amount: 0, range_low: null, range_high: null, priced_on_site_at: null, exact_sent_at: null,
@@ -907,6 +907,14 @@ describe("automation runs", () => {
     const tasked = JSON.parse(Buffer.from(tokenOf(visit.title).split(".")[0]!, "base64url").toString());
     expect(tasked).toMatchObject({ c: COMPANY, t: "invoice", id: "invoice-1", via: "office" });
     expect(tasked).not.toHaveProperty("own");
+
+    // A note from a rule about a client (a new one, say): the office's copy of their Hub home.
+    const welcome = sentRun("client", [{ type: "add_note", body: "Welcome {{link}}" }]);
+    expect(await processAutomations(env, { limit: 50, baseUrl: "https://app.test" })).toMatchObject({ done: 1 });
+    const greeted = call(welcome.queries.find((q) => q.table === "messages" && verb(q) === "insert")!, "insert")![1] as { body: string };
+    const home = await readClientLink(env, tokenOf(greeted.body));
+    expect(home).toMatchObject({ c: COMPANY, t: "client", id: "client-1", via: "office" });
+    expect(home).not.toHaveProperty("own");
   });
 
   it("email the client their own link, marked as theirs, for a quote or invoice", async () => {

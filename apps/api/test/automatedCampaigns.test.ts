@@ -472,6 +472,19 @@ describe("Close pending quotes", () => {
     expect(message!.html).toContain(`href="https://ops.example.com/api/public/c/${TOKEN}/0"`);
   });
 
+  it("emails the client their own quote link, and keeps the office's copy on the quote's timeline", async () => {
+    const calls = world();
+    expect(await executeRun(env, adminClient(env), run, env.APP_URL!)).toBe("done");
+    const [begin] = rpcCalls(calls, "begin_campaign_send");
+    expect(await readClientLink(env, begin.p_links[0].split("/hub/")[1])).toMatchObject({ t: "quote", id: QUOTE_ID, own: 1 });
+    // Estimators and the office read the timeline: its copy can't confirm a card or add a tip.
+    const [kept] = writes(calls, "POST", "messages").map((c) => c.body);
+    expect(kept).toMatchObject({ related_type: "quote", related_id: QUOTE_ID, subject: "Following up on your quote from Acme Lawn" });
+    const office = await readClientLink(env, kept.body.split("/hub/")[1].split(/\s/)[0]);
+    expect(office).toMatchObject({ t: "quote", id: QUOTE_ID, via: "office" });
+    expect(office).not.toHaveProperty("own");
+  });
+
   it("sends both emails of a rule given a second one in Automations, each recorded as its own send", async () => {
     const twice = ruleOf("close_quotes", { actions: [...ruleOf("close_quotes").actions, { type: "send_email", subject: "Any questions?", body: "Happy to help: {{link}}" }] });
     const calls = world({ rule: twice });

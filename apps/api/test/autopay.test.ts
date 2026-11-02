@@ -855,6 +855,17 @@ describe("autopay invites", () => {
     expect(await invite(db, { clientId: STRANGER })).toEqual({ sent: false, detail: "Client not found." });
     expect(m.sendSms).toHaveBeenCalledTimes(1);
   });
+  it("doesn't text a client who texted STOP, and keeps it when Twilio says they did", async () => {
+    const db = world();
+    db.tables.clients!.find((c) => c.id === SAM)!.sms_opt_out_at = "2026-10-01T12:00:00.000Z";
+    expect(await invite(db, { clientId: SAM, channel: "sms" })).toEqual({ sent: false, detail: "Skipped: Sam Ortiz texted STOP, so texts to them are off." });
+    expect(m.sendSms).not.toHaveBeenCalled();
+    // Twilio refusing a number that texted STOP: the client is marked, so nothing texts them again.
+    const fresh = world();
+    m.sendSms.mockResolvedValueOnce({ sent: false, reason: "The text provider refused it (400).", code: 21610 });
+    await expect(invite(fresh, { clientId: SAM, channel: "sms" })).rejects.toThrow("The text provider refused it (400).");
+    expect(typeof fresh.tables.clients!.find((c) => c.id === SAM)!.sms_opt_out_at).toBe("string");
+  });
 });
 
 // ---------------------------------------------------------------------------------------------

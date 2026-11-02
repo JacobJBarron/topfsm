@@ -1,8 +1,8 @@
 /**
  * When referral credits on an invoice can change, as the database allows it (remove_referral_credit,
  * apply_referral_credit and private.referral_credit_room): while the invoice is a draft, awaiting
- * payment or past due, with no payments, and Stripe isn't billing it as it is (made in Stripe, or a
- * bank payment on its way). A deposit or a retainage release doesn't take one.
+ * payment or past due, with no payments, and Stripe isn't billing it as it is (made in Stripe, a
+ * bank payment on its way, or autopay charging it). A deposit or a retainage release doesn't take one.
  */
 
 export interface CreditInvoice {
@@ -10,11 +10,13 @@ export interface CreditInvoice {
   kind?: string | null;
   payments: readonly unknown[];
   stripe?: ReadonlyArray<{ origin: string; status: string }> | null;
+  autopay?: ReadonlyArray<{ status: string }> | null;
 }
 
 /** A credit on it can be taken off. */
 export const creditsChangeable = (inv: CreditInvoice) =>
-  ["draft", "sent", "overdue"].includes(inv.status) && inv.payments.length === 0 && !(inv.stripe ?? []).some((s) => s.origin === "stripe" || s.status === "processing");
+  ["draft", "sent", "overdue"].includes(inv.status) && inv.payments.length === 0 && !(inv.stripe ?? []).some((s) => s.origin === "stripe" || s.status === "processing")
+  && !(inv.autopay ?? []).some((a) => a.status === "charging");
 
 /** A credit can be put on it. */
 export const takesCredit = (inv: CreditInvoice) => creditsChangeable(inv) && !["deposit", "retainage"].includes(inv.kind ?? "standard");

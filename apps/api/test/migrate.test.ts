@@ -64,3 +64,9 @@ it("logs a migration's warnings, and leaves Postgres' notices out", async () => 
   expect(pg.run[0]).toContain("c.contype = 't' and tg.tgdeferrable");
   expect(pg.run[1]).toContain("assistant");
 });
+
+it("gives every migration a number of its own: the runner applies each once, by that number", () => {
+  // Two branches can take the same number. The second file would then never run on a database that
+  // ran the first (its number counts as applied), and would fail where both are new.
+  expect(versions.filter((v, i) => versions.indexOf(v) !== i)).toEqual([]);
+});

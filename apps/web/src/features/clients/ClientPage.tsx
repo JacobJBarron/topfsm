@@ -251,7 +251,7 @@ export function ClientPage() {
                   { label: "Edit client", icon: "edit", onSelect: () => setDialog("edit") },
                   { label: "Copy Client Hub link", icon: "link", onSelect: () => hubLink.mutate() },
                   { label: "Send autopay invite by email", icon: "card", onSelect: () => autopayInvite.mutate("email"), disabled: !c.email, hidden: !seesMoney || !autopayOn || !session.config.features.email },
-                  { label: "Send autopay invite by text", icon: "card", onSelect: () => autopayInvite.mutate("sms"), disabled: !c.phone, hidden: !seesMoney || !autopayOn || !session.config.features.sms },
+                  { label: "Send autopay invite by text", icon: "card", onSelect: () => autopayInvite.mutate("sms"), disabled: !c.phone || textsOff(c), hidden: !seesMoney || !autopayOn || !session.config.features.sms },
                   { separator: true, hidden: !marketing },
                   // A client who already left a Google review isn't asked again: the one line says so.
                   { label: "Already left a Google review", icon: "star", onSelect: () => undefined, disabled: true, hidden: !marketing || !c.reviewed_at },

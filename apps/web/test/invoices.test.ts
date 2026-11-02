@@ -421,6 +421,9 @@ describe("referral credits on an invoice", () => {
     expect(creditsChangeable(inv({ stripe: [{ origin: "stripe", status: "open" }] }))).toBe(false);
     expect(creditsChangeable(inv({ stripe: [{ origin: "crewtavo", status: "processing" }] }))).toBe(false);
     expect(creditsChangeable(inv({ stripe: [{ origin: "crewtavo", status: "open" }] }))).toBe(true);
+    // Nor while autopay is charging it: Stripe charges the amount it had when the charge started.
+    expect(creditsChangeable(inv({ autopay: [{ status: "charging" }] }))).toBe(false);
+    expect(creditsChangeable(inv({ autopay: [{ status: "waiting" }] }))).toBe(true);
   });
 
   it("never go on a deposit or a retainage release, the money that secures the job", () => {

@@ -2238,6 +2238,24 @@ update public.visits set status = 'completed' where id = :'abe2';
 select tautopay.check((select visit_ids = array[:'abe2']::uuid[] and held is null from public.autopay_charges where id = tautopay.charge_of(:'j_abe')),
   'a person''s Complete still names the visit, with nothing held');
 
+-- ===== Referral credits while a charge is made ===================================================
+
+-- Stripe charges the amount the invoice had when the charge started, so a referral credit doesn't
+-- go on or come off it until the charge is done (20261101000700_referral_credits_while_charging.sql).
+select tautopay.ready_client(:'co', 'Cora Credit') as c_cora \gset
+select tautopay.job(:'co', :'c_cora') as j_cora \gset
+select tautopay.visit(:'co', :'j_cora') as cora1 \gset
+update public.visits set status = 'completed' where id = :'cora1';
+select tautopay.charge_of(:'j_cora') as cora_c \gset
+select tautopay.due(:'cora_c');
+select public.autopay_bill(:'cora_c', tautopay.claim_one(:'co', :'cora_c')) as bill \gset
+select tautopay.check((:'bill'::jsonb) ->> 'outcome' = 'charge' and tautopay.state(:'cora_c') = 'charging'
+    and not private.referral_credits_changeable(((:'bill'::jsonb) ->> 'invoice_id')::uuid)
+    and private.referral_credit_room(((:'bill'::jsonb) ->> 'invoice_id')::uuid) = 0,
+  'while autopay charges an invoice, no referral credit goes on or comes off it');
+update public.autopay_charges set status = 'called_off', claim_token = null, locked_until = null where id = :'cora_c';
+select tautopay.check(private.referral_credits_changeable(((:'bill'::jsonb) ->> 'invoice_id')::uuid), 'and once the charge is over, they can again');
+
 delete from public.companies where id in (:'co', :'other');
 delete from auth.users where email like '%@autopay.test';
 
