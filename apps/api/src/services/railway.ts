@@ -84,6 +84,16 @@ export async function noteRailwayError(admin: Db, companyId: string, message: st
   else await admin.from("integrations").insert({ company_id: companyId, provider: "railway", status: "disconnected", last_error: message });
 }
 
+/**
+ * Railway refused this instance's Login with Railway client itself (invalid_client: removed there,
+ * or its secret no longer matches): forget it, so the next Log in with Railway registers a new one
+ * rather than sending the same one again every time. Any other refusal keeps it.
+ */
+export async function forgetRefusedClient(admin: Db, companyId: string, error: unknown): Promise<void> {
+  if (!(error instanceof RailwayError) || !/invalid_client|unauthorized_client/.test(error.message)) return;
+  await admin.from("integration_secrets").delete().match({ company_id: companyId, provider: "railway" });
+}
+
 /** Railway stopped taking the sign-in (removed there, or it ran out): Settings offers to connect again. */
 async function lapsed(admin: Db, companyId: string, error: unknown) {
   await admin
@@ -115,6 +125,7 @@ async function refreshAndSave(env: Env, admin: Db, companyId: string, secret: St
         return { method: "oauth", token: latest.access_token, refresh_token: latest.refresh_token, expires_at: latest.expires_at };
       }
       await lapsed(admin, companyId, error);
+      await forgetRefusedClient(admin, companyId, error);
     }
     throw error;
   }

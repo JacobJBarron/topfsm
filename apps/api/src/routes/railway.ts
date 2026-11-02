@@ -29,7 +29,7 @@ import { adminClient } from "../lib/supabase";
 import { authorizationUrl, exchangeCode, pkce, RailwayError } from "../integrations/railway";
 import { addressOverview, adoptRailway, stopAutomatic } from "../services/address";
 import { forgetHosting, hostingOverview } from "../services/hosting";
-import { connectRailwayLater, forgetRailway, noteRailwayError, railwayClient, saveRailwayAccess, setRailwaySetup } from "../services/railway";
+import { connectRailwayLater, forgetRailway, forgetRefusedClient, noteRailwayError, railwayClient, saveRailwayAccess, setRailwaySetup } from "../services/railway";
 import { startStorageMove, storageOverview } from "../services/storageBucket";
 import { keepStorageDefault } from "../services/storageUsage";
 import { raiseUploadLimit, uploadLimit } from "../services/uploads";
@@ -89,6 +89,7 @@ railway.get("/railway/callback", onRailway, async (c) => {
     return back("connected");
   } catch (error) {
     if (!(error instanceof RailwayError)) console.error("Railway sign-in failed", error);
+    await forgetRefusedClient(admin, state.company, error).catch(() => undefined);
     await noteRailwayError(admin, state.company, error instanceof RailwayError ? error.message : "Railway sign-in didn't work. Try again.").catch(() => undefined);
     return back("error");
   }

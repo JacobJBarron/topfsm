@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { app } from "../src/app";
 import type { Env } from "../src/env";
 import { addCloudflareRecords } from "../src/integrations/cloudflare";
-import { addCustomDomain, certificateOf, railwayRecords, registerClient, type RailwayDomainStatus } from "../src/integrations/railway";
+import { addCustomDomain, certificateOf, railwayRecords, registerClient, SCOPE, type RailwayDomainStatus } from "../src/integrations/railway";
 import { forgetAddressHistory, forwardTo } from "../src/lib/address";
 import { decryptJson, encryptJson, instanceFingerprint, signToken } from "../src/lib/crypto";
 import { checkRecord, findZone, type Lookup } from "../src/lib/dns";
@@ -372,6 +372,20 @@ describe("routes", () => {
     expect(res.headers.get("location")).toBe("https://app.greenlawn.com/?railway=cancelled");
   });
 
+  it("forget a Login with Railway client Railway refuses, so the next try registers a new one", async () => {
+    const secret = await encryptJson(env, { extra: { method: "oauth", client_id: "cid", client_secret: "sec", redirect_uri: "https://app.greenlawn.com/api/railway/callback", scope: SCOPE } });
+    const calls = serve((call) => {
+      if (call.path === "integration_secrets" && call.method === "GET") return [{ ciphertext: secret }];
+      if (call.url.pathname === "/oauth/token") return Response.json({ error: "invalid_client" }, { status: 401 });
+      return [];
+    });
+    const state = await signToken(env, { company: "co-1", user: "user-1", purpose: "railway", return_to: "hosting", nonce: "n1", exp: Math.floor(Date.now() / 1000) + 600 });
+    const res = await app.request(`/api/railway/callback?state=${encodeURIComponent(state)}&code=abc`, { headers: { cookie: "crewtavo_railway=n1.verifier" } }, env);
+    expect(res.headers.get("location")).toBe("https://app.greenlawn.com/settings?tab=hosting&railway=error");
+    const forgot = calls.filter((c) => c.path === "integration_secrets" && c.method === "DELETE");
+    expect(forgot.map((c) => [c.url.searchParams.get("company_id"), c.url.searchParams.get("provider")])).toEqual([["eq.co-1", "eq.railway"]]);
+  });
+
   it("aren't there off Railway", async () => {
     const res = await app.request("/api/railway/callback?state=x&code=abc", {}, { ...env, RAILWAY_PROJECT_ID: undefined, RAILWAY_PUBLIC_DOMAIN: undefined });
     expect(res.status).toBe(404);
@@ -407,6 +421,20 @@ describe("the Railway connection", () => {
     });
     expect(await keepRailwayAlive(env, adminClient(env))).toEqual({ refreshed: 0, lapsed: 1 });
     expect(calls.find((c) => c.path === "integrations" && c.method === "PATCH")?.body).toMatchObject({ status: "error", last_error: expect.stringContaining("Connect Railway again") });
+    // A refused refresh token is no reason to drop the client.
+    expect(calls.some((c) => c.path === "integration_secrets" && c.method === "DELETE")).toBe(false);
+  });
+
+  it("forgets the client when Railway refuses it outright on a refresh", async () => {
+    const stale = await oauth(0);
+    const calls = serve((call) => {
+      if (call.path === "integrations" && call.method === "GET") return [{ company_id: "co-1" }];
+      if (call.path === "integration_secrets" && call.method === "GET") return [{ ciphertext: stale }];
+      if (call.url.pathname === "/oauth/token") return Response.json({ error: "invalid_client" }, { status: 401 });
+      return [];
+    });
+    expect(await keepRailwayAlive(env, adminClient(env))).toEqual({ refreshed: 0, lapsed: 1 });
+    expect(calls.filter((c) => c.path === "integration_secrets" && c.method === "DELETE")).toHaveLength(1);
   });
 
   it("marks the setup step without losing the business's other settings", async () => {
