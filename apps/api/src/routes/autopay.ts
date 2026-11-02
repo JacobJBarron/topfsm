@@ -61,6 +61,7 @@ const settingsBody = z.object({
   max_amount: z.number().positive().max(1_000_000).nullable(),
   receipts: z.boolean(),
   jobs_default: z.boolean(),
+  card_required: z.boolean(),
 });
 
 /**

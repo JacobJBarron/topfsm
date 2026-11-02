@@ -142,6 +142,8 @@ export function StripeCards({ enabled, termsVersion }: { enabled: boolean; terms
       refresh();
       // Their client pages' Autopay cards (["client", id, "autopay"]) now show the agreement.
       queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === "client" && q.queryKey[2] === "autopay" });
+      // The Clients list's Card not set up tab and its count.
+      queryClient.invalidateQueries({ queryKey: ["clients", company.id] });
     },
   });
 

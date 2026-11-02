@@ -115,6 +115,8 @@ export function JobPage() {
         : null;
       return {
         agreed: Boolean(live),
+        // A card they agreed to that can be charged, or a bank account being checked.
+        onFile: method?.status === "active" || method?.status === "pending",
         paused: Boolean(live?.paused_at),
         // A bank account still being checked: not a card to update.
         checking: method?.status === "pending",
@@ -296,6 +298,8 @@ export function JobPage() {
         <EntityStatus kind="job" status={j.status} />
         {j.client && <Link to={`/clients/${j.client.id}`}>{j.client.display_name}</Link>}
         {j.kind === "recurring" && <span className="muted">{j.recurrence_rule ? repeatText(j.recurrence_rule) : "Recurring"}</span>}
+        {/* Every client needs a card on file, and this one has none they agreed to that can be charged. */}
+        {autopay.card_required && jobAutopay.data && !jobAutopay.data.onFile && !["completed", "archived"].includes(j.status) && <span className="chip chip-amber"><Icon name="card" size={12} />Card not set up</span>}
       </div>
 
       {/* Requires invoicing needs no banner: the pill says so and Create invoice is the page's green button. */}

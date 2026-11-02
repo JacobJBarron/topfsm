@@ -252,6 +252,16 @@ describe("autopay on the client's home", () => {
     expect(off).toContain("Pay automatically after each visit");
     expect(off).toContain("Save a card once, and we charge it at the end of the day of each visit.");
     expect(off).toContain("Pay automatically");
+    // A business that needs a card on file: a step left to do.
+    const required = text(page(clientView({ autopay: { ...active, status: "off", method: null, since: null, card_required: true } })));
+    expect(required).toContain("Finish setting up: add your card");
+    expect(required).toContain("A card on file is required for service. You'll add it on Stripe's secure page.");
+    expect(required).toContain("Add your card");
+    expect(required).not.toContain("Pay automatically after each visit");
+    // It's what's waiting on them, not "All caught up".
+    expect(required).toContain("Waiting on you");
+    expect(required).not.toContain("All caught up");
+    expect(required.indexOf("Waiting on you")).toBeLessThan(required.indexOf("Finish setting up: add your card"));
 
     const on = text(page(clientView({ autopay: { ...active, next_charge: "2099-11-04T15:00:00Z" } })));
     expect(on).toContain("Paid automatically · Visa ending 4242");
@@ -390,6 +400,23 @@ describe("a quote charged by the visit", () => {
     expect(html).toContain("Approve quote");
     expect(html).toContain("Approve and set up autopay");
     expect(text(page(quoteView({ autopay_offer: false })))).not.toContain("autopay");
+  });
+
+  it("asks for a card before they sign, with one button, when the business needs a card on file", () => {
+    const html = page(quoteView({ card_required: true }));
+    expect(text(html)).toContain("A card on file is required for service. After you sign, you'll add yours on Stripe's secure page.");
+    expect(html).toMatch(/<button[^>]*type="submit"[^>]*data-autopay="1"[^>]*>(?:(?!<\/button>).)*Approve and add your card<\/button>/);
+    // No way to approve without the card.
+    expect(html.match(/type="submit"/g)).toHaveLength(1);
+    expect(text(html)).not.toContain("Approve quote");
+    expect(text(html)).not.toContain("Approve and set up autopay");
+  });
+
+  it("leaves adding the card as the step left to do once it's signed, when a card is required", () => {
+    const html = page(quoteView({ card_required: true }, { status: "approved", approved_at: "2026-10-23T15:00:00Z", approval: { name: "Pat Lee", signature: null, signed_at: "2026-10-23T15:00:00Z", company: null } }));
+    expect(text(html)).toContain("Finish setting up: add your card");
+    expect(text(html)).toContain("Add your card");
+    expect(html).toContain(`href="${HOME}?view=autopay"`);
   });
 
   it("offers to pay automatically once it's signed", () => {

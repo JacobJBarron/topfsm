@@ -533,6 +533,9 @@ begin
   if jsonb_typeof(p_settings -> 'jobs_default') is distinct from 'boolean' then
     raise exception 'Say whether new recurring jobs start on autopay' using errcode = '22023';
   end if;
+  if jsonb_typeof(p_settings -> 'card_required') is distinct from 'boolean' then
+    raise exception 'Say whether every client needs a card on file' using errcode = '22023';
+  end if;
   -- The key's saved capability (apps/api/src/integrations/stripe.ts stripeCapabilities): a company
   -- calling this straight through the API gets the same answer as PUT /autopay/settings.
   if p_settings -> 'enabled' = 'true'::jsonb and not exists (
@@ -563,6 +566,7 @@ begin
     'max_amount', v_max,
     'receipts', p_settings -> 'receipts',
     'jobs_default', p_settings -> 'jobs_default',
+    'card_required', p_settings -> 'card_required',
     'changed_at', now(),
     'changed_by', (select auth.uid())))
   where c.id = p_company

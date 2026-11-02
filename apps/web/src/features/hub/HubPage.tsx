@@ -41,6 +41,7 @@ import { ApiError } from "@/lib/api";
 import { dateIn, formatDate, formatMoney, formatMoneyCents, todayIn } from "@/lib/format";
 import { sanitizeContractHtml } from "@/lib/html";
 import { ClientPortal, hubZone, MessageDialog, type ClientView, type PortalVisit } from "./ClientPortal";
+import { CARD_REQUIRED } from "./HubAutopay";
 import {
   autopayPayNote,
   contrastOnWhite,
@@ -731,19 +732,19 @@ function BadgeIcon({ kind }: { kind: TrustBadge["kind"] }) {
 
 /**
  * Work charged by the visit, signed: "Pay automatically after each visit", which goes to the
- * client's autopay page to save a card.
+ * client's autopay page to save a card. When the business needs a card on file, a step left to do.
  */
-function AutopayOffer({ home }: { home: string }) {
+function AutopayOffer({ home, required }: { home: string; required: boolean }) {
   return (
     <section className="hub-card hub-todo no-print" aria-label="Autopay">
       <div className="hub-todo-head">
         <span className="hub-icon-tile brand"><Icon name="card" size={20} /></span>
         <span className="grow stack-xs">
-          <strong className="hub-title">Pay automatically after each visit</strong>
-          <span className="hub-meta">Save a card once, and you won't have to pay each invoice.</span>
+          <strong className="hub-title">{required ? "Finish setting up: add your card" : "Pay automatically after each visit"}</strong>
+          <span className="hub-meta">{required ? CARD_REQUIRED : "Save a card once, and you won't have to pay each invoice."}</span>
         </span>
       </div>
-      <a className="hub-btn hub-btn-brand" href={`${home}?view=autopay`}>Set up autopay</a>
+      <a className="hub-btn hub-btn-brand" href={`${home}?view=autopay`}>{required ? "Add your card" : "Set up autopay"}</a>
     </section>
   );
 }
@@ -768,7 +769,7 @@ function SignedQuote({ token, data, printing, onPrint }: { token: string; data: 
       >
         Thank you. {data.company.name} will be in touch to schedule the work.{Number(q.deposit_amount) > 0 ? " You'll receive an invoice for the deposit." : ""}
       </Done>
-      {data.autopay_offer && data.home && <AutopayOffer home={data.home} />}
+      {data.autopay_offer && data.home && <AutopayOffer home={data.home} required={data.card_required === true} />}
       <section className="hub-document" aria-label={`${signed ? "Signed estimate" : "Estimate"} #${q.number}`}>
         <DocumentSheet {...doc} headingLevel={3} />
       </section>
@@ -1099,7 +1100,13 @@ function OpenQuote({ token, data, onChanged, printing }: { token: string; data: 
                   {approve.error instanceof ApiError && approve.error.status === 400 && steps[0] !== "sign" && (
                     <Button icon="refresh" style={{ justifySelf: "start" }} onClick={() => goTo(steps[0]!)}>Look it over again</Button>
                   )}
-                  {data.autopay_offer ? (
+                  {data.card_required ? (
+                    // The business needs a card on file: approving always goes on to adding one.
+                    <>
+                      <div className="callout callout-info"><Icon name="card" size={20} /><div className="grow">A card on file is required for service. After you sign, you'll add yours on Stripe's secure page.</div></div>
+                      <Button type="submit" variant="primary" size="lg" icon="card" data-autopay="1" loading={approve.isPending} disabled={!ready || approve.isPending}>Approve and add your card</Button>
+                    </>
+                  ) : data.autopay_offer ? (
                     // Work charged by the visit: approving can go straight on to saving a card for it.
                     <div className="hub-step-actions">
                       <Button type="submit" variant="primary" size="lg" icon="check" loading={approve.isPending && !approve.variables} disabled={!ready || approve.isPending}>{q.change_order_for ? "Approve change order" : "Approve quote"}</Button>

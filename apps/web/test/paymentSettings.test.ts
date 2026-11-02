@@ -78,6 +78,7 @@ const SETTINGS: AutopaySettings = {
   max_amount: 500,
   receipts: true,
   jobs_default: true,
+  card_required: false,
   changed_at: null,
   changed_by: null,
 };
@@ -128,9 +129,9 @@ describe("Settings → Payments in the menu", () => {
 
 describe("the autopay form", () => {
   it("shows the saved settings and sends them back as PUT /autopay/settings takes them", () => {
-    const form = paymentForm({ ...SETTINGS, enabled: true });
-    expect(form).toMatchObject({ enabled: true, timing: "end_of_day", max: "500", receipts: true, jobs_default: true });
-    expect(autopayBody(form)).toEqual({ enabled: true, terms: SETTINGS.terms, timing: "end_of_day", days: null, max_amount: 500, receipts: true, jobs_default: true });
+    const form = paymentForm({ ...SETTINGS, enabled: true, card_required: true });
+    expect(form).toMatchObject({ enabled: true, timing: "end_of_day", max: "500", receipts: true, jobs_default: true, card_required: true });
+    expect(autopayBody(form)).toEqual({ enabled: true, terms: SETTINGS.terms, timing: "end_of_day", days: null, max_amount: 500, receipts: true, jobs_default: true, card_required: true });
   });
 
   it("keeps days only with Days after, rounds the cap to cents, and blank means no limit", () => {
@@ -198,6 +199,8 @@ describe("Settings → Payments", () => {
       "Over this, the charge waits for your OK. Leave it blank for no limit.",
       "Email a receipt after each charge",
       "Turn on autopay for new recurring jobs of clients on autopay",
+      "Require a card on file",
+      "Quotes ask for a card when they're signed",
       "Save payment settings",
     ]) expect(page, words).toContain(words);
     // The starter wording is what's there, so there's nothing to reset.

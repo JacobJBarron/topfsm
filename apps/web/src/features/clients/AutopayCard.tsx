@@ -150,6 +150,8 @@ export function AutopayCard({ client }: { client: { id: string; display_name: st
     queryClient.invalidateQueries({ queryKey: ["client", client.id, "autopay"] });
     // Each job's switch hint and "Charged automatically" line read the same agreement.
     queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === "job" && q.queryKey[2] === "autopay" });
+    // The Clients list's Card not set up tab and its count.
+    queryClient.invalidateQueries({ queryKey: ["clients", session.company.id] });
   };
   const pause = useMutation({
     meta: { success: (_: unknown, paused: boolean) => (paused ? "Autopay paused" : "Autopay turned back on") },

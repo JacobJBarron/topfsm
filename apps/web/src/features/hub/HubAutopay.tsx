@@ -35,6 +35,8 @@ const STEPS: Array<{ step: Step; label: string }> = [
 
 /** What an agreement on hold says, here and on the home page's card. */
 export const ON_HOLD_TEXT = "Charges are on hold for now. Until they start again, invoices come to you to pay.";
+/** What a business that needs a card on file says, on the signed quote and the home page's card. */
+export const CARD_REQUIRED = "A card on file is required for service. You'll add it on Stripe's secure page.";
 
 /** "Oct 31", where the business is. */
 const shortDay = (at: string, timeZone: string) => new Date(at).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone });

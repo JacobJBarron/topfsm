@@ -134,6 +134,8 @@ export interface QuoteView {
   company: HubCompany;
   /** Offer "Approve and set up autopay" (work charged by the visit, the business takes autopay). Servers that don't send it don't offer it. */
   autopay_offer?: boolean;
+  /** The business needs a card on file: signing goes straight on to adding one, with no Approve without it. */
+  card_required?: boolean;
   /** The estimate template (core documents.ts); read through templateSettings(). */
   template?: unknown;
   /** Null with a price range (it would say the price), and from servers before contracts. */
@@ -208,6 +210,8 @@ export interface HubAutopay {
    * don't send it can take it.
    */
   available?: boolean;
+  /** The business needs a card on file from every client. Servers that don't send it don't. */
+  card_required?: boolean;
 }
 /** What autopay is doing on an invoice: being charged, on its way (a bank payment), paid, or couldn't be charged. */
 export interface HubInvoiceAutopay {

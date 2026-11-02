@@ -3,7 +3,7 @@
  * Stripe webhooks. These use the admin client, so every query filters by the company in the link
  * or form, and responses include only client-facing fields (never costs or internal notes).
  */
-import { methodLabel, tipsAllowed } from "@crewtavo/core/autopay";
+import { autopaySettings, methodLabel, tipsAllowed } from "@crewtavo/core/autopay";
 import { contractValues, fillIn } from "@crewtavo/core/contracts";
 import { pickTemplate, templateSettings, type TemplateSettings } from "@crewtavo/core/documents";
 import { hidesExactPrice, inRangeMode, isSiteAdjustment, optionsRange, priceRange, rangeSettings } from "@crewtavo/core/estimates";
@@ -158,9 +158,10 @@ async function verifyTurnstile(c: Parameters<typeof appUrl>[0], token: string | 
   if (!result.success) throw new HttpError(400, "Please complete the verification and try again.");
 }
 
-// The range settings (settings->roofing) and the trade are read here but never sent: the room on top
-// is the business's own, and the trade only decides whether a preview shows a roofing range.
-const BRANDING = "name, phone, email, website, timezone, address, trade_preset, settings->branding, settings->hub_tips, settings->roofing";
+// The range settings (settings->roofing), the autopay settings and the trade are read here but never
+// sent: the room on top is the business's own, autopay's only say whether a card is required, and the
+// trade only decides whether a preview shows a roofing range.
+const BRANDING = "name, phone, email, website, timezone, address, trade_preset, settings->branding, settings->hub_tips, settings->roofing, settings->autopay";
 
 /** The company as its clients see it, with where its logo loads from (null without one). */
 const withLogo = <T extends { branding?: unknown }>(companyId: string, company: T) => ({ ...company, logo: logoImage("", companyId, { branding: company.branding })?.src ?? null });
@@ -169,12 +170,12 @@ const withLogo = <T extends { branding?: unknown }>(companyId: string, company: 
 export { addressLines };
 
 /**
- * The company for a Hub page (name, contact details, address lines, logo), and its range settings and
- * trade for the server's own use.
+ * The company for a Hub page (name, contact details, address lines, logo), and its range settings,
+ * whether it needs a card on file, and its trade for the server's own use.
  */
 async function hubCompany(admin: ReturnType<typeof adminClient>, companyId: string) {
-  const { address, roofing, trade_preset: trade, ...row } = must(await admin.from("companies").select(BRANDING).eq("id", companyId).maybeSingle());
-  return { company: withLogo(companyId, { ...row, address: addressLines(address) }), roofing, trade };
+  const { address, roofing, autopay, trade_preset: trade, ...row } = must(await admin.from("companies").select(BRANDING).eq("id", companyId).maybeSingle());
+  return { company: withLogo(companyId, { ...row, address: addressLines(address) }), roofing, cardRequired: autopaySettings({ autopay }).card_required, trade };
 }
 
 /**
@@ -340,7 +341,7 @@ async function hubDrawings(admin: ReturnType<typeof adminClient>, companyId: str
 publicRoutes.get("/hub/:token", async (c) => {
   const l = await link(c);
   const admin = adminClient(c.env);
-  const { company, roofing, trade } = await hubCompany(admin, l.c);
+  const { company, roofing, cardRequired, trade } = await hubCompany(admin, l.c);
   if (l.t === "client") return c.json(await clientHome(c, admin, l, company));
   if (l.t === "quote") {
     const quote = must(
@@ -452,16 +453,19 @@ publicRoutes.get("/hub/:token", async (c) => {
           };
     }
     // "Approve and set up autopay": work charged by the visit (a line priced per visit among what's
-    // chosen), on the client's own page, when the business takes autopay and the client isn't on it
-    // yet. Never on a price range (it isn't the price yet) or a change order (the job is set up).
+    // chosen), or any work when the business needs a card on file, on the client's own page, when the
+    // business takes autopay and the client isn't on it yet. Never on a price range (it isn't the
+    // price yet) or a change order (the job is set up).
     const perVisit = lines.some((line) => line.selected && line.unit.trim().toLowerCase() === "visit");
-    const autopayOffer = !l.pv && perVisit && !inRangeMode(quote) && !quote.change_order_for && (await autopayOffered(c.env, admin, l.c, quote.client_id));
+    const autopayOffer = !l.pv && (perVisit || cardRequired) && !inRangeMode(quote) && !quote.change_order_for && (await autopayOffered(c.env, admin, l.c, quote.client_id));
     return c.json({
       kind: "quote",
       company,
       template,
       contract,
       autopay_offer: autopayOffer,
+      // Signing goes straight on to adding a card: there's no Approve without one.
+      card_required: autopayOffer && cardRequired,
       quote: {
         id: quote.id, number: quote.number, status: quote.status, title: quote.title, message: quote.message,
         subtotal: exact ? quote.subtotal : null,

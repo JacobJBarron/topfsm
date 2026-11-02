@@ -76,6 +76,8 @@ export interface HubAutopay {
    * only then for a client with an agreement in force, so they can still see it and turn it off.
    */
   available: boolean;
+  /** The business needs a card on file from every client (Settings → Payments). */
+  card_required: boolean;
 }
 
 /** An invoice page's autopay facts (GET /hub/:token, kind invoice). */
@@ -913,6 +915,7 @@ export async function hubAutopay(env: Env, admin: Db, companyId: string, clientI
     per_visit: perVisit,
     per_visit_taxed: perVisit !== null && taxed,
     available,
+    card_required: settings.card_required,
   };
 }
 

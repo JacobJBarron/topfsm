@@ -161,7 +161,7 @@ set local role authenticated;
 select tmanual.as_user(:'olive');
 -- A $20 cap: Charge card goes past it, the office having pressed it.
 select public.autopay_set_settings(:'co', jsonb_build_object('enabled', true, 'terms', :'lawn_terms', 'timing', 'end_of_day',
-  'days', null, 'max_amount', 20, 'receipts', true, 'jobs_default', false));
+  'days', null, 'max_amount', 20, 'receipts', true, 'jobs_default', false, 'card_required', false));
 commit;
 
 select tmanual.ready_client(:'co', 'Pat Lee') as c_pat \gset
@@ -490,7 +490,7 @@ select tmanual.as_user(:'opal');
 select tmanual.asked(:'co', array[:'inv_e']::uuid[]);
 select tmanual.as_user(:'olive');
 select public.autopay_set_settings(:'co', jsonb_build_object('enabled', false, 'terms', :'lawn_terms', 'timing', 'end_of_day',
-  'days', null, 'max_amount', 20, 'receipts', true, 'jobs_default', false));
+  'days', null, 'max_amount', 20, 'receipts', true, 'jobs_default', false, 'card_required', false));
 commit;
 select tmanual.charge_of(:'inv_e') as ch_e \gset
 select tmanual.charge(:'ch_e', (tmanual.claim(:'co')).token, 'paid');
@@ -503,7 +503,7 @@ select tmanual.check(tmanual.asked(:'co', array[:'inv_e']::uuid[]) = 'autopay_of
   'and before: nothing to charge, and nothing listed');
 select tmanual.as_user(:'olive');
 select public.autopay_set_settings(:'co', jsonb_build_object('enabled', true, 'terms', :'lawn_terms', 'timing', 'end_of_day',
-  'days', null, 'max_amount', 20, 'receipts', true, 'jobs_default', false));
+  'days', null, 'max_amount', 20, 'receipts', true, 'jobs_default', false, 'card_required', false));
 commit;
 update public.integrations set settings = '{"autopay": false}' where company_id = :'co' and provider = 'stripe';
 begin;

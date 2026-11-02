@@ -1507,7 +1507,7 @@ describe("autopay on the client's home page", () => {
     const card = {
       status: "active" as const, method: { id: CARD, type: "card", label: "Visa ending 4242", exp: "08/28" }, imported: false, since: "2026-10-31T14:05:09Z",
       terms: "We charge the card on file after each visit is done.", terms_version: "2026-10-31T14:05:09", timing: "at the end of the day of each visit",
-      next_charge: "2026-11-01T05:00:00Z", per_visit: 45, per_visit_taxed: false, available: true,
+      next_charge: "2026-11-01T05:00:00Z", per_visit: 45, per_visit_taxed: false, available: true, card_required: false,
     };
     vi.mocked(autopay.hubAutopay).mockResolvedValueOnce(card);
     expect((await (await hub({ t: "client", id: CLIENT })).json()).autopay).toEqual(card);
@@ -1635,6 +1635,30 @@ describe("approving a quote for work charged by the visit", () => {
     state.tables.quote_line_items = [line("m1", null, "Spring cleanup", { unit: "ea", unit_price: 300, sort: 1 })];
     expect((await (await hub({ t: "quote", id: QUOTE })).json()).autopay_offer).toBe(false);
     expect(autopay.autopayOffered).not.toHaveBeenCalled();
+  });
+
+  it("asks for a card on any quote when the business needs one on file, and never sends its autopay settings", async () => {
+    vi.mocked(autopay.autopayOffered).mockResolvedValue(true);
+    weekly();
+    let body = await (await hub({ t: "quote", id: QUOTE })).json();
+    expect(body).toMatchObject({ autopay_offer: true, card_required: false });
+    const settings = state.tables.companies![0]!.settings as Row;
+    state.tables.companies![0]!.settings = { ...settings, autopay: { enabled: true, card_required: true, terms: "Charged after each mow." } };
+    body = await (await hub({ t: "quote", id: QUOTE })).json();
+    expect(body).toMatchObject({ autopay_offer: true, card_required: true });
+    expect(JSON.stringify(body)).not.toContain("Charged after each mow.");
+    // A one-off job, not charged by the visit, asks too.
+    state.tables.quote_line_items = [line("m1", null, "Spring cleanup", { unit: "ea", unit_price: 300, sort: 1 })];
+    expect((await (await hub({ t: "quote", id: QUOTE })).json())).toMatchObject({ autopay_offer: true, card_required: true });
+    // Not when the client is on autopay already (or the business can't take it), a preview, a price range or a change order.
+    vi.mocked(autopay.autopayOffered).mockResolvedValue(false);
+    expect((await (await hub({ t: "quote", id: QUOTE })).json())).toMatchObject({ autopay_offer: false, card_required: false });
+    vi.mocked(autopay.autopayOffered).mockResolvedValue(true);
+    expect((await (await hub({ t: "quote", id: QUOTE, pv: 1 })).json()).card_required).toBe(false);
+    weekly({ change_order_for: "q-original" });
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).card_required).toBe(false);
+    weekly({ range_low: 40, range_high: 60, range_sent_at: "2026-10-22T15:00:00Z" });
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).card_required ?? false).toBe(false);
   });
 
   it("prints and keeps the lawn starter terms when the business never wrote its own", async () => {

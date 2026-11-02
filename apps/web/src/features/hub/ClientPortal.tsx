@@ -15,7 +15,7 @@ import { Icon, type IconName } from "@/components/ui/Icon";
 import { dateIn, formatDate, formatMoney, formatMoneyCents, formatTime } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { needsNewCard, waitingInvoices, type HubAutopay, type HubInvoiceAutopay } from "./document";
-import { AutopayView, ON_HOLD_TEXT } from "./HubAutopay";
+import { AutopayView, CARD_REQUIRED, ON_HOLD_TEXT } from "./HubAutopay";
 
 export interface PortalVisit {
   id: string;
@@ -145,6 +145,8 @@ function Home({ token, data, go, onMessage }: { token: string; data: ClientView;
   const waitingQuotes = data.quotes.filter((q) => (q.status === "sent" || q.status === "changes_requested") && !q.range?.accepted_at);
   // One being charged to their card (or on its way from their bank) waits on the card, not on them.
   const owed = waitingInvoices(data.invoices);
+  // A business that needs a card on file: adding it (or agreeing to the one saved) is waiting on them too.
+  const cardStep = Boolean(data.autopay?.card_required && data.autopay.available !== false && (data.autopay.status === "off" || data.autopay.status === "agree"));
   const next = data.visits[0];
   const tz = hubZone(data.company);
   // `day` is the date where the company is: a payment at 8:30 PM on Oct 16 in New York is Oct 17 in UTC.
@@ -181,8 +183,8 @@ function Home({ token, data, go, onMessage }: { token: string; data: ClientView;
         )}
       </section>
 
-      <Section title={waitingQuotes.length || owed.length ? "Waiting on you" : "All caught up"}>
-        {waitingQuotes.length === 0 && owed.length === 0 && (
+      <Section title={waitingQuotes.length || owed.length || cardStep ? "Waiting on you" : "All caught up"}>
+        {waitingQuotes.length === 0 && owed.length === 0 && !cardStep && (
           <div className="hub-card hub-calm"><Icon name="check" size={20} />Nothing needs your attention right now.</div>
         )}
         {waitingQuotes.map((q) =>
@@ -228,9 +230,10 @@ function Home({ token, data, go, onMessage }: { token: string; data: ClientView;
             {needsNewCard(i) && data.autopay && data.autopay.available !== false && <button type="button" className="hub-link" onClick={() => go("autopay")}>Update your card</button>}
           </article>
         ))}
+        {cardStep && <AutopayCard autopay={data.autopay!} timeZone={tz} go={go} />}
       </Section>
 
-      {data.autopay && <AutopayCard autopay={data.autopay} timeZone={tz} go={go} />}
+      {data.autopay && !cardStep && <AutopayCard autopay={data.autopay} timeZone={tz} go={go} />}
 
       {next && (
         <Section title="Next visit" action={data.visits.length > 1 || data.past_visits.length ? <button type="button" className="hub-link" onClick={() => go("visits")}>All visits</button> : undefined}>
@@ -278,7 +281,8 @@ function Home({ token, data, go, onMessage }: { token: string; data: ClientView;
 /**
  * Autopay on the client's home, between what's waiting on them and the next visit: on ("Paid
  * automatically · Visa ending 4242", the next charge, Change card and Turn off), a step left or a
- * state to know about, or, when they're not on it, a card that starts it. All lead to ?view=autopay.
+ * state to know about, or, when they're not on it, a card that starts it (a step left to do, when the
+ * business needs a card on file). All lead to ?view=autopay.
  * On hold while the business can't take autopay: only Turn off.
  */
 function AutopayCard({ autopay, timeZone, go }: { autopay: HubAutopay; timeZone: string; go: (v: PortalView) => void }) {
@@ -308,11 +312,11 @@ function AutopayCard({ autopay, timeZone, go }: { autopay: HubAutopay; timeZone:
         <div className="hub-todo-head">
           <span className="hub-icon-tile brand"><Icon name="card" size={20} /></span>
           <span className="grow stack-xs">
-            <strong className="hub-title">Pay automatically after each visit</strong>
-            <span className="hub-meta">Save a card once, and we charge it {autopay.timing}.</span>
+            <strong className="hub-title">{autopay.card_required ? "Finish setting up: add your card" : "Pay automatically after each visit"}</strong>
+            <span className="hub-meta">{autopay.card_required ? CARD_REQUIRED : `Save a card once, and we charge it ${autopay.timing}.`}</span>
           </span>
         </div>
-        <button type="button" className="hub-btn hub-btn-brand" onClick={open}>Pay automatically</button>
+        <button type="button" className="hub-btn hub-btn-brand" onClick={open}>{autopay.card_required ? "Add your card" : "Pay automatically"}</button>
       </article>
     );
   }

@@ -25,6 +25,7 @@ const FILTERS = [
   { key: "lead", label: "Leads" },
   { key: "active", label: "Active" },
   { key: "archived", label: "Archived" },
+  { key: "no_card", label: "Card not set up" },
 ] as const;
 type FilterKey = (typeof FILTERS)[number]["key"];
 const PAGE = 50;
@@ -36,7 +37,12 @@ export function ClientsPage() {
   const session = useSession();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  const [filter, setFilter] = useState<FilterKey>(() => (FILTERS.find((x) => x.key === params.get("status"))?.key as FilterKey | undefined) ?? "all");
+  const autopay = autopaySettings(session.company.settings, session.company.trade_preset);
+  const money = hasRole(session, "admin", "office") && can(session, "invoices");
+  // Card not set up: active clients with no card they agreed to that can be charged, for the office when every client needs one on file.
+  const noCard = money && autopay.enabled && autopay.card_required;
+  const filters = FILTERS.filter((f) => f.key !== "no_card" || noCard);
+  const [filter, setFilter] = useState<FilterKey>(() => (filters.find((x) => x.key === params.get("status"))?.key as FilterKey | undefined) ?? "all");
   const [tag, setTag] = useState("");
   const [sort, setSort] = useState<"name" | "newest">("name");
   const [limit, setLimit] = useState(PAGE);
@@ -48,12 +54,12 @@ export function ClientsPage() {
   const setCreating = (on: boolean) => setParams(on ? { new: "1" } : {}, { replace: true });
   const canEdit = hasRole(session, "admin", "office", "estimator");
   // Autopay invites are for the people who look after money, once the company has autopay on and can send.
-  const invites = hasRole(session, "admin", "office") && can(session, "invoices") && autopaySettings(session.company.settings, session.company.trade_preset).enabled && (session.config.features.email || session.config.features.sms);
+  const invites = money && autopay.enabled && (session.config.features.email || session.config.features.sms);
   const tags = useClientTags();
   useEffect(() => setLimit(PAGE), [filter, tag, term, sort]);
 
   const counts = useQuery({
-    queryKey: ["clients", session.company.id, "counts"],
+    queryKey: ["clients", session.company.id, "counts", noCard],
     meta: { silent: true },
     queryFn: async () => {
       const count = async (status?: string) => {
@@ -61,8 +67,11 @@ export function ClientsPage() {
         q = status ? q.eq("status", status) : q.neq("status", "archived");
         return (await q).count ?? 0;
       };
-      const [all, lead, active, archived] = await Promise.all([count(), count("lead"), count("active"), count("archived")]);
-      return { all, lead, active, archived } as Record<FilterKey, number>;
+      const withoutCard = async () =>
+        (await supabase().from("clients").select("id, card:autopay_authorizations(id, method:client_payment_methods!inner(status))", { count: "exact", head: true }).eq("company_id", session.company.id).eq("status", "active")
+          .is("card.revoked_at", null).in("card.method.status", ["active", "pending"]).is("card", null)).count ?? 0;
+      const [all, lead, active, archived, no_card] = await Promise.all([count(), count("lead"), count("active"), count("archived"), noCard ? withoutCard() : 0]);
+      return { all, lead, active, archived, no_card } as Record<FilterKey, number>;
     },
   });
 
@@ -72,11 +81,14 @@ export function ClientsPage() {
     queryFn: async () => {
       let q = supabase()
         .from("clients")
-        .select("id, display_name, company_name, email, phone, status, tags, created_at, properties(line1, city, region)", { count: "exact" })
+        .select("id, display_name, company_name, email, phone, status, tags, created_at, properties(line1, city, region), card:autopay_authorizations(id, method:client_payment_methods!inner(status))", { count: "exact" })
         .eq("company_id", session.company.id)
         .order(sort === "name" ? "display_name" : "created_at", { ascending: sort === "name" })
         .limit(limit);
-      q = filter === "all" ? q.neq("status", "archived") : q.eq("status", filter);
+      // Card not set up: active clients with no agreement in force on a card that can be charged (active,
+      // or a bank account being checked). An anti-join: a removed card, or one saved but not agreed to, counts.
+      if (filter === "no_card") q = q.eq("status", "active").is("card.revoked_at", null).in("card.method.status", ["active", "pending"]).is("card", null);
+      else q = filter === "all" ? q.neq("status", "archived") : q.eq("status", filter);
       if (term) q = q.or(`display_name.ilike.%${term}%,company_name.ilike.%${term}%,email.ilike.%${term}%,phone.ilike.%${term}%`);
       if (tag) q = q.contains("tags", [tag]);
       const { data, error, count } = await q;
@@ -152,7 +164,7 @@ export function ClientsPage() {
           <input className="input" type="search" placeholder="Search name, company, email or phone" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Search clients" />
         </div>
         <div className="tabs" role="group" aria-label="Filter clients">
-          {FILTERS.map((f) => (
+          {filters.map((f) => (
             <button key={f.key} type="button" className="tab" aria-pressed={filter === f.key} onClick={() => setFilter(f.key)}>
               {f.label}
               {counts.data && <span className="badge">{counts.data[f.key]}</span>}
@@ -177,7 +189,9 @@ export function ClientsPage() {
         <TableSkeleton columns={5} />
       ) : data && data.rows.length === 0 ? (
         <div className="card">
-          {isFiltered ? (
+          {filter === "no_card" && !term && !tag ? (
+            <EmptyState icon="card" title="Every active client has a card set up" />
+          ) : isFiltered ? (
             <EmptyState icon="search" title="No clients match" action={<Button onClick={() => { setSearch(""); setTag(""); setFilter("all"); }}>Clear filters</Button>} />
           ) : (
             <EmptyState

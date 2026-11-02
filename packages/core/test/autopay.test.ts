@@ -35,7 +35,7 @@ describe("autopay settings", () => {
   it("start from the trade's starter terms, the end of the day, a $500 cap and receipts, with autopay off", () => {
     expect(autopaySettings({}, "lawn_exterior")).toEqual({
       enabled: false, terms: LAWN, terms_version: "starter-lawn_exterior-1", timing: "end_of_day", days: null,
-      max_amount: 500, receipts: true, jobs_default: true, changed_at: null, changed_by: null,
+      max_amount: 500, receipts: true, jobs_default: true, card_required: false, changed_at: null, changed_by: null,
     });
     // Only lawn companies get autopay on for new recurring jobs by default.
     for (const trade of ["general", "paving", "roofing_exteriors"]) expect(autopaySettings({}, trade).jobs_default).toBe(false);
@@ -56,9 +56,11 @@ describe("autopay settings", () => {
   it("read what autopay_set_settings saved", () => {
     const saved = {
       enabled: true, terms: "Charged after each mow.", terms_version: "2026-10-31T14:05:09", timing: "days", days: 3, max_amount: null,
-      receipts: false, jobs_default: false, changed_at: "2026-10-31T14:05:09.123Z", changed_by: "00000000-0000-4000-8000-000000000001",
+      receipts: false, jobs_default: false, card_required: true, changed_at: "2026-10-31T14:05:09.123Z", changed_by: "00000000-0000-4000-8000-000000000001",
     };
     expect(autopaySettings({ hub_tips: true, autopay: saved }, "lawn_exterior")).toEqual(saved);
+    // Only a saved true needs a card on file.
+    expect(autopaySettings({ autopay: { ...saved, card_required: "yes" } }).card_required).toBe(false);
   });
 
   it("keep no limit only when it was saved that way", () => {

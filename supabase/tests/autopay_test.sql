@@ -210,7 +210,7 @@ select tautopay.check(private.autopay_timing_text('{"timing": "now"}') = 'right 
 create function tautopay.settings(p_timing text default 'end_of_day', p_days integer default null, p_max numeric default 500,
   p_terms text default 'We charge the card on file after each visit is done. You''ll get a receipt each time. Turn it off anytime from your client page or by calling us.',
   p_enabled boolean default true) returns jsonb language sql as $$
-  select jsonb_build_object('enabled', p_enabled, 'terms', p_terms, 'timing', p_timing, 'days', p_days, 'max_amount', p_max, 'receipts', true, 'jobs_default', true)
+  select jsonb_build_object('enabled', p_enabled, 'terms', p_terms, 'timing', p_timing, 'days', p_days, 'max_amount', p_max, 'receipts', true, 'jobs_default', true, 'card_required', false)
 $$;
 grant execute on function tautopay.settings(text, integer, numeric, text, boolean) to authenticated;
 
@@ -232,7 +232,8 @@ select tautopay.check(tautopay.error_of(format('select public.autopay_set_settin
   and tautopay.error_of(format('select public.autopay_set_settings(%L, %L)', :'co', tautopay.settings('days'))) = '22023: Choose 1 to 14 days'
   and tautopay.error_of(format('select public.autopay_set_settings(%L, %L)', :'co', tautopay.settings(p_max => 0))) = '22023: The most to charge without asking has to be more than $0'
   and tautopay.error_of(format('select public.autopay_set_settings(%L, %L)', :'co', tautopay.settings(p_max => 2000000))) = '22023: The most to charge without asking has to be more than $0'
-  and tautopay.error_of(format('select public.autopay_set_settings(%L, %L)', :'co', tautopay.settings() || '{"receipts": "yes"}')) = '22023: Say whether to email receipts',
+  and tautopay.error_of(format('select public.autopay_set_settings(%L, %L)', :'co', tautopay.settings() || '{"receipts": "yes"}')) = '22023: Say whether to email receipts'
+  and tautopay.error_of(format('select public.autopay_set_settings(%L, %L)', :'co', tautopay.settings() - 'card_required')) = '22023: Say whether every client needs a card on file',
   'each setting is checked, with a message that says what to fix');
 select tautopay.check(tautopay.error_of(format('select public.autopay_set_settings(%L, %L)', :'co', tautopay.settings())) = '22023: Update your Stripe key on the Apps page to turn on autopay',
   'autopay isn''t turned on while the Stripe key can''t save cards');
@@ -249,7 +250,8 @@ select tautopay.as_user(:'ada');
 select public.autopay_set_settings(:'co', tautopay.settings(p_max => null)) as saved \gset
 commit;
 select tautopay.check((:'saved'::jsonb) ->> 'terms_version' ~ '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d$' and (:'saved'::jsonb) ->> 'changed_by' = :'ada'
-  and (:'saved'::jsonb) -> 'enabled' = 'true' and (:'saved'::jsonb) -> 'max_amount' = 'null' and (:'saved'::jsonb) -> 'days' = 'null',
+  and (:'saved'::jsonb) -> 'enabled' = 'true' and (:'saved'::jsonb) -> 'max_amount' = 'null' and (:'saved'::jsonb) -> 'days' = 'null'
+  and (:'saved'::jsonb) -> 'card_required' = 'false',
   'an admin with the invoices area turns it on: every key saved, with a version for the terms, who and when');
 select tautopay.check(private.autopay_terms_shown(:'co') = :'terms' || E'\n\nWe charge at the end of the day of each visit.',
   'what the client agrees to is the terms, then when they''re charged');

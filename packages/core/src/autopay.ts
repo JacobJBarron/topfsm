@@ -27,6 +27,8 @@ export interface AutopaySettings {
   receipts: boolean;
   /** New recurring per-visit jobs of a client on autopay start with it on, and a client who agrees has theirs switched on. */
   jobs_default: boolean;
+  /** Every client needs a card on file: a quote asks for one when it's signed, and the client's page and the office say so. */
+  card_required: boolean;
   changed_at: string | null;
   changed_by: string | null;
 }
@@ -107,6 +109,7 @@ export function autopaySettings(settings: unknown, trade?: string | null): Autop
       : typeof cap === "number" && Number.isFinite(cap) && cap > 0 && cap <= AUTOPAY_MAX_AMOUNT ? cap : AUTOPAY_DEFAULT_MAX,
     receipts: typeof a.receipts === "boolean" ? a.receipts : true,
     jobs_default: typeof a.jobs_default === "boolean" ? a.jobs_default : trade === "lawn_exterior",
+    card_required: a.card_required === true,
     changed_at: typeof a.changed_at === "string" ? a.changed_at : null,
     changed_by: typeof a.changed_by === "string" ? a.changed_by : null,
   };

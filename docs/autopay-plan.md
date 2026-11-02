@@ -309,6 +309,24 @@ After a refund, an invoice that's owed again can be charged again. Only that cha
 invoice counts as paid by the card: if the client pays on Stripe's page instead, it was paid
 another way, and no receipt goes.
 
+### 10. Card on file required
+
+A switch in Settings → Payments, **Require a card on file**, off to start (settings.autopay
+`card_required`). For a business that won't do the work without a card on file:
+
+- **Quotes ask for one.** Any quote, not only work charged by the visit, has one button, "Approve
+  and add your card". Above it: "A card on file is required for service. After you sign, you'll add
+  yours on Stripe's secure page." Signing then goes straight on to the autopay page. The signature
+  never waits on the card: if Stripe's page trips the client up, the quote is still signed.
+- **The client's page says so.** Until they've agreed, the signed quote and their home page show
+  "Finish setting up: add your card" in place of "Pay automatically after each visit".
+- **The office sees who hasn't.** Clients gets a **Card not set up** tab: active clients with no
+  agreement in force on a card that can be charged (a removed card, or one saved but not agreed
+  to, counts). A job for one of them shows **Card not set up**. Nobody is stopped from doing the
+  work, and crews still never see cards.
+
+Not for clients on autopay already, a price range, a change order or the office's preview.
+
 ## The Stripe side, in one place
 
 | Step | What's used in Stripe | In Crewtavo today |

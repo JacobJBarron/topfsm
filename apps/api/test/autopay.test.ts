@@ -212,7 +212,7 @@ const hubLinks = (text: string) => text.match(/https:\/\/\S+\/hub\/\S+/g) ?? [];
 const TERMS = "We charge the card on file after each visit is done. You'll get a receipt each time. Turn it off anytime from your client page or by calling us.";
 const autopaySetting = (values: Row = {}) => ({
   enabled: true, terms: TERMS, terms_version: "2026-10-31T14:05:09", timing: "end_of_day", days: null, max_amount: 500, receipts: true, jobs_default: true,
-  changed_at: "2026-10-31T14:05:09.123Z", changed_by: null, ...values,
+  card_required: false, changed_at: "2026-10-31T14:05:09.123Z", changed_by: null, ...values,
 });
 const card = (rowId: string, client: string, values: Row = {}) => ({
   id: rowId, company_id: CO, client_id: client, type: "card", brand: "visa", last4: "4242", bank_name: null, wallet: null, exp_month: 8, exp_year: 2028,
@@ -905,7 +905,11 @@ describe("the Client Hub's autopay", () => {
       per_visit: 45,
       per_visit_taxed: false,
       available: true,
+      card_required: false,
     });
+    // A business that needs a card on file says so on the client's page.
+    db.tables.companies![0]!.settings = { autopay: autopaySetting({ card_required: true }) };
+    expect((await hubAutopay(env, db.db, CO, PAT))!.card_required).toBe(true);
   });
 
   it("says tax goes on top of the price of a visit when a line is taxable and the rate is above 0", async () => {
@@ -1248,7 +1252,7 @@ describe("the office's autopay routes", () => {
       { method, headers: { Authorization: `Bearer ${user}`, "X-Company-Id": CO, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) },
       env,
     );
-  const SETTINGS = { enabled: true, terms: TERMS, timing: "days", days: 2, max_amount: 250, receipts: true, jobs_default: false };
+  const SETTINGS = { enabled: true, terms: TERMS, timing: "days", days: 2, max_amount: 250, receipts: true, jobs_default: false, card_required: true };
 
   it("are for the office with the invoices area; crews and estimators are turned away", async () => {
     const db = world();
@@ -1298,6 +1302,7 @@ describe("the office's autopay routes", () => {
     expect(db.called("autopay_set_settings").at(-1)!.p_settings).toMatchObject({ timing: "now", days: null });
     expect((await request("admin-1", "PUT", "/autopay/settings", { ...SETTINGS, days: null })).status).toBe(400);
     expect((await request("admin-1", "PUT", "/autopay/settings", { ...SETTINGS, max_amount: 0 })).status).toBe(400);
+    expect((await request("admin-1", "PUT", "/autopay/settings", { ...SETTINGS, card_required: undefined })).status).toBe(400);
   });
 
   it("invites one client, and answers what's in the way as a 409", async () => {

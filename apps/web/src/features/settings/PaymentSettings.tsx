@@ -66,6 +66,7 @@ export interface PaymentForm {
   max: string;
   receipts: boolean;
   jobs_default: boolean;
+  card_required: boolean;
 }
 
 /** The saved settings as the form shows them. */
@@ -78,6 +79,7 @@ export function paymentForm(s: AutopaySettings): PaymentForm {
     max: s.max_amount == null ? "" : String(s.max_amount),
     receipts: s.receipts,
     jobs_default: s.jobs_default,
+    card_required: s.card_required,
   };
 }
 
@@ -99,7 +101,7 @@ export function autopayBody(f: PaymentForm) {
     if (!(max > 0)) throw new Error("The most to charge without asking has to be more than $0.");
     if (max > 1_000_000) throw new Error("The most to charge without asking can be up to $1,000,000.");
   }
-  return { enabled: f.enabled, terms, timing: f.timing, days, max_amount: max, receipts: f.receipts, jobs_default: f.jobs_default };
+  return { enabled: f.enabled, terms, timing: f.timing, days, max_amount: max, receipts: f.receipts, jobs_default: f.jobs_default, card_required: f.card_required };
 }
 
 export function PaymentSettings() {
@@ -208,6 +210,13 @@ export function PaymentSettings() {
             </Field>
           </div>
 
+          <label className="switch-row">
+            <input type="checkbox" className="switch" checked={f.card_required} onChange={(e) => set("card_required", e.target.checked)} />
+            <span>
+              Require a card on file
+              <span className="muted small" style={{ display: "block", fontWeight: 400 }}>Quotes ask for a card when they're signed, and clients' pages say it's required. Clients gets a Card not set up list, and jobs show who hasn't set one up.</span>
+            </span>
+          </label>
           <label className="switch-row">
             <input type="checkbox" className="switch" checked={f.receipts} onChange={(e) => set("receipts", e.target.checked)} />
             <span>
