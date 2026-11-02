@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { app } from "../src/app";
 import type { Env } from "../src/env";
 import { encryptJson, signToken } from "../src/lib/crypto";
-import { clientLink } from "../src/lib/links";
+import { clientLink, readClientLink } from "../src/lib/links";
 import { sendWithMailbox } from "../src/lib/notify";
 import { adminClient } from "../src/lib/supabase";
 import { zohoAccountsServer, zohoApiDomain } from "../src/integrations/registry";
@@ -64,22 +64,27 @@ const connectedFrom = (remoteAddress: string, e: Env = env) => ({ ...e, incoming
 afterEach(() => vi.unstubAllGlobals());
 
 describe("campaign sending", () => {
-  const campaign = { id: "camp-1", company_id: "co-1", subject: "Fall cleanup", body: "Hi {{client.first_name}}, leaves are coming.", company: { name: "Acme Lawn Care, LLC", email: null, phone: null, address: {} } };
+  const campaign = {
+    id: "camp-1", company_id: "co-1", subject: "Fall cleanup", body: "Hi {{client.first_name}}, leaves are coming.",
+    company: { name: "Acme Lawn Care, LLC", email: null, phone: null, address: {}, settings: { marketing: { enabled: true } } },
+  };
   const recipients = [1, 2, 3].map((id) => ({
     id, campaign_id: "camp-1", company_id: "co-1", client_id: `client-${id}`, email: `person${id}@example.com`, name: `Person ${id}`, status: "sending", claim_token: "claim-1",
+    track_token: `5f0c2b1e-0000-4000-8000-00000000000${id}`,
   }));
 
   /** One campaign with three claimed recipients; `onEmail` can change things as each email goes. */
-  function run(options: { optedOut?: string[]; claimedSince?: number[]; onEmail?: (count: number, state: { status: string }) => Response | void } = {}) {
-    const state = { status: "sending", emails: [] as string[], claims: 0 };
+  function run(options: { optedOut?: string[]; claimedSince?: number[]; body?: string; onEmail?: (count: number, state: { status: string }) => Response | void } = {}) {
+    const state = { status: "sending", emails: [] as string[], claims: 0, messages: [] as Array<{ html: string; text: string }> };
     const calls = serve((call) => {
       if (call.url.host === "api.resend.com") {
         state.emails.push(call.body.to[0]);
+        state.messages.push({ html: call.body.html, text: call.body.text });
         return options.onEmail?.(state.emails.length, state) ?? Response.json({ id: `email-${state.emails.length}` });
       }
       if (call.path === "rpc/claim_campaign_recipients") return state.claims++ ? [] : recipients;
       if (call.path === "rpc/renew_campaign_recipient") return !(options.claimedSince ?? []).includes(call.body.p_id);
-      if (call.method === "GET" && call.path === "campaigns") return call.url.searchParams.get("select") === "status" ? [{ status: state.status }] : [campaign];
+      if (call.method === "GET" && call.path === "campaigns") return call.url.searchParams.get("select") === "status" ? [{ status: state.status }] : [{ ...campaign, body: options.body ?? campaign.body }];
       if (call.method === "GET" && call.path === "clients") return [{ marketing_opt_out: (options.optedOut ?? []).includes(call.url.searchParams.get("id")!.slice(3)) }];
       if (call.method === "HEAD") return counted(0);
       return [];
@@ -104,8 +109,30 @@ describe("campaign sending", () => {
     expect(state.emails).toEqual(["person1@example.com", "person3@example.com"]);
     const order = calls.filter((c) => c.path === "rpc/renew_campaign_recipient" || c.url.host === "api.resend.com").map((c) => c.body.p_id ?? c.body.to[0]);
     expect(order).toEqual([1, "person1@example.com", 2, 3, "person3@example.com"]);
-    expect(calls.find((c) => c.path === "rpc/renew_campaign_recipient")?.body).toEqual({ p_id: 1, p_token: "claim-1" });
+    expect(calls.find((c) => c.path === "rpc/renew_campaign_recipient")?.body).toEqual({ p_id: 1, p_token: "claim-1", p_links: [] });
     expect(settled().flatMap((s) => s.p_ids)).toEqual([1, 3]); // recipient 2 is the other run's to record
+  });
+
+  it("tracks each email's links and opens with the recipient's own token, and records the links it carries", async () => {
+    const { state, calls, done } = run({ body: "Hi {{client.first_name}}, book your fall cleanup at https://acme.example/fall.\n\n{{link}}" });
+    expect(await done).toMatchObject({ sent: 3 });
+    const renewed = calls.filter((c) => c.path === "rpc/renew_campaign_recipient").map((c) => c.body);
+    expect(renewed[0]).toEqual({ p_id: 1, p_token: "claim-1", p_links: ["https://acme.example/fall", expect.stringMatching(/^https:\/\/ops\.example\.com\/hub\//)] });
+    // Each client's {{link}} is their own Client Hub home.
+    expect(renewed[0].p_links[1]).not.toBe(renewed[1].p_links[1]);
+    const { html, text } = state.messages[0]!;
+    const token = recipients[0]!.track_token;
+    expect(html).toContain(`<a href="https://ops.example.com/api/public/c/${token}/0" style="color:#2c611a;font-weight:600;word-break:break-all">https://acme.example/fall</a>`);
+    expect(html).toContain(`href="https://ops.example.com/api/public/c/${token}/1"`);
+    // {{link}} on its own line is their Hub home, a button named as the Hub names it, and it lasts a year.
+    expect(html).toContain(">Request work</a>");
+    expect((await readClientLink(env, renewed[0].p_links[1].split("/hub/")[1]))!.exp - Date.now() / 1000).toBeGreaterThan(364 * 86_400);
+    expect(html).toContain(`<img src="https://ops.example.com/api/public/o/${token}" width="1" height="1" alt=""`);
+    // The unsubscribe link is never a tracked one.
+    expect(html).toMatch(/<a href="https:\/\/ops\.example\.com\/u\/[^"]+" style="color:#5f6f76">Unsubscribe<\/a>/);
+    expect(text).toContain(`book your fall cleanup at https://ops.example.com/api/public/c/${token}/0.`);
+    expect(text).not.toContain("https://acme.example/fall");
+    expect(state.messages[1]!.html).toContain(`/api/public/o/${recipients[1]!.track_token}`);
   });
 
   it("doesn't email people who unsubscribed after Send", async () => {
@@ -124,6 +151,45 @@ describe("campaign sending", () => {
     expect(await done).toMatchObject({ sent: 1, skipped: 2 });
     expect(state.emails).toEqual(["person1@example.com"]);
     expect(settled()).toContainEqual({ fn: "finish_campaign_recipients", p_token: "claim-1", p_ids: [2, 3], p_status: "skipped", p_error: "Campaign stopped" });
+  });
+
+  it("keeps a stopped campaign's counts of what went, and only finishes one still sending", async () => {
+    const { calls, done } = run({
+      onEmail: (count, s) => {
+        if (count === 1) s.status = "cancelled";
+      },
+    });
+    await done;
+    const updates = calls.filter((c) => c.method === "PATCH" && c.path === "campaigns");
+    // The counts go on whatever its status: no status filter on that write.
+    const counts = updates.find((c) => "sent_count" in c.body)!;
+    expect(counts.url.searchParams.get("status")).toBeNull();
+    expect(Object.keys(counts.body).sort()).toEqual(["failed_count", "sent_count"]);
+    // Finishing it is apart, and only for one still sending.
+    for (const u of updates.filter((c) => c.body.status === "sent")) expect(u.url.searchParams.get("status")).toBe("eq.sending");
+  });
+
+  it("leaves companies with Marketing uninstalled out, starting and sending", async () => {
+    const calls = serve((call) => (call.method === "GET" && call.path === "campaigns" ? [] : []));
+    expect(await processCampaigns(env)).toMatchObject({ campaigns: 0, sent: 0 });
+    const reads = calls.filter((c) => c.method === "GET" && c.path === "campaigns");
+    // Scheduled ones whose time has come, and sending ones, only for companies with it on.
+    expect(reads.map((c) => c.url.searchParams.get("status"))).toEqual(["eq.scheduled", "eq.sending"]);
+    for (const read of reads) {
+      expect(read.url.searchParams.get("company.settings->marketing->>enabled")).toBe("eq.true");
+      expect(read.url.searchParams.get("select")).toContain("company:companies!inner(");
+    }
+    // Nothing was due, so nothing started.
+    expect(calls.some((c) => c.method === "PATCH" && c.path === "campaigns")).toBe(false);
+  });
+
+  it("starts only the scheduled campaigns it found due", async () => {
+    const calls = serve((call) => (call.method === "GET" && call.path === "campaigns" && call.url.searchParams.get("status") === "eq.scheduled" ? [{ id: "camp-2" }] : []));
+    await processCampaigns(env);
+    const start = calls.find((c) => c.method === "PATCH" && c.path === "campaigns")!;
+    expect(start.url.searchParams.get("id")).toBe("in.(camp-2)");
+    expect(start.url.searchParams.get("status")).toBe("eq.scheduled");
+    expect(start.body).toMatchObject({ status: "sending" });
   });
 
   it("puts the rest of the batch back when the provider rate limits", async () => {
@@ -178,10 +244,9 @@ describe("review requests", () => {
   it("asks again when the last request within the window failed to send", async () => {
     const calls = serve((call) => {
       if (call.url.host === "api.resend.com") return Response.json({ id: "email-1" });
-      if (call.path === "companies") return [{ name: "Acme", phone: null, email: null, settings: { review_url: "https://g.page/r/acme" } }];
-      // The only request in the last 30 days failed.
-      if (call.method === "HEAD" && call.path === "review_requests") return counted(call.url.searchParams.get("status") === "neq.failed" ? 0 : 1);
-      if (call.method === "POST" && call.path === "review_requests") return Response.json({ id: "rr-2" });
+      if (call.path === "companies") return [{ name: "Acme", phone: null, email: null, timezone: "UTC", settings: { review_url: "https://g.page/r/acme", marketing: { enabled: true } } }];
+      // The database finds no ask in the window that went out (the only one failed), and records this one.
+      if (call.path === "rpc/begin_review_request") return Response.json("rr-2");
       return [];
     });
     const result = await sendReviewRequest(env, adminClient(env), {
@@ -193,6 +258,7 @@ describe("review requests", () => {
       createdBy: null,
     });
     expect(result).toMatchObject({ sent: true, id: "rr-2" });
+    expect(calls.find((c) => c.path === "rpc/begin_review_request")?.body).toMatchObject({ p_client: "client-1", p_gap_days: 30, p_channel: "email" });
     expect(calls.some((c) => c.url.host === "api.resend.com")).toBe(true);
   });
 });
@@ -358,9 +424,10 @@ describe("public submissions", () => {
       if (call.method === "POST" && call.path === "clients") return Response.json({ id: "client-2" }, { status: 201 });
       if (call.method === "POST" && call.path === "properties") return Response.json({ id: "property-2" }, { status: 201 });
       if (call.method === "POST" && call.path === "requests") return Response.json({ id: "request-2", number: 1042 }, { status: 201 });
+      if (call.path === "rpc/record_referral") return { client_id: "client-2", property_id: "property-2", new_property: true, request_id: "request-2", number: 1043 };
       return [];
     });
-    const made = () => calls.filter((c) => c.method === "POST" && ["clients", "properties", "requests", "referrals"].includes(c.path)).map((c) => c.path);
+    const made = () => calls.filter((c) => c.method === "POST" && ["clients", "properties", "requests", "referrals", "rpc/record_referral"].includes(c.path)).map((c) => c.path);
     const limits = () => calls.filter((c) => c.path === "rpc/rate_limit_hit").map((c) => [c.body.p_key, c.body.p_max, c.body.p_window_seconds]);
     return { calls, made, limits };
   }
@@ -461,8 +528,15 @@ describe("public submissions", () => {
   it("limits referrals per visitor and per company", async () => {
     const path = `/public/refer/${await token("refer", "client-1")}`;
     const ok = database();
-    expect((await post(path, lead)).status).toBe(201);
+    const res = await post(path, { ...lead, phone: "540-555-0123" });
+    expect([res.status, await res.json()]).toEqual([201, { ok: true, reference: 1043 }]);
     expect(ok.limits()).toEqual([["referral:ip:203.0.113.9", 10, 3600], ["referral:company:co-1", 100, 3600]]);
+    // The lead, their property, the request and the referral, made together by the database.
+    expect(ok.made()).toEqual(["rpc/record_referral"]);
+    expect(ok.calls.find((c) => c.path === "rpc/record_referral")?.body).toEqual({
+      p_company: "co-1", p_referrer: "client-1", p_name: "Bob Jones", p_email: "bob@example.com", p_phone: "540-555-0123",
+      p_address: { line1: "12 Main St", city: "Radford", postal_code: "24141" },
+    });
 
     const limited = database({ full: /^referral:company:/ });
     expect((await post(path, lead)).status).toBe(429);

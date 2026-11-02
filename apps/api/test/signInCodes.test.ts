@@ -908,7 +908,8 @@ describe("asking for a code by email", () => {
   it("keeps the address out of the log when an email doesn't go out", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const world = oscar();
-    world.resendRefuses = "Invalid `to` field: al@apex.test is not a valid email address.";
+    // Resend's own words naming the address (an invalid `to` is said in the app's words, with none).
+    world.resendRefuses = "The recipient al@apex.test is on the suppression list.";
     serve(world);
     expect(await (await askEmail("al@apex.test")).json()).toEqual({ sent: true });
     await vi.waitFor(() => expect(error).toHaveBeenCalled());

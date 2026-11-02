@@ -11,6 +11,7 @@ import { formatDateTime, timeAgo } from "@/lib/format";
 import { useListAnimation } from "@/lib/motion";
 import { hasRole, useSession } from "@/lib/session";
 import { undoable } from "@/lib/undo";
+import { MessageBody } from "./MessageBody";
 
 const ICON: Record<string, IconName> = { note: "note", email: "mail", sms: "messages", call: "phone" };
 
@@ -134,7 +135,7 @@ export function Timeline({ clientId }: { clientId: string }) {
                     <Button size="sm" variant="ghost" icon="trash" aria-label="Delete note" onClick={() => removeLater(m)} />
                   )}
                 </div>
-                <div className="pre-wrap" style={{ marginTop: 2 }}>{m.body}</div>
+                <div className="pre-wrap" style={{ marginTop: 2 }}><MessageBody body={m.body} /></div>
               </div>
             </div>
           ))}

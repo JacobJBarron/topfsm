@@ -310,7 +310,7 @@ async function stillClearing(old: Ctx, row: Linked & { invoice_id: string | null
 
 type Billable = BillableInvoice & { id: string; status: string; notes: string | null; client_id: string; due_on: string | null };
 const BILLABLE =
-  "id, number, status, subject, notes, client_id, due_on, subtotal, discount_amount, tax_rate, tax_amount, retainage_pct, retainage_amount, amount_paid, balance_due, promo:promo_codes(code), lines:invoice_line_items(name, quantity, unit, unit_price, sort)";
+  "id, number, status, subject, notes, client_id, due_on, subtotal, discount_amount, credit_amount, tax_rate, tax_amount, retainage_pct, retainage_amount, amount_paid, balance_due, promo:promo_codes(code), credits:referral_credits(amount, note), lines:invoice_line_items(name, quantity, unit, unit_price, sort)";
 
 async function billable(ctx: Ctx, invoiceId: string): Promise<Billable | null> {
   const { data, error } = await ctx.admin.from("invoices").select(BILLABLE).eq("company_id", ctx.companyId).eq("id", invoiceId).maybeSingle();
@@ -435,6 +435,9 @@ async function createStripeInvoice(ctx: Ctx, invoice: Billable, tipCents: number
       collection_method: "send_invoice",
       auto_advance: false,
       pending_invoice_items_behavior: "exclude",
+      // No coupon the business attached to the customer in Stripe: the items already have Crewtavo's
+      // discounts, and Stripe taking another off would leave the invoice here partly paid.
+      discounts: "",
       // Stripe wants a due date in the future; one that has passed shows as due now.
       due_date: Math.max(invoice.due_on ? Math.floor(Date.parse(`${invoice.due_on}T23:00:00Z`) / 1000) : 0, Math.floor(Date.now() / 1000) + 3600),
       description: invoice.notes?.slice(0, 1500) || undefined,
@@ -454,7 +457,8 @@ async function createStripeInvoice(ctx: Ctx, invoice: Billable, tipCents: number
     stripeId = draft.id;
     fail((await ctx.admin.from("stripe_invoices").update({ stripe_id: draft.id, livemode: draft.livemode }).eq("id", row.id)).error);
     for (const [i, item] of stripeLineItems(invoice, tipCents, ctx.currency.toUpperCase()).entries()) {
-      await stripeApi(ctx.key, "POST", "/v1/invoiceitems", { customer, invoice: draft.id, currency: ctx.currency, amount: item.amount, description: item.description }, { idempotencyKey: `crewtavo-item-${row.id}-${i}` });
+      // Not discountable either, so a discount that reached the invoice some other way has nothing to come off.
+      await stripeApi(ctx.key, "POST", "/v1/invoiceitems", { customer, invoice: draft.id, currency: ctx.currency, amount: item.amount, description: item.description, discountable: false }, { idempotencyKey: `crewtavo-item-${row.id}-${i}` });
     }
     final = await stripeApi<StripeInvoice>(ctx.key, "POST", `/v1/invoices/${draft.id}/finalize`, { auto_advance: false }, { idempotencyKey: `crewtavo-finalize-${row.id}` });
     // Finalizing puts the client's balance in Stripe on it, so Stripe can ask for more or less than

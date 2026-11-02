@@ -52,7 +52,7 @@ export function UnsubscribePage() {
             <>
               <span className="success-mark"><Icon name="check" size={30} strokeWidth={3} /></span>
               <h1 style={{ fontSize: 24, letterSpacing: "var(--tracking-display)" }}>You're unsubscribed</h1>
-              <p className="muted" style={{ margin: 0 }}>You won't get marketing email from {status.data.company} anymore.</p>
+              <p className="muted" style={{ margin: 0 }}>You won't get marketing emails or review requests from {status.data.company} anymore. You'll still get your quotes, invoices and visit reminders.</p>
               <Button variant="ghost" loading={change.isPending} onClick={() => change.mutate(true)}>Subscribe again</Button>
             </>
           ) : (

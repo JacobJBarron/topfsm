@@ -11,6 +11,7 @@
  */
 import { addressLines, contractValues, fillIn, resolveSections, sectionsHash, type ContractInput, type ContractOption, type LibrarySection } from "@crewtavo/core/contracts";
 import { pickTemplate, templateSettings, type TemplateSettings } from "@crewtavo/core/documents";
+import { promoRuleWords } from "@crewtavo/core/promos";
 import { countsOn, lineTotal, optionBaseTotal, optionTierLabels, optionTotals, quoteTotals, toCents, type Amount, type OptionLine } from "@crewtavo/core/money";
 import { SITE_ADJUSTMENT_NAME } from "@crewtavo/core/estimates";
 import { isPackagePicturePath, packagePictureSrc } from "@crewtavo/core/presets";
@@ -300,7 +301,8 @@ export interface DocumentQuote {
   approval?: unknown;
   /** The option shown (quotes.option_id), when it offers options. */
   option_id?: string | null;
-  promo?: { code?: string | null } | null;
+  /** `every_visit`: whether it comes off every visit of recurring work or once (left out by older callers). */
+  promo?: { code?: string | null; every_visit?: boolean | null } | null;
   client?: { display_name: string } | null;
   property?: Address;
 }
@@ -437,7 +439,7 @@ export function quoteDocument(quote: DocumentQuote, lines: readonly DocumentQuot
     lines: documentLines(lines, shown),
     subtotal: Number(quote.subtotal ?? 0),
     discount,
-    discountLabel: discount > 0 && quote.promo?.code ? `Promo code ${quote.promo.code}` : undefined,
+    discountLabel: discount > 0 && quote.promo?.code ? `Promo code ${quote.promo.code}${quote.promo.every_visit != null ? ` · ${promoRuleWords(quote.promo.every_visit)}` : ""}` : undefined,
     tax: Number(quote.tax_amount ?? 0),
     total: Number(quote.total ?? 0),
     deposit: deposit > 0 ? deposit : null,
@@ -637,6 +639,9 @@ export interface DocumentInvoice {
   notes: string | null;
   subtotal: Amount;
   discount_amount: Amount;
+  /** Referral credits: what the invoice takes of them (credit_amount), each with its note. */
+  credit_amount?: Amount;
+  credits?: ReadonlyArray<{ amount: Amount; note: string }> | null;
   tax_amount: Amount;
   total: Amount;
   retainage_amount: Amount;
@@ -646,6 +651,24 @@ export interface DocumentInvoice {
   /** An invoice offers no options: every line is on it. */
   lines: ReadonlyArray<Omit<DocumentQuoteLine, "option_id">>;
   payments: ReadonlyArray<{ amount: Amount; received_at: string }>;
+}
+
+/**
+ * Each credit as much of it as the invoice takes, in the order they went on, so they add up to
+ * credit_amount. A void invoice keeps the credit it was sent with after the credits are given
+ * back, so what no credit accounts for is one "Referral credit" line.
+ */
+function invoiceCredits(credits: ReadonlyArray<{ amount: Amount; note: string }>, total: number) {
+  let left = Math.round(total * 100);
+  const lines: Array<{ label: string; amount: number }> = [];
+  for (const c of credits) {
+    const cents = Math.min(Math.round(Number(c.amount) * 100), left);
+    if (cents <= 0) break;
+    lines.push({ label: c.note, amount: cents / 100 });
+    left -= cents;
+  }
+  if (left > 0) lines.push({ label: "Referral credit", amount: left / 100 });
+  return lines;
 }
 
 /**
@@ -662,6 +685,7 @@ export function invoiceDocument(inv: DocumentInvoice, extras: { timeZone: string
   const discount = Math.min(Number(inv.discount_amount), Math.max(Number(inv.subtotal), 0));
   return {
     kind: "invoice",
+    ...(inv.credits?.length || Number(inv.credit_amount ?? 0) > 0 ? { credits: invoiceCredits(inv.credits ?? [], Number(inv.credit_amount ?? 0)) } : {}),
     number: inv.number,
     date: inv.issued_on,
     dueOn: inv.due_on,

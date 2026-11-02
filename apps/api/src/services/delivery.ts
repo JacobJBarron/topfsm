@@ -5,9 +5,10 @@
  * One email and one text per person per run, however many notifications there are. A sub on a
  * sign-in Crewtavo made for them is reached at the phone and email the office keeps on their record
  * (public.sub_notice_contacts), so the office's corrections reach them; a phone they put on their own
- * profile comes first for texts.
+ * profile comes first for texts. Google reviews of 3 stars or more go by push only (byEmail), and 1 and
+ * 2 stars come first.
  */
-import { DEFAULT_NOTIFICATION_PREFS, isPlaceholderEmail, notificationTopic, type NotificationChannel, type NotificationTopic } from "@crewtavo/core";
+import { byEmail, DEFAULT_NOTIFICATION_PREFS, isPlaceholderEmail, notificationTopic, type NotificationChannel, type NotificationTopic } from "@crewtavo/core";
 import type { Env } from "../env";
 import { renderEmail } from "../lib/email";
 import { sendEmail, sendSms, smsConfigured } from "../lib/notify";
@@ -49,8 +50,11 @@ export async function deliverNotifications(env: Env, options: { minAgeSeconds?: 
     prefs.data?.find((p) => p.company_id === companyId && p.user_id === userId) ?? DEFAULT_NOTIFICATION_PREFS;
   const base = (env.APP_URL ?? "").replace(/\/$/, "");
   const url = (link: string | null) => (base && link ? `${base}${link}` : base || null);
-  // Where several at once lead: a sub's job offers and pay to My jobs, anything else home.
-  const batchLink = (items: Row[]) => (items.every((i) => i.kind === "jobs") ? "/field/jobs" : "/");
+  // Where several at once lead: a sub's job offers and pay to My jobs, Google reviews to Marketing →
+  // Reviews, anything else home.
+  const batchLink = (items: Row[]) => (items.every((i) => i.kind === "jobs") ? "/field/jobs" : items.every((i) => notificationTopic(i.kind) === "reviews") ? "/marketing?tab=reviews" : items.every((i) => notificationTopic(i.kind) === "social") ? "/marketing?tab=social" : "/");
+  // Low ratings first: those are the reviews to answer before the rest. Otherwise as they came.
+  const lowFirst = (items: Row[]) => [...items].sort((a, b) => Number(b.kind === "review_low") - Number(a.kind === "review_low"));
 
   // Each notice is one paragraph of the email, its title, words and link on their own lines: line
   // breaks typed into a notice (a sub's reason for turning down a job) are run together, so nothing
@@ -71,7 +75,8 @@ export async function deliverNotifications(env: Env, options: { minAgeSeconds?: 
     const emailTo = sub ? sub.email : person.email;
     const phoneTo = person.phone || sub?.phone || null;
     const chosen = prefsFor(companyId, userId);
-    const pick = (channel: NotificationChannel) => items.filter((i) => chosen[channel].includes(notificationTopic(i.kind) as NotificationTopic));
+    const pick = (channel: NotificationChannel) =>
+      lowFirst(items.filter((i) => chosen[channel].includes(notificationTopic(i.kind) as NotificationTopic) && (channel !== "email" || byEmail(i.kind))));
 
     try {
       const forEmail = pick("email");

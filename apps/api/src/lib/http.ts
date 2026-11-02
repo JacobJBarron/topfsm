@@ -56,10 +56,15 @@ const FIELD_NAMES: Record<string, string> = {
   client_id: "client", property_id: "property", job_id: "job", quote_id: "quote", request_id: "request", visit_id: "visit",
   to: "recipient", body: "message", due_on: "due date", starts_at: "start time", ends_at: "end time", scheduled_on: "date",
   full_name: "name", display_name: "name", line1: "street address", postal_code: "ZIP code", api_key: "key", amount: "amount",
+  config_id: "Configuration ID",
 };
 
 /** A validation problem in words a person can act on ("Enter a valid email address."). */
 export function friendlyIssue(issue: z.core.$ZodIssue): string {
+  // A refine's own words, when it was given some.
+  if (issue.code === "custom" && issue.message && issue.message !== "Invalid input") return issue.message;
+  // So are a check's, written as a sentence ("A Configuration ID is all digits."). Zod's own never end with a full stop.
+  if (/^[A-Z].*[.!?]$/s.test(issue.message ?? "")) return issue.message;
   const key = String(issue.path.at(-1) ?? "");
   const field = FIELD_NAMES[key] ?? key.replace(/_id$/, "").replace(/_/g, " ");
   if (!field || /^\d+$/.test(field)) return "Something in the form isn't right. Check it and try again.";

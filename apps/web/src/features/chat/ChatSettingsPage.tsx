@@ -451,7 +451,7 @@ function AddChannel({ open, onClose, crews, categories, onAdded }: { open: boole
         <fieldset className="stack-sm" style={{ border: 0, padding: 0, margin: 0 }}>
           <legend className="strong" style={{ marginBottom: 6 }}>Who it's for</legend>
           {CHANNEL_PRESETS.map((p) => (
-            <label key={p.key} className="card-row" style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-control)", cursor: "pointer", borderColor: preset === p.key ? "var(--green)" : undefined }}>
+            <label key={p.key} className={`card-row choice-row${preset === p.key ? " picked" : ""}`} style={{ cursor: "pointer" }}>
               <input type="radio" name="preset" checked={preset === p.key} onChange={() => setPreset(p.key)} />
               <span className="grow"><strong style={{ display: "block" }}>{p.label}</strong><span className="muted small">{p.hint}</span></span>
             </label>

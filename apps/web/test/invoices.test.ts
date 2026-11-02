@@ -3,6 +3,7 @@ import { fileURLToPath, URL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { refundable } from "../src/features/invoices/refunds";
 import { settle } from "../src/features/invoices/settle";
+import { creditRoom, creditsChangeable, takesCredit } from "../src/features/invoices/creditRules";
 import { bankPayment, bankPaymentNote, paidInStripe, paymentAmount, RECORD_IN_STRIPE } from "../src/features/invoices/stripeInvoices";
 
 describe("refunds", () => {
@@ -119,5 +120,67 @@ describe("taking a payment off an invoice while its Undo is offered", () => {
     expect(settle({ ...invoice, status: "draft" }, [], today).status).toBe("draft");
     expect(settle({ ...invoice, status: "void" }, [], today).status).toBe("void");
     expect(settle({ ...invoice, status: "written_off" }, [], today).status).toBe("written_off");
+  });
+});
+
+describe("referral credits on an invoice", () => {
+  const inv = (over: Partial<Parameters<typeof takesCredit>[0]> = {}) => ({ status: "sent", kind: "standard", payments: [], stripe: [], ...over });
+
+  it("can be put on and taken off a draft, or one awaiting payment or past due, before any payment", () => {
+    for (const status of ["draft", "sent", "overdue"]) {
+      expect(takesCredit(inv({ status })), status).toBe(true);
+      expect(creditsChangeable(inv({ status })), status).toBe(true);
+    }
+  });
+
+  it("stay as they are once it's paid, partly paid, void or written off, or while Stripe bills it", () => {
+    for (const status of ["paid", "partially_paid", "void", "written_off"]) expect(creditsChangeable(inv({ status })), status).toBe(false);
+    expect(creditsChangeable(inv({ payments: [{ id: "p1" }] }))).toBe(false);
+    expect(creditsChangeable(inv({ stripe: [{ origin: "stripe", status: "open" }] }))).toBe(false);
+    expect(creditsChangeable(inv({ stripe: [{ origin: "crewtavo", status: "processing" }] }))).toBe(false);
+    expect(creditsChangeable(inv({ stripe: [{ origin: "crewtavo", status: "open" }] }))).toBe(true);
+  });
+
+  it("never go on a deposit or a retainage release, the money that secures the job", () => {
+    expect(takesCredit(inv({ kind: "deposit" }))).toBe(false);
+    expect(takesCredit(inv({ kind: "retainage" }))).toBe(false);
+    expect(takesCredit(inv({ kind: "progress" }))).toBe(true);
+    // One already on a deposit (from before) can still come off.
+    expect(creditsChangeable(inv({ kind: "deposit" }))).toBe(true);
+  });
+
+  it("fit in what's left of the charges after the discount and the credits already on it", () => {
+    expect(creditRoom({ subtotal: 200, discount_amount: 30, credit_amount: 50 })).toBe(120);
+    // A promo or credits that cover it leave no room, and a discount bigger than the charges never makes room negative.
+    expect(creditRoom({ subtotal: 40, discount_amount: 40, credit_amount: 0 })).toBe(0);
+    expect(creditRoom({ subtotal: 40, discount_amount: 0, credit_amount: 40 })).toBe(0);
+    expect(creditRoom({ subtotal: 40, discount_amount: 60, credit_amount: 0 })).toBe(0);
+    expect(creditRoom({ subtotal: "100.10", discount_amount: "0.05", credit_amount: "0.05" })).toBe(100);
+  });
+
+  it("are offered by hand only on invoices with room, with words that follow Keep off invoices", () => {
+    const tab = readFileSync(fileURLToPath(new URL("../src/features/marketing/Referrals.tsx", import.meta.url)), "utf8");
+    expect(tab).toContain("takesCredit(i) && creditRoom(i) > 0");
+    expect(tab).toContain("subtotal, discount_amount, credit_amount");
+    expect(tab).toContain('r?.auto_apply ? "It goes on their next one."');
+  });
+
+  it("show on the invoice page after the discount, with the client's credits to apply", () => {
+    const page = readFileSync(fileURLToPath(new URL("../src/features/invoices/InvoicePage.tsx", import.meta.url)), "utf8");
+    expect(page).toContain("credits:referral_credits(id, amount, note, referral_id, created_at)");
+    expect(page.indexOf("<ReferralCredits invoice={inv} onChanged={refresh} />")).toBeGreaterThan(page.indexOf("<DiscountRows"));
+    const credits = readFileSync(fileURLToPath(new URL("../src/features/invoices/ReferralCredits.tsx", import.meta.url)), "utf8");
+    expect(credits).toContain('rpc("referral_credits_for"');
+    expect(credits).toContain("Credit taken off this invoice. It goes on their next one.");
+    expect(credits).toContain("creditRoom(invoice) > 0");
+    // A void invoice keeps the credit it was sent with, after the credit's row is given back.
+    expect(credits).toContain("Given back when this invoice was voided");
+    // The amount never breaks after its minus sign, however long the note beside it.
+    expect(credits.match(/<span className="nowrap">−\{formatMoneyCents\(/g)).toHaveLength(2);
+  });
+
+  it("say how much of the credit each invoice takes in the apply dialog", () => {
+    const tab = readFileSync(fileURLToPath(new URL("../src/features/marketing/Referrals.tsx", import.meta.url)), "utf8");
+    expect(tab).toContain("creditRoom(i) >= left ? `Takes all ${formatMoneyCents(left)}` : `Takes ${formatMoneyCents(creditRoom(i))} of ${formatMoneyCents(left)}`");
   });
 });

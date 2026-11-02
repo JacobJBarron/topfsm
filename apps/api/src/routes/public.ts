@@ -6,8 +6,10 @@
 import { contractValues, fillIn } from "@crewtavo/core/contracts";
 import { pickTemplate, templateSettings, type TemplateSettings } from "@crewtavo/core/documents";
 import { hidesExactPrice, inRangeMode, isSiteAdjustment, optionsRange, priceRange, rangeSettings } from "@crewtavo/core/estimates";
+import { marketingOn, referralSettings, referralsReady, referrerLine } from "@crewtavo/core/marketing";
 import { chosenTotals, countsOn, optionBaseTotal, optionTotals, type OptionLine } from "@crewtavo/core/money";
 import { isPackagePicturePath, packagePictureSrc } from "@crewtavo/core/presets";
+import { quotePromoRule } from "@crewtavo/core/promos";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../env";
@@ -44,11 +46,13 @@ import { isJpeg } from "../services/photos";
 import { isRoofWork, quoteMeasurement, sitePriceSet } from "../services/roofPackages";
 import { optionsFrom } from "../services/sales";
 import { signatureImage } from "../services/signing";
+import { formPage } from "../services/websiteForms";
 import { firstName } from "../lib/email";
-import { signToken, verifyToken } from "../lib/crypto";
+import { fromBase64Url, signToken, verifyToken } from "../lib/crypto";
 import { appUrl, asJson, dbError, HttpError, must, readJson, uuid } from "../lib/http";
 import { allow } from "../lib/limit";
-import { clientLink, readClientLink, type LinkKind } from "../lib/links";
+import { clientLink, linkPreview, readClientLink, REVIEW_TOKEN, type LinkKind } from "../lib/links";
+import { storedFile } from "../lib/storedFile";
 import { adminClient } from "../lib/supabase";
 import { clientIp } from "../lib/visitor";
 import { buildCalendar } from "../lib/ics";
@@ -284,7 +288,7 @@ publicRoutes.get("/hub/:token", async (c) => {
       await admin
         .from("quotes")
         .select(
-          "id, number, status, title, message, subtotal, discount_amount, tax_rate, tax_amount, total, deposit_amount, valid_until, sent_at, created_at, approved_at, approval, client_id, change_order_for, template_id, roof_package_id, option_id, section_ids, range_low, range_high, range_sent_at, range_lines, range_accepted_at, priced_on_site_at, exact_sent_at, promo_code_id, promo:promo_codes(code, kind, value, description, min_subtotal), client:clients(display_name, billing_address), property:properties(line1, city, region, postal_code)",
+          "id, number, status, title, message, subtotal, discount_amount, tax_rate, tax_amount, total, deposit_amount, valid_until, sent_at, created_at, approved_at, approval, client_id, change_order_for, template_id, roof_package_id, option_id, section_ids, range_low, range_high, range_sent_at, range_lines, range_accepted_at, priced_on_site_at, exact_sent_at, promo_code_id, promo_every_visit, promo:promo_codes(code, kind, value, description, min_subtotal, every_visit), client:clients(display_name, billing_address), property:properties(line1, city, region, postal_code)",
         )
         .eq("company_id", l.c)
         .eq("id", l.id)
@@ -304,6 +308,8 @@ publicRoutes.get("/hub/:token", async (c) => {
       l.pv ? null : homeLink(c, l.c, quote.client_id),
     ]);
     const lines = [...must(lineRows)].sort((a, b) => a.sort - b.sort);
+    // How the code comes off: as it was approved once it's signed, so a signed quote keeps its words (core quotePromoRule).
+    const promo = quote.promo && { ...quote.promo, every_visit: quotePromoRule(quote) };
     const shown = quote.option_id;
     const money = { taxRate: quote.tax_rate, discountAmount: quote.discount_amount, promo: quote.promo };
     // Each option's price before add-ons: what its range and its tier word come from.
@@ -402,7 +408,7 @@ publicRoutes.get("/hub/:token", async (c) => {
         total: exact ? quote.total : null,
         deposit_amount: exact ? quote.deposit_amount : null,
         valid_until: quote.valid_until, sent_at: quote.sent_at, created_at: quote.created_at, approved_at: quote.approved_at, client_id: quote.client_id, change_order_for: quote.change_order_for,
-        promo: quote.promo, client: quote.client ? { display_name: quote.client.display_name } : null, property: quote.property,
+        promo, client: quote.client ? { display_name: quote.client.display_name } : null, property: quote.property,
         package: roofPackage?.data ? { name: roofPackage.data.name } : null,
         approval: signed ? publicApproval(quote.approval, quote.approved_at) : null,
         // A price agreed on site is in effect, so a promo code can't go on it (the promo route says so).
@@ -425,7 +431,7 @@ publicRoutes.get("/hub/:token", async (c) => {
     await admin
       .from("invoices")
       .select(
-        "id, number, status, subject, notes, issued_on, due_on, subtotal, discount_amount, tax_amount, total, retainage_amount, amount_paid, balance_due, client_id, promo:promo_codes(code, kind, value, description), client:clients(display_name, billing_address), job:jobs(property:properties(line1, city, region, postal_code), quote:quotes!jobs_company_id_quote_id_fkey(approval, option_id, roof_package_id, option:quote_options!quotes_option_fkey(name, warranty))), lines:invoice_line_items(name, description, quantity, unit, unit_price, sort), payments(amount, tip_amount, received_at)",
+        "id, number, status, subject, notes, issued_on, due_on, subtotal, discount_amount, credit_amount, tax_amount, total, retainage_amount, amount_paid, balance_due, client_id, promo:promo_codes(code, kind, value, description), credits:referral_credits(amount, note, created_at), client:clients(display_name, billing_address), job:jobs(property:properties(line1, city, region, postal_code), quote:quotes!jobs_company_id_quote_id_fkey(approval, option_id, roof_package_id, option:quote_options!quotes_option_fkey(name, warranty))), lines:invoice_line_items(name, description, quantity, unit, unit_price, sort, discount_quote_id), payments(amount, tip_amount, received_at)",
       )
       .eq("company_id", l.c)
       .eq("id", l.id)
@@ -443,12 +449,15 @@ publicRoutes.get("/hub/:token", async (c) => {
   // The template's terms and invoice sections, filled in with the invoice's facts (the customer's
   // billing address and the job's address only go into the words, never out on their own). Its
   // {Option} and {Warranty} are those of the estimate the job came from (contracts.ts invoiceFill).
-  const { client, job, ...billed } = invoice;
+  const { client, job, lines: lineRows, ...billed } = invoice;
   const fill = await invoiceFill(admin, l.c, job?.quote);
   const facts = invoiceInput(invoice, client, job?.property ?? null, company, template, fill);
   const contract = await invoiceContract(admin, l.c, template, facts);
+  // A line with the job's promo code on it: the invoice takes no other code (apply_promo_code says so too).
+  const lines = lineRows.map(({ discount_quote_id: _key, ...line }) => line);
   return c.json({
-    kind: "invoice", company, template, contract, invoice: { ...billed, client: client ? { display_name: client.display_name } : null }, preview: Boolean(l.pv), tips,
+    kind: "invoice", company, template, contract, invoice: { ...billed, lines, client: client ? { display_name: client.display_name } : null }, preview: Boolean(l.pv), tips,
+    promo_line: lineRows.some((line) => line.discount_quote_id),
     drawings,
     can_pay: !l.pv && online.enabled && !online.processing && Number(invoice.balance_due) > 0,
     processing: online.processing,
@@ -943,8 +952,16 @@ async function clientHome(c: Parameters<typeof appUrl>[0], admin: ReturnType<typ
 
   const base = appUrl(c);
   const sign = (t: "quote" | "invoice", id: string) => clientLink(c.env, base, { c: companyId, t, id });
-  const companySettings = (settings.settings ?? {}) as { referral_offer?: string; referral_reward?: { amount?: number } };
-  const referralOn = Boolean(companySettings.referral_offer || Number(companySettings.referral_reward?.amount ?? 0) > 0);
+  const companySettings = (settings.settings ?? {}) as Record<string, unknown>;
+  // Referrals are Marketing's: uninstalled, the Hub stops offering them (links already shared still open).
+  const referralOn = marketingOn(companySettings) && referralsReady(companySettings);
+  const referrals = referralSettings(companySettings);
+  // Credit they've earned that goes on their next invoice: not on one yet, not given outside
+  // Crewtavo, and not one the office keeps off invoices (that may never reach an invoice).
+  const earned = referralOn
+    ? (await admin.from("referrals").select("reward_amount, given_amount, credits:referral_credits(amount)").eq("company_id", companyId).eq("referrer_client_id", clientId).eq("reward_status", "earned").eq("auto_apply", true)).data ?? []
+    : [];
+  const creditLeft = earned.reduce((sum, r) => sum + Number(r.reward_amount) - Number(r.given_amount ?? 0) - (r.credits as Array<{ amount: number }>).reduce((on, x) => on + Number(x.amount), 0), 0);
   return {
     kind: "client",
     company,
@@ -970,7 +987,14 @@ async function clientHome(c: Parameters<typeof appUrl>[0], admin: ReturnType<typ
     payments: (payments.data ?? []).map((p) => ({ amount: p.amount, tip_amount: p.tip_amount, method: p.method, received_at: p.received_at, invoice: (p.invoice as unknown as { number: number } | null)?.number ?? null })),
     requests: requests.data ?? [],
     services: [...new Set((services.data ?? []).map((s) => s.category as string))].slice(0, 8),
-    refer: referralOn ? { link: await clientLink(c.env, base, { c: companyId, t: "refer", id: clientId }), offer: companySettings.referral_offer ?? null } : null,
+    refer: referralOn
+      ? {
+          link: await clientLink(c.env, base, { c: companyId, t: "refer", id: clientId }),
+          offer: referrals.offer,
+          rewards: referrerLine(referrals.reward) || null,
+          credit_left: Math.round(creditLeft * 100) / 100,
+        }
+      : null,
   };
 }
 
@@ -1000,42 +1024,6 @@ publicRoutes.post("/hub/:token/message", async (c) => {
   if (error) throw dbError(error);
   return c.json({ ok: true }, 201);
 });
-
-/**
- * A file from the files bucket, read only up to `max` bytes: null when it isn't there or is larger,
- * which is never read whole. These routes answer anyone, and the folders they read can hold what a
- * member uploads straight to Storage (up to its 200 MB limit), so a request never makes the server
- * hold more than a picture's worth.
- */
-async function storedFile(admin: ReturnType<typeof adminClient>, path: string, max: number): Promise<Uint8Array | null> {
-  const { data, error } = await admin.storage.from("files").download(path).asStream();
-  if (error || !data) return null;
-  const reader = data.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > max) {
-        await reader.cancel();
-        return null;
-      }
-      chunks.push(value);
-    }
-  } catch {
-    // Storage stopped partway: as good as not there.
-    return null;
-  }
-  const bytes = new Uint8Array(size);
-  let at = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  return bytes;
-}
 
 /** A map drawing's picture is a JPEG of the map (MeasurePage), a few hundred KB to a few MB. */
 const DRAWING_MAX_BYTES = 20_000_000;
@@ -1073,6 +1061,24 @@ publicRoutes.get("/public/logo/:company/:file", async (c) => {
   const current = path === `${companyId}/logo/${file}.png`;
   return c.body(bytes, 200, { "Content-Type": "image/png", "Cache-Control": current ? "public, max-age=31536000, immutable" : "public, max-age=3600" });
 });
+
+// A social post's picture (services/social.ts), fetched by Meta and Google when they post it: by its
+// random token alone, so it names nothing and can't be guessed, and only until 7 days after the post
+// finishes. An unknown token and an expired one are the same 404. It doesn't ask whether Marketing is
+// installed: links already given out keep working until they expire.
+publicRoutes.on(["GET", "HEAD"], "/public/social/:file", async (c) => {
+  const file = c.req.param("file") ?? "";
+  if (!/^[A-Za-z0-9_-]{32}\.jpg$/.test(file)) throw new HttpError(404, "Picture not found.");
+  const admin = adminClient(c.env);
+  const { data } = await admin.from("social_post_images").select("path").eq("token", file.slice(0, 32)).gt("expires_at", new Date().toISOString()).maybeSingle();
+  const bytes = data ? await storedFile(admin, data.path, SOCIAL_IMAGE_MAX_BYTES) : null;
+  if (!bytes || !isJpeg(bytes)) throw new HttpError(404, "Picture not found.");
+  const headers = { "Content-Type": "image/jpeg", "Content-Length": String(bytes.length), "X-Content-Type-Options": "nosniff", "X-Robots-Tag": "noindex", "Cache-Control": "public, max-age=3600" };
+  return c.req.method === "HEAD" ? c.body(null, 200, headers) : c.body(bytes, 200, headers);
+});
+
+/** Instagram takes pictures up to 8 MB, Facebook 10: the server makes them far smaller. */
+const SOCIAL_IMAGE_MAX_BYTES = 8_000_000;
 
 // A picture of the business's own letterhead (services/letterhead.ts), on its estimates and invoices
 // on the Client Hub. Any it ever added, so a signed estimate keeps the letterhead it was signed on. A
@@ -1201,15 +1207,105 @@ publicRoutes.post("/public/unsubscribe/:token", async (c) => {
   return c.json({ unsubscribed: !resubscribe });
 });
 
-/** Tracked review link: record the click, then send the client to the review page. */
+/**
+ * Tracked review link: records the open, which stops its reminders, then sends the client to the
+ * review page. The link is the ask's short token (review_requests.link_token), or the signed token
+ * links sent before had. It works with Marketing uninstalled too: the client asked for nothing.
+ *
+ * Opens are honest: a HEAD request (a link checker) and a link preview (a text's, a chat app's)
+ * aren't counted, nor is anything in the first 30 seconds after the ask or a reminder went (a mail
+ * scanner's: track_review_click). The client still goes to the review page either way.
+ */
 publicRoutes.get("/public/r/:token", async (c) => {
-  const payload = await readClientLink(c.env, c.req.param("token") ?? "");
-  if (!payload || payload.t !== "review") return c.text("This link has expired.", 404);
+  const token = c.req.param("token") ?? "";
+  const short = REVIEW_TOKEN.test(token);
+  const payload = short ? null : await readClientLink(c.env, token);
+  if (!short && (!payload || payload.t !== "review")) return c.text("This link has expired.", 404);
   const admin = adminClient(c.env);
-  const { data: company } = await admin.from("companies").select("settings").eq("id", payload.c).maybeSingle();
+  // A signed link names its business, so it still goes to the review page when the ask is gone.
+  let companyId = payload?.c ?? null;
+  if (short) {
+    const { data: ask, error } = await admin.from("review_requests").select("company_id").eq("link_token", token).maybeSingle();
+    if (error) return c.text("This link can't be opened right now. Try again in a minute.", 503);
+    if (!ask) return c.text("This link isn't valid anymore.", 404);
+    companyId = ask.company_id;
+  }
+  const { data: company } = await admin.from("companies").select("settings").eq("id", companyId!).maybeSingle();
   const url = (company?.settings as { review_url?: string } | null)?.review_url;
   if (!url || !/^https:\/\//.test(url)) return c.text("This business hasn't set up reviews yet.", 404);
-  await admin.from("review_requests").update({ status: "clicked", clicked_at: new Date().toISOString() }).eq("company_id", payload.c).eq("id", payload.id).is("clicked_at", null);
+  const count = c.req.method === "GET" && !linkPreview(c.req.header("User-Agent"));
+  const { error } = await admin.rpc("track_review_click", short ? { p_token: token, p_count: count } : { p_company: payload!.c, p_id: payload!.id, p_count: count });
+  // The client still gets to the review page.
+  if (error) console.error("A review link's open wasn't recorded", error);
+  c.header("Referrer-Policy", "no-referrer");
+  return c.redirect(url, 302);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Campaign emails' tracking image and tracked links
+// ---------------------------------------------------------------------------------------------
+
+// A transparent 1x1 GIF.
+const PIXEL = Uint8Array.from(atob("R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="), (ch) => ch.charCodeAt(0));
+const TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A campaign email's tracking image: records an open (approximate: some mail apps load images to
+ * protect privacy). Always the same image, whatever the token, and a HEAD request records nothing.
+ * Like the links, it works while Marketing is uninstalled: it reads no settings.
+ */
+publicRoutes.get("/public/o/:token", async (c) => {
+  const token = c.req.param("token") ?? "";
+  if (c.req.method === "GET" && TOKEN.test(token)) {
+    try {
+      await adminClient(c.env).rpc("track_campaign_open", { p_token: token });
+    } catch {
+      // The image shows either way.
+    }
+  }
+  return c.body(PIXEL, 200, { "Content-Type": "image/gif", "Cache-Control": "no-store, private" });
+});
+
+/**
+ * The business a Client Hub link of ours is for, when it has expired (null when it hasn't, or isn't
+ * one). The link was stored with the email, so what it says is ours: only its date is checked.
+ */
+function expiredHubLink(url: string): string | null {
+  const token = /\/hub\/([\w-]+)\.[\w-]+$/.exec(url)?.[1];
+  if (!token) return null;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(fromBase64Url(token))) as { c?: unknown; exp?: unknown };
+    return typeof payload.c === "string" && typeof payload.exp === "number" && payload.exp <= Date.now() / 1000 ? payload.c : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A campaign email's tracked link: records the click, then goes to the link stored for this
+ * recipient and link, never anywhere the request says. A HEAD request (a link checker) or a link
+ * preview isn't counted, nor is a click in the first 30 seconds (a mail scanner's: track_campaign_click). A link
+ * that isn't there, or a Client Hub link that has expired since (they last a year), gets a page saying
+ * so, in the business's look when it's known, instead of a bare error.
+ */
+publicRoutes.get("/public/c/:token/:n", async (c) => {
+  const token = c.req.param("token") ?? "";
+  const n = c.req.param("n") ?? "";
+  const page = (status: 404 | 410 | 503, heading: string, text: string, company?: { id: string; name: string; settings: unknown } | null) =>
+    c.html(formPage({ title: heading, heading, text, company: company ? { name: company.name, logo: logoImage(appUrl(c), company.id, company.settings) } : null, tone: "problem" }), status, {
+      "Cache-Control": "no-store",
+    });
+  const invalid = () => page(404, "This link isn't valid anymore", "It may have been copied only in part. Open the email again, or reply to it and ask for a new link.");
+  if (!TOKEN.test(token) || !/^\d{1,2}$/.test(n) || Number(n) > 49) return invalid();
+  const { data: url, error } = await adminClient(c.env).rpc("track_campaign_click", { p_token: token, p_n: Number(n), p_count: c.req.method !== "HEAD" && !linkPreview(c.req.header("User-Agent")) });
+  if (error) return page(503, "This link can't be opened right now", "Try again in a minute.");
+  if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return invalid();
+  const expiredFor = expiredHubLink(url);
+  if (expiredFor) {
+    const company = (await adminClient(c.env).from("companies").select("id, name, settings").eq("id", expiredFor).maybeSingle()).data;
+    return page(410, "This link has expired", `Links in emails last a year. Reply to the email${company ? `, or get in touch with ${company.name},` : ""} for a new one.`, company);
+  }
+  c.header("Referrer-Policy", "no-referrer");
   return c.redirect(url, 302);
 });
 
@@ -1221,11 +1317,10 @@ publicRoutes.get("/public/refer/:token", async (c) => {
     admin.from("clients").select("display_name").eq("company_id", l.c).eq("id", l.id).maybeSingle(),
   ]);
   if (!company.data || !client.data) throw new HttpError(404, "This referral link isn't valid anymore.");
-  const settings = (company.data.settings ?? {}) as { referral_offer?: string };
   return c.json({
     company: { name: company.data.name, phone: company.data.phone, website: company.data.website, logo: logoImage("", l.c, company.data.settings)?.src ?? null },
     referrer: firstName(client.data.display_name),
-    offer: settings.referral_offer ?? null,
+    offer: referralSettings(company.data.settings as Record<string, unknown> | null).offer,
   });
 });
 
@@ -1246,32 +1341,15 @@ publicRoutes.post("/public/refer/:token", async (c) => {
   await verifyTurnstile(c, body.turnstile_token);
   await limitSubmissions(c, "referral", l.c);
   const admin = adminClient(c.env);
-  const referrer = must(await admin.from("clients").select("id, display_name").eq("company_id", l.c).eq("id", l.id).maybeSingle(), "This referral link isn't valid anymore.");
-  const { data: company } = await admin.from("companies").select("settings").eq("id", l.c).maybeSingle();
-  const reward = Number((company?.settings as { referral_reward?: { amount?: number } } | null)?.referral_reward?.amount ?? 0);
-
-  const client = must(
-    await admin
-      .from("clients")
-      .insert({ company_id: l.c, status: "lead", display_name: body.name, email: body.email, phone: body.phone, lead_source: "Referral", referred_by: referrer.id })
-      .select("id")
-      .single(),
-  );
-  const property = must(
-    await admin.from("properties").insert({ company_id: l.c, client_id: client.id, line1: body.address.line1, city: body.address.city, postal_code: body.address.postal_code }).select("id").single(),
-  );
-  const request = must(
-    await admin
-      .from("requests")
-      .insert({ company_id: l.c, client_id: client.id, property_id: property.id, source: "referral", title: `Referral from ${referrer.display_name}`, details: body.details ?? null, created_by: null })
-      .select("id, number")
-      .single(),
-  );
-  await admin.from("referrals").insert({
-    company_id: l.c, referrer_client_id: referrer.id, referred_client_id: client.id, request_id: request.id, referred_name: body.name,
-    reward_amount: Math.max(0, reward), reward_status: reward > 0 ? "pending" : "none",
+  // The lead, their property, the request and the referral, together, with the credit offered now.
+  // A friend who is the referrer or a client already asks on that client, at an address of theirs.
+  const { data: made, error } = await admin.rpc("record_referral", {
+    p_company: l.c, p_referrer: l.id, p_name: body.name, p_email: body.email ?? undefined, p_phone: body.phone ?? undefined,
+    p_address: asJson(body.address), p_details: body.details ?? undefined,
   });
-  geocodeLater(c, property.id, body.address);
+  if (error) throw error.code === "P0002" ? new HttpError(404, "This referral link isn't valid anymore.") : dbError(error);
+  const result = made as unknown as { client_id: string; property_id: string; new_property: boolean; request_id: string; number: number };
+  if (result.new_property) geocodeLater(c, result.property_id, body.address);
   kickAutomations(c, l.c);
-  return c.json({ ok: true, reference: request.number }, 201);
+  return c.json({ ok: true, reference: result.number }, 201);
 });

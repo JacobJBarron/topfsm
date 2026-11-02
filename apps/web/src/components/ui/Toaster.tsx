@@ -269,7 +269,7 @@ function Toast({ toast, index, offset, expanded, frontHeight, paused, onHeight }
         e.stopPropagation();
       }}
     >
-      <span className="toast-icon"><Icon name={toast.kind === "success" ? "check" : toast.kind === "error" ? "x" : "info"} size={12} strokeWidth={2} /></span>
+      <span className="toast-icon"><Icon name={toast.kind === "success" ? "check" : toast.kind === "error" ? "x" : toast.kind === "warning" ? "alert" : "info"} size={12} strokeWidth={2} /></span>
       <div className="toast-body">
         {toast.title}
         {toast.description && <div className="toast-desc">{toast.description}</div>}

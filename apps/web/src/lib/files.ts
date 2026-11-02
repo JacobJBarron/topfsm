@@ -165,6 +165,9 @@ export async function uploadBody(file: File, shrink: (file: File) => Promise<Blo
   return body;
 }
 
+/** The type of what uploadFile stored at `path`: a photo it shrank went up as a JPEG, whatever it was before. */
+export const storedType = (path: string, file: File) => (path.endsWith(".jpg") ? "image/jpeg" : file.type || "image/jpeg");
+
 /** Upload a file under <company>/<folder>/ and return its storage path. */
 export async function uploadFile(companyId: string, folder: string, file: File): Promise<string> {
   const body = await uploadBody(file);

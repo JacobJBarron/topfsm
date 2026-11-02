@@ -34,6 +34,13 @@ function memoryDb(tables: Record<string, Row[]>, failRpc: (fn: string, args: Row
   let claims = 0;
   const by = (table: string, ids: number[]) => tables[table]!.filter((r) => ids.includes(r.id));
   const expired = (r: Row) => r.locked_until !== null && r.locked_until < now();
+  // A column, or a column of an embedded row with a json path ("company.settings->marketing->>enabled").
+  const valueAt = (r: Row, column: string) => {
+    const [path, ...keys] = column.split(/->>?/);
+    let value = path!.split(".").reduce<any>((row, key) => row?.[key], r);
+    for (const key of keys) value = value?.[key];
+    return column.includes("->>") && value != null ? String(value) : value;
+  };
 
   const rpcs: Record<string, (a: Row) => unknown> = {
     claim_campaign_recipients: ({ p_campaign, p_limit }) => {
@@ -115,9 +122,12 @@ function memoryDb(tables: Record<string, Row[]>, failRpc: (fn: string, args: Row
       select: (_columns?: string, options?: { head?: boolean }) => ((op = op.kind === "select" ? { kind: "select", head: options?.head } : op), builder),
       update: (values: Row) => ((op = { kind: "update", values }), builder),
       insert: (values: Row | Row[]) => ((op = { kind: "insert", values }), builder),
-      eq: (column: string, value: unknown) => (filters.push((r) => r[column] === value), builder),
+      eq: (column: string, value: unknown) => (filters.push((r) => valueAt(r, column) === value), builder),
       in: (column: string, values: unknown[]) => (filters.push((r) => values.includes(r[column])), builder),
       lte: (column: string, value: string) => (filters.push((r) => r[column] != null && r[column] <= value), builder),
+      is: (column: string, value: null) => (filters.push((r) => (r[column] ?? null) === value), builder),
+      not: (column: string, _op: "is", value: null) => (filters.push((r) => (r[column] ?? null) !== value), builder),
+      order: () => builder,
       limit: (n: number) => ((limit = n), builder),
       maybeSingle: () => ((single = true), builder),
       then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => Promise.resolve().then(run).then(resolve, reject),
@@ -152,7 +162,7 @@ beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date
 afterEach(() => vi.useRealTimers());
 
 describe("campaign emails with a slow mail server", () => {
-  const company = { name: "Acme Lawn Care", email: null, phone: null, address: {} };
+  const company = { name: "Acme Lawn Care", email: null, phone: null, address: {}, settings: { marketing: { enabled: true } } };
   function campaignTables(people: number) {
     return {
       campaigns: [{ id: "camp-1", company_id: "co-1", status: "sending", subject: "Fall cleanup", body: "Hi {{client.first_name}}, leaves are coming.", company, sent_count: 0, failed_count: 0, finished_at: null }],

@@ -67,8 +67,11 @@ export interface HubDrawing {
   /** When it was measured. Servers that don't send it get a page without the date. */
   measured_at?: string | null;
 }
-/** A promo code on the quote or invoice; `min_subtotal` is the order it needs (0: none). Older servers don't send it. */
-export type HubPromoInfo = { code: string; kind: string; value: number; description: string | null; min_subtotal?: number | string | null } | null;
+/**
+ * A promo code on the quote or invoice; `min_subtotal` is the order it needs (0: none), and on a quote
+ * `every_visit` whether it comes off every visit of recurring work or once. Older servers don't send them.
+ */
+export type HubPromoInfo = { code: string; kind: string; value: number; description: string | null; min_subtotal?: number | string | null; every_visit?: boolean | null } | null;
 /** Who signed a quote. "manual": the office marked it approved, so nobody signed on the client's line. */
 export interface HubApproval {
   name: string;
@@ -184,6 +187,8 @@ export interface InvoiceView {
   processing?: boolean;
   /** Made in Stripe, so it's paid exactly as billed there (no promo codes). */
   from_stripe?: boolean;
+  /** It has its job's promo code on a line already, so no other code goes on it. Older servers leave it out. */
+  promo_line?: boolean;
   tips: boolean;
   invoice: {
     id: string;
@@ -195,6 +200,9 @@ export interface InvoiceView {
     due_on: string | null;
     subtotal: number;
     discount_amount: number;
+    /** Referral credits (an older server sends none). */
+    credit_amount?: number;
+    credits?: Array<{ amount: number; note: string }>;
     tax_amount: number;
     total: number;
     retainage_amount: number;

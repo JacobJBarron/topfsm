@@ -8,24 +8,31 @@
  *               website analytics: companies.settings.website_analytics, routes/analytics.ts; website
  *               forms: companies.settings.website_forms, routes/websiteForms.ts; careers:
  *               companies.settings.careers, the same routes; drive: companies.settings.drive,
- *               routes/drive.ts)
+ *               routes/drive.ts; marketing: companies.settings.marketing, routes/marketing.ts)
  *   site      - the company's website editor, by its address (Sveltia CMS: companies.settings.website, integrations/website.ts)
  * ABC Supply is an api_key app with two keys: its own app's Client ID and secret (integrations/abcSupply.ts).
+ * Google Business Profile signs in like Google Calendar, with the same Google app, and brings the
+ * business's reviews into Marketing → Reviews while Marketing is installed (services/googleReviews.ts).
+ * Facebook & Instagram signs in with the business's own Meta app only (its App ID and secret pasted
+ * on its page): there's no server-wide Meta app. Its sign-in differs from the others' (a GET for the
+ * token, no refresh token, a long-lived token and a Page token), so integrations/meta.ts handles it;
+ * only the catalog entry and the sign-in page's address are here (services/social.ts posts).
  */
 import type { Env } from "../env";
+import { DIALOG, GRAPH_VERSION, META_SCOPES } from "./metaConfig";
 
 /** Apps with a row in integrations (and maybe integration_secrets). */
-export type Provider = "quickbooks" | "zoho_books" | "google_calendar" | "stripe" | "twilio" | "anthropic" | "fal" | "railway" | "abc_supply";
+export type Provider = "quickbooks" | "zoho_books" | "google_calendar" | "google_business" | "meta" | "stripe" | "twilio" | "anthropic" | "fal" | "railway" | "abc_supply";
 /** Apps whose calendars are added by link. They're also the calendar_sources.app values (with google_calendar). */
 export type LinkApp = "zoho_calendar" | "outlook_calendar" | "apple_calendar" | "ics_calendar";
-export type AppId = Provider | LinkApp | "chatgpt" | "team_chat" | "website_analytics" | "website_forms" | "careers" | "drive" | "sveltia";
+export type AppId = Provider | LinkApp | "chatgpt" | "team_chat" | "website_analytics" | "website_forms" | "careers" | "drive" | "marketing" | "sveltia";
 export type CalendarApp = LinkApp | "google_calendar";
 export const CALENDAR_APPS: readonly CalendarApp[] = ["google_calendar", "zoho_calendar", "outlook_calendar", "apple_calendar", "ics_calendar"];
 
 export interface CatalogEntry {
   id: AppId;
   name: string;
-  category: "Team" | "Calendar" | "AI" | "Accounting" | "Payments" | "Pricing" | "Messaging" | "Website";
+  category: "Team" | "Marketing" | "Calendar" | "AI" | "Accounting" | "Payments" | "Pricing" | "Messaging" | "Website";
   description: string;
   auth: "oauth" | "api_key" | "link" | "connector" | "builtin" | "site";
   docs: string;
@@ -83,6 +90,37 @@ export const CATALOG: CatalogEntry[] = [
     auth: "builtin",
     docs: "https://crewtavo.com/docs/connections/drive/",
     available: () => true,
+  },
+  {
+    id: "marketing",
+    name: "Crewtavo - Marketing",
+    category: "Team",
+    description: "Ask happy clients for Google reviews with reminders, and for referrals with a credit on their next invoice, and send email campaigns, automated ones too, with opens, clicks and the work they bring in.",
+    auth: "builtin",
+    docs: "https://crewtavo.com/docs/connections/marketing/",
+    available: () => true,
+  },
+  {
+    id: "google_business",
+    name: "Google Business Profile",
+    category: "Marketing",
+    description: "Bring your Google reviews into Marketing → Reviews: your rating and trend, replies with a suggestion to start from, and no more review asks to clients who already left one.",
+    auth: "oauth",
+    // Google's prerequisites until Crewtavo's own page for it is written (docs/marketing-plan.md).
+    docs: "https://developers.google.com/my-business/content/prereqs",
+    available: (env) => Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
+    appKeys: true,
+  },
+  {
+    id: "meta",
+    name: "Facebook & Instagram",
+    category: "Marketing",
+    description: "Post job photos and 4 and 5-star reviews to your Facebook Page and Instagram, with your own Meta app.",
+    auth: "oauth",
+    docs: "https://developers.facebook.com/docs/development/create-an-app/",
+    // Each business makes its own Meta app: nothing to set up on the server, and nothing it can offer.
+    available: () => false,
+    appKeys: true,
   },
   {
     id: "google_calendar",
@@ -323,5 +361,27 @@ export const OAUTH: Partial<Record<Provider, OAuthConfig>> = {
     clientSecret: (env) => env.GOOGLE_CLIENT_SECRET,
     clientAuth: "body",
     extraParams: { access_type: "offline", prompt: "consent" },
+  },
+  google_business: {
+    authorizeUrl: () => "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenUrl: () => "https://oauth2.googleapis.com/token",
+    revokeUrl: () => "https://oauth2.googleapis.com/revoke",
+    // The one scope the Business Profile APIs take: see the locations and their reviews, and reply.
+    scope: "https://www.googleapis.com/auth/business.manage",
+    clientId: (env) => env.GOOGLE_CLIENT_ID,
+    clientSecret: (env) => env.GOOGLE_CLIENT_SECRET,
+    clientAuth: "body",
+    // Google's account chooser every time: the account that manages the Business Profile is often
+    // not the one signed in to the browser, and Reconnect is how someone picks another.
+    extraParams: { access_type: "offline", prompt: "select_account consent" },
+  },
+  meta: {
+    // Signing in, the token and revoking are integrations/meta.ts's: these are for /connect.
+    authorizeUrl: () => `${DIALOG}/${GRAPH_VERSION}/dialog/oauth`,
+    tokenUrl: () => `https://graph.facebook.com/${GRAPH_VERSION}/oauth/access_token`,
+    scope: META_SCOPES.join(","),
+    clientId: () => undefined,
+    clientSecret: () => undefined,
+    clientAuth: "body",
   },
 };

@@ -1,8 +1,10 @@
 /**
  * Messaging: send an email or text to a client from the message center, and receive replies to
- * texts (Twilio webhook). Every message is recorded on the client's timeline.
+ * texts (Twilio webhook). Every message is recorded on the client's timeline. A client who texts
+ * STOP has texts off (clients.sms_opt_out_at) until they text START, and Crewtavo doesn't text them.
  */
 import { SALES } from "@crewtavo/core";
+import { smsKeyword } from "@crewtavo/core/marketing";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../env";
@@ -16,6 +18,7 @@ import { sendEmail, sendSms } from "../lib/notify";
 import { adminClient } from "../lib/supabase";
 import { companyAddress } from "../services/automations";
 import { logoImage } from "../services/logo";
+import { noteRefusedText, phoneKey, textsOffRefusal, textsOffTo } from "../services/textsOff";
 
 export const messages = new Hono<AppEnv>();
 
@@ -31,7 +34,7 @@ messages.post("/messages/send", requireUser, requireCompany(SALES), async (c) =>
     }),
   );
   const { db, companyId } = c.var;
-  const client = must(await db.from("clients").select("id, display_name, email, phone").eq("id", body.client_id).eq("company_id", companyId).maybeSingle(), "Client not found.");
+  const client = must(await db.from("clients").select("id, display_name, email, phone, sms_opt_out_at").eq("id", body.client_id).eq("company_id", companyId).maybeSingle(), "Client not found.");
   const company = must(await db.from("companies").select("name, email, phone, address, settings").eq("id", companyId).maybeSingle());
   let result: { sent: boolean; id?: string; reason?: string };
   let to: string;
@@ -44,8 +47,11 @@ messages.post("/messages/send", requireUser, requireCompany(SALES), async (c) =>
   } else {
     to = body.to || client.phone || "";
     if (!to) throw new HttpError(400, `${client.display_name} has no phone number.`);
+    // Their own phone, after they texted STOP. Another number (a spouse's, say) is the office's to text.
+    if (textsOffTo(client, to)) throw new HttpError(400, textsOffRefusal(client.display_name));
     if (body.body.length > 1600) throw new HttpError(400, "Texts are limited to 1,600 characters.");
     result = await sendSms(c.env, { to, body: body.body });
+    await noteRefusedText(adminClient(c.env), client, to, result);
   }
   const { data: row, error } = await db
     .from("messages")
@@ -68,8 +74,6 @@ export async function twilioSignature(token: string, url: string, params: Record
   return btoa(String.fromCharCode(...mac));
 }
 
-const digits = (phone: string) => phone.replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
-
 /** Incoming texts (set this URL as the Twilio number's messaging webhook). */
 messages.post("/webhooks/twilio", async (c) => {
   const token = c.env.TWILIO_AUTH_TOKEN;
@@ -82,21 +86,38 @@ messages.post("/webhooks/twilio", async (c) => {
   for (const base of signed ? [] : (await addressHistory(c.env)).origins) if (await signedFor(base)) signed = true;
   if (!signed) throw new HttpError(403, "Bad signature.");
 
-  const from = digits(form.From ?? "");
+  const from = phoneKey(form.From);
   const body = (form.Body ?? "").slice(0, 10_000);
   if (!from || !body) return c.text("<Response/>", 200, { "Content-Type": "text/xml" });
+  // STOP or START: what Twilio itself acted on when it says (Advanced Opt-Out), else the words.
+  const optOut = (form.OptOutType ?? "").toUpperCase();
+  const keyword = optOut === "STOP" ? "stop" : optOut === "START" ? "start" : optOut ? null : smsKeyword(body);
   const admin = adminClient(c.env);
   // Match the sender to clients by phone number (last 10 digits), across companies using this number.
-  const { data: candidates } = await admin.from("clients").select("id, company_id, phone").not("phone", "is", null).ilike("phone", `%${from.slice(-4)}%`).limit(50);
-  const matches = (candidates ?? []).filter((cl) => cl.phone && digits(cl.phone).slice(-10) === from.slice(-10));
+  const { data: candidates } = await admin.from("clients").select("id, company_id, phone, display_name").not("phone", "is", null).ilike("phone", `%${from.slice(-4)}%`).limit(50);
+  const matches = (candidates ?? []).filter((cl) => phoneKey(cl.phone) === from);
   for (const client of matches) {
     await admin.from("messages").insert({
       company_id: client.company_id, client_id: client.id, channel: "sms", direction: "in", status: "received",
       body, external_id: form.MessageSid ?? null, sent_by: null,
     });
+    // Texts off from now, or back on: only a change is news (a YES that's an ordinary reply isn't).
+    let changed = false;
+    if (keyword === "stop") {
+      const { data } = await admin.from("clients").update({ sms_opt_out_at: new Date().toISOString() }).eq("id", client.id).is("sms_opt_out_at", null).select("id");
+      changed = Boolean(data?.length);
+    } else if (keyword === "start") {
+      const { data } = await admin.from("clients").update({ sms_opt_out_at: null }).eq("id", client.id).not("sms_opt_out_at", "is", null).select("id");
+      changed = Boolean(data?.length);
+    }
+    const notice = changed && keyword === "stop"
+      ? { title: `${client.display_name} turned off texts`, body: "They texted STOP. Crewtavo won't text them until they text START." }
+      : changed
+        ? { title: `${client.display_name} turned texts back on`, body: `They texted ${body.trim().slice(0, 20).toUpperCase()}, so Crewtavo can text them again.` }
+        : { title: "New text from a client", body: body.slice(0, 200) };
     const { data: office } = await admin.from("memberships").select("user_id").eq("company_id", client.company_id).eq("active", true).in("role", ["owner", "admin", "office"]);
     if (office?.length) {
-      await admin.from("notifications").insert(office.map((m) => ({ company_id: client.company_id, user_id: m.user_id, kind: "client", title: "New text from a client", body: body.slice(0, 200), link: `/messages?client=${client.id}` })));
+      await admin.from("notifications").insert(office.map((m) => ({ company_id: client.company_id, user_id: m.user_id, kind: "client", title: notice.title.slice(0, 300), body: notice.body, link: `/messages?client=${client.id}` })));
     }
     kickAutomations(c, client.company_id);
   }

@@ -214,7 +214,7 @@ function AccessDialog({ connection, onClose }: { connection: AssistantConnection
         <fieldset className="stack-sm" style={{ border: 0, padding: 0, margin: 0 }}>
           <legend className="sr-only">Access</legend>
           {LEVELS.map((l) => (
-            <label key={l.level} className="card-row" style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-control)", cursor: "pointer", borderColor: level === l.level ? "var(--green)" : undefined }}>
+            <label key={l.level} className={`card-row choice-row${level === l.level ? " picked" : ""}`} style={{ cursor: "pointer" }}>
               <input type="radio" name="access" checked={level === l.level} onChange={() => setLevel(l.level)} />
               <span className="grow">
                 <strong style={{ display: "block" }}>{l.label}</strong>

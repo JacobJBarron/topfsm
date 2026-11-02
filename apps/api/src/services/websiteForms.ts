@@ -4,7 +4,7 @@
  * didn't, and what the address is for when someone opens it. The pages are plain HTML from the
  * server, so they work whatever the website is built with, without the web app.
  */
-import { messageEmail, type Submission } from "@crewtavo/core/websiteForms";
+import { messageEmail, type PromoResult, type Submission } from "@crewtavo/core/websiteForms";
 import type { Env } from "../env";
 import { renderEmail } from "../lib/email";
 import { sendEmail } from "../lib/notify";
@@ -32,10 +32,10 @@ export interface FormCompany {
 /** Email each message to the people the form names, replying to whoever sent it. Sent one by one; a failure is logged. */
 export async function emailMessage(
   env: Env,
-  input: { base: string; company: FormCompany; form: { name: string; email_to: string[] }; submission: Submission; requestId: string },
+  input: { base: string; company: FormCompany; form: { name: string; email_to: string[] }; submission: Submission; requestId: string; promo?: PromoResult },
 ): Promise<void> {
   const { base, company, form, submission } = input;
-  const { subject, text } = messageEmail({ formName: form.name, submission, link: `${base}/requests/${input.requestId}` });
+  const { subject, text } = messageEmail({ formName: form.name, submission, link: `${base}/requests/${input.requestId}`, promo: input.promo });
   const email = renderEmail({ companyName: company.name, logo: logoImage(base, company.id, company.settings), text });
   for (const to of form.email_to) {
     const result = await sendEmail(env, { to, subject, text: email.text, html: email.html, replyTo: submission.email ?? undefined, fromName: company.name }, company.id);

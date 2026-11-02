@@ -18,6 +18,7 @@ export function SendDialog({
   number,
   email,
   phone,
+  textsOffSince,
   onClose,
   onSent,
 }: {
@@ -26,11 +27,13 @@ export function SendDialog({
   number?: number | null;
   email: string | null;
   phone: string | null;
+  /** When the client texted STOP: Crewtavo doesn't text their number, though another one can be texted. */
+  textsOffSince?: string | null;
   onClose: () => void;
   onSent?: () => void;
 }) {
   const { company, config } = useSession();
-  const [channel, setChannel] = useState<Channel>(email ? "email" : phone ? "sms" : "link");
+  const [channel, setChannel] = useState<Channel>(email ? "email" : phone && !textsOffSince ? "sms" : "link");
   const [to, setTo] = useState(email ?? "");
   const label = `${kind === "quote" ? "Quote" : "Invoice"} #${number ?? ""}`.trim();
   const [subject, setSubject] = useState(`${label} from ${company.name}`);
@@ -49,7 +52,10 @@ export function SendDialog({
       if (channel === "link") copyText(r.link, "Link copied. Paste it into a message to your client.");
     },
   });
-  useEffect(() => setTo(channel === "email" ? email ?? "" : channel === "sms" ? formatPhoneTyping(phone ?? "") : ""), [channel, email, phone]);
+  useEffect(
+    () => setTo(channel === "email" ? email ?? "" : channel === "sms" && !textsOffSince ? formatPhoneTyping(phone ?? "") : ""),
+    [channel, email, phone, textsOffSince],
+  );
 
   const unavailable = (channel === "email" && !config.features.email) || (channel === "sms" && !config.features.sms);
   const done = send.data;
@@ -86,6 +92,7 @@ export function SendDialog({
             <button type="button" aria-pressed={channel === "sms"} onClick={() => setChannel("sms")}>Text</button>
             <button type="button" aria-pressed={channel === "link"} onClick={() => setChannel("link")}>Copy link</button>
           </div>
+          {textsOffSince && <p className="muted small" style={{ margin: 0 }}>They texted STOP, so their own number can't be texted. You can text a different one.</p>}
           {unavailable && (
             <div className="callout callout-info">
               <Icon name="info" size={20} />

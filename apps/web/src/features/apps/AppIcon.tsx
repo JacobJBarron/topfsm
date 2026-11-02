@@ -6,7 +6,9 @@ import chatgptLogo from "@/assets/apps/chatgpt.svg";
 import claudeLogo from "@/assets/apps/claude.svg";
 import crewtavoLogo from "@/assets/apps/crewtavo.svg";
 import falLogo from "@/assets/apps/fal.svg";
+import googleBusinessLogo from "@/assets/apps/google-business.svg";
 import googleCalendarLogo from "@/assets/apps/google-calendar.svg";
+import metaLogo from "@/assets/apps/meta.svg";
 import outlookLogo from "@/assets/apps/outlook.svg";
 import quickbooksLogo from "@/assets/apps/quickbooks.svg";
 import stripeLogo from "@/assets/apps/stripe.svg";
@@ -21,6 +23,9 @@ const LOGOS: Record<string, string> = {
   website_forms: crewtavoLogo,
   careers: crewtavoLogo,
   drive: crewtavoLogo,
+  marketing: crewtavoLogo,
+  google_business: googleBusinessLogo,
+  meta: metaLogo,
   google_calendar: googleCalendarLogo,
   zoho_calendar: zohoLogo,
   outlook_calendar: outlookLogo,

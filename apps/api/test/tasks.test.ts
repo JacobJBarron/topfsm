@@ -5,7 +5,8 @@
 import { addDays } from "@crewtavo/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env";
-import { CRON_TASKS, runTask } from "../src/tasks";
+import { cronMatches } from "../src/lib/cron";
+import { CRON_TASKS, runTask, TASKS } from "../src/tasks";
 
 const env: Env = {
   SUPABASE_URL: "https://example.supabase.co",
@@ -151,10 +152,87 @@ describe("the Trash", () => {
   });
 });
 
+describe("review reminders", () => {
+  it("are sent every five minutes, at 1:30pm in each company's time zone (services/reviews.ts)", async () => {
+    expect(TASKS).toContain("reviews");
+    expect(CRON_TASKS["*/5 * * * *"]).toContain("reviews");
+    const calls = serve(() => []);
+    expect(await runTask("reviews", { ...env, APP_URL: "https://ops.example.com" })).toEqual({ claimed: 0, sent: 0, failed: 0, stopped: 0, waiting: 0, lost: 0, errors: 0 });
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST rpc/claim_review_reminders"]);
+  });
+});
+
+describe("Google reviews", () => {
+  it("come in every 30 minutes for each company that's due (services/googleReviews.ts), with a tally", async () => {
+    expect(TASKS).toContain("review_sync");
+    expect(CRON_TASKS["12,42 * * * *"]).toEqual(["review_sync"]);
+    expect([12, 42].every((m) => cronMatches("12,42 * * * *", new Date(Date.UTC(2026, 9, 27, 14, m, 0, 250))))).toBe(true);
+    expect([0, 11, 30, 43].some((m) => cronMatches("12,42 * * * *", new Date(Date.UTC(2026, 9, 27, 14, m))))).toBe(false);
+    const calls = serve((call) => {
+      if (call.path === "rpc/review_syncs_due") return ["co-1", "co-2"];
+      // co-1 is being synced by another worker; co-2 has Marketing uninstalled since.
+      if (call.path === "rpc/claim_review_sync") return call.body.p_company === "co-1" ? null : "claim-2";
+      if (call.path === "companies") return [{ settings: { marketing: { enabled: false } } }];
+      return [];
+    });
+    expect(await runTask("review_sync", env)).toEqual({ due: 2, synced: 0, waiting: 2, problems: 0, errors: 0 });
+    expect(calls.find((c) => c.path === "rpc/review_syncs_due")!.body).toEqual({ p_limit: 25 });
+    expect(calls.some((c) => c.url.host !== "example.supabase.co")).toBe(false);
+  });
+});
+
+describe("social posts", () => {
+  it("go every minute, one claim at a time (services/social.ts), with a tally", async () => {
+    expect(TASKS).toContain("social");
+    expect(CRON_TASKS["* * * * *"]).toContain("social");
+    const calls = serve(() => []);
+    expect(await runTask("social", env)).toEqual({ claimed: 0, errors: 0 });
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST rpc/claim_social_posts"]);
+    expect(calls[0]!.body).toEqual({ p_limit: 1, p_hold_seconds: 300 });
+  });
+});
+
+describe("clients who haven't had a visit in a while", () => {
+  it("are queued hourly, for each company that can email them, at most 100 a day for each rule (services/automatedCampaigns.ts)", async () => {
+    expect(TASKS).toContain("inactive");
+    expect(CRON_TASKS["5 * * * *"]).toEqual(["inactive"]);
+    // The scheduler's minute check runs it at five past each hour, and only then.
+    expect(cronMatches("5 * * * *", new Date("2026-10-27T14:05:30Z"))).toBe(true);
+    expect([0, 4, 6, 35].some((m) => cronMatches("5 * * * *", new Date(Date.UTC(2026, 9, 27, 14, m))))).toBe(false);
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-10-27T14:05:00Z") });
+    try {
+      const calls = serve((call) => {
+        if (call.method === "GET" && call.path === "automation_rules") return [{ company_id: "co-1" }, { company_id: "co-1" }, { company_id: "co-2" }];
+        if (call.path === "rpc/emit_inactive_clients") return call.body.p_company === "co-1" ? 3 : 1;
+        return [];
+      });
+      const sending = { ...env, APP_URL: "https://ops.example.com", RESEND_API_KEY: "re_test", EMAIL_FROM: "Crewtavo <noreply@example.com>" };
+      expect(await runTask("inactive", sending)).toEqual({ companies: 2, queued: 4, waiting: 0 });
+      const rules = calls.find((c) => c.path === "automation_rules")!;
+      expect([rules.url.searchParams.get("trigger"), rules.url.searchParams.get("enabled"), rules.url.searchParams.get("company.settings->marketing->>enabled")]).toEqual(["eq.client.inactive", "eq.true", "eq.true"]);
+      expect(calls.filter((c) => c.path.startsWith("rpc/")).map((c) => [c.path, c.body])).toEqual([
+        ["rpc/emit_inactive_clients", { p_now: "2026-10-27T14:05:00.000Z", p_cap: 100, p_company: "co-1" }],
+        ["rpc/emit_inactive_clients", { p_now: "2026-10-27T14:05:00.000Z", p_cap: 100, p_company: "co-2" }],
+      ]);
+
+      // Without a way to send them, they wait: the runs would only fail and use up each client's turn.
+      const quiet = serve((call) => (call.method === "GET" && call.path === "automation_rules" ? [{ company_id: "co-1" }] : []));
+      expect(await runTask("inactive", { ...sending, APP_URL: undefined })).toEqual({ companies: 1, queued: 0, waiting: 1 });
+      expect(quiet.some((c) => c.path === "rpc/emit_inactive_clients")).toBe(false);
+      // Nor while the company has no mailbox and the server sends no email of its own.
+      const unconnected = serve((call) => (call.method === "GET" && call.path === "automation_rules" ? [{ company_id: "co-1" }] : []));
+      expect(await runTask("inactive", { ...env, APP_URL: "https://ops.example.com" })).toEqual({ companies: 1, queued: 0, waiting: 1 });
+      expect(unconnected.some((c) => c.path === "rpc/emit_inactive_clients")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("the nightly tidy-up", () => {
   it("also removes guide covers and quote and visit photos nobody recorded", async () => {
     const calls = serve((call) => (call.path === "companies" ? [] : call.path === "rpc/unrecorded_files" ? [{ company_id: "co-1", paths: ["co-1/kb/stray.jpg"] }] : []));
-    expect(await runTask("plans", env)).toEqual({ unrecorded: 0, subs: { unrecorded: 0 }, applicants: { unrecorded: 0 }, photos: { unrecorded: 1, kept: 0 } });
+    expect(await runTask("plans", env)).toEqual({ unrecorded: 0, subs: { unrecorded: 0 }, applicants: { unrecorded: 0 }, photos: { unrecorded: 1, kept: 0 }, social: 0, meta: { checked: 0, signin: 0, expiring: 0 } });
     expect(calls.find((c) => c.path === "rpc/unrecorded_files")?.body).toEqual({ p_limit: 1000 });
     expect(calls.filter((c) => c.method === "DELETE").map((c) => c.body)).toEqual([{ prefixes: ["co-1/kb/stray.jpg"] }]);
   });

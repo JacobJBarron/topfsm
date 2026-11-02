@@ -13,6 +13,21 @@
  *            overdue "Past due" · void "Void" · written_off "Written off"
  *   Visit    unscheduled "Unscheduled" · scheduled "Scheduled" · en_route "On the way" ·
  *            in_progress "In progress" · completed "Completed" · cancelled "Cancelled"
+ *   Referral new "New lead" · quoted "Quoted" · won "Won" · lost "Lost"
+ *   Credit   pending "Pending" · earned "Earned" · applied "Applied" · issued "Given" · none "No credit"
+ *            (a referral credit: Marketing → Referrals shows the referral's state until the friend
+ *            pays, then its credit's, and No credit for a friend who was the referrer or already a
+ *            client, who isn't a lead: packages/core/src/marketing.ts referralPill)
+ *   Campaign draft "Draft" · scheduled "Scheduled" · sending "Sending" · sent "Sent" · cancelled "Stopped" ·
+ *            automated "Automated" (one that sends by itself, Marketing → Campaigns)
+ *   Recipient pending "Queued" · sending "Sending" · sent "Sent" · failed "Failed" · skipped "Skipped" ·
+ *            opened "Opened" · clicked "Clicked" (a campaign email, and what was done with it)
+ *   Review   needs_reply "Needs a reply" · replied "Replied" (a Google review, Marketing → Reviews)
+ *   Post     draft "Draft" · scheduled "Scheduled" · posting "Posting" · posted "Posted" ·
+ *            partly_posted "Partly posted" · check "Unconfirmed" · failed "Failed" · cancelled "Cancelled"
+ *            (a social post, Marketing → Social)
+ *   Network  waiting "Queued" · sending "Posting" · posted "Posted" · retry "Trying again" · failed "Failed" ·
+ *            unknown "Unconfirmed" · skipped "Skipped" (where a social post goes, and how it went there)
  *
  * Money that's late is "Past due", never "Overdue" or "Waiting on payment". "Overdue" is kept for work
  * that's late: a new request nobody has answered in two days (Home's workflow), a visit past its day,
@@ -52,6 +67,13 @@ const STATUS_TEXT = {
   job: { active: "Active", requires_invoicing: "Requires invoicing", completed: "Completed", archived: "Archived" },
   invoice: { draft: "Draft", sent: "Awaiting payment", partially_paid: "Partly paid", paid: "Paid", overdue: "Past due", void: "Void", written_off: "Written off" },
   visit: { unscheduled: "Unscheduled", scheduled: "Scheduled", en_route: "On the way", in_progress: "In progress", completed: "Completed", cancelled: "Cancelled" },
+  referral: { new: "New lead", quoted: "Quoted", won: "Won", lost: "Lost" },
+  credit: { pending: "Pending", earned: "Earned", applied: "Applied", issued: "Given", none: "No credit" },
+  campaign: { draft: "Draft", scheduled: "Scheduled", sending: "Sending", sent: "Sent", cancelled: "Stopped", automated: "Automated" },
+  recipient: { pending: "Queued", sending: "Sending", sent: "Sent", failed: "Failed", skipped: "Skipped", opened: "Opened", clicked: "Clicked" },
+  review: { needs_reply: "Needs a reply", replied: "Replied" },
+  post: { draft: "Draft", scheduled: "Scheduled", posting: "Posting", posted: "Posted", partly_posted: "Partly posted", check: "Unconfirmed", failed: "Failed", cancelled: "Cancelled" },
+  network: { waiting: "Queued", sending: "Posting", posted: "Posted", retry: "Trying again", failed: "Failed", unknown: "Unconfirmed", skipped: "Skipped" },
 } satisfies Record<string, Record<string, string>>;
 
 export type StatusKind = keyof typeof STATUS_TEXT;
@@ -77,6 +99,14 @@ const ENTITY_TONES: Record<StatusKind, Record<string, Tone>> = {
   job: { active: "info", requires_invoicing: "warning", completed: "good", archived: "muted" },
   invoice: { draft: "muted", sent: "info", partially_paid: "warning", paid: "good", overdue: "danger", void: "muted", written_off: "muted" },
   visit: VISIT_TONES,
+  referral: { new: "warning", quoted: "info", won: "good", lost: "danger" },
+  credit: { pending: "muted", earned: "warning", applied: "good", issued: "good", none: "muted" },
+  campaign: { draft: "muted", scheduled: "info", sending: "info", sent: "good", cancelled: "danger", automated: "info" },
+  // Each step further reads stronger: sent, then opened, then clicked.
+  recipient: { pending: "muted", sending: "info", sent: "muted", failed: "danger", skipped: "muted", opened: "info", clicked: "good" },
+  review: { needs_reply: "warning", replied: "good" },
+  post: { draft: "muted", scheduled: "info", posting: "info", posted: "good", partly_posted: "warning", check: "warning", failed: "danger", cancelled: "muted" },
+  network: { waiting: "muted", sending: "info", posted: "good", retry: "warning", failed: "danger", unknown: "warning", skipped: "muted" },
 };
 
 /** Pill for a record's status, e.g. <EntityStatus kind="quote" status="sent" />. */

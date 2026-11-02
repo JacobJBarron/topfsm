@@ -1,3 +1,4 @@
+import { askChannels, askRefusal, creditMoney, marketingOn, notAsked, reachOf, referralAskRefusal, referralsReady, textsOff, type AskChannel } from "@crewtavo/core/marketing";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -25,9 +26,14 @@ import { EditClientDialog } from "./ClientForm";
 import { AddContact, ContactsCard, useClientContacts } from "./ContactsCard";
 import { PropertyDialog, type AccessRow, type PropertyRow } from "./PropertyDialog";
 import { Timeline } from "./Timeline";
+import { PhotosCard } from "../files/PhotosCard";
+import { socialKey } from "../marketing/socialData";
+import { askToastKind, type AskResult } from "../marketing/askForm";
 
 type WorkTab = "requests" | "quotes" | "jobs" | "invoices";
-type ClientPatch = { status?: "lead" | "active" | "archived"; marketing_opt_out?: boolean };
+type ClientPatch = { status?: "lead" | "active" | "archived"; marketing_opt_out?: boolean; review_opt_out?: boolean; social_photos_opt_out?: boolean };
+/** The client's switches, which move the moment they're flipped. */
+const SWITCHES = ["marketing_opt_out", "review_opt_out", "social_photos_opt_out"] as const;
 
 export function ClientPage() {
   const { id = "" } = useParams();
@@ -49,7 +55,7 @@ export function ClientPage() {
       unwrapOne(
         await supabase()
           .from("clients")
-          .select("id, display_name, company_name, email, phone, status, tags, lead_source, notes, created_at, billing_address, marketing_opt_out, referred_by, properties(id, label, line1, line2, city, region, postal_code, lat, lng, notes)")
+          .select("id, display_name, company_name, email, phone, status, tags, lead_source, notes, created_at, billing_address, marketing_opt_out, review_opt_out, social_photos_opt_out, sms_opt_out_at, reviewed_at, referred_by, properties(id, label, line1, line2, city, region, postal_code, lat, lng, notes)")
           .eq("id", id)
           .maybeSingle(),
         "This client",
@@ -85,21 +91,28 @@ export function ClientPage() {
   });
 
   const update = useMutation({
-    // The marketing switch shows its own change, so only archiving and restoring say so.
+    // The switches show their own change, so only archiving and restoring say so.
     meta: { success: (_: unknown, patch: ClientPatch) => (patch.status === "archived" ? "Client archived" : patch.status ? "Client restored" : null) },
     mutationFn: async (patch: ClientPatch) => unwrap(await supabase().from("clients").update(patch).eq("id", id)),
-    // The switch moves the moment it's flipped, and back if the save fails.
+    // A switch moves the moment it's flipped, and back if the save fails.
     onMutate: async (patch) => {
-      if (patch.marketing_opt_out === undefined) return;
+      const key = SWITCHES.find((k) => patch[k] !== undefined);
+      if (!key) return;
       await queryClient.cancelQueries({ queryKey: ["client", id], exact: true });
-      queryClient.setQueryData<typeof client.data>(["client", id], (old) => old && { ...old, marketing_opt_out: Boolean(patch.marketing_opt_out) });
+      queryClient.setQueryData<typeof client.data>(["client", id], (old) => old && { ...old, [key]: Boolean(patch[key]) });
     },
     onError: (_error, patch) => {
-      if (patch.marketing_opt_out !== undefined) queryClient.setQueryData<typeof client.data>(["client", id], (old) => old && { ...old, marketing_opt_out: !patch.marketing_opt_out });
+      const key = SWITCHES.find((k) => patch[k] !== undefined);
+      if (key) queryClient.setQueryData<typeof client.data>(["client", id], (old) => old && { ...old, [key]: !patch[key] });
     },
-    onSettled: () => {
+    onSettled: (_data, _error, patch) => {
       queryClient.invalidateQueries({ queryKey: ["client", id] });
       queryClient.invalidateQueries({ queryKey: ["clients", session.company.id] });
+      // The Photos card below and the composer offer this client's photos, or don't.
+      if (patch.social_photos_opt_out !== undefined) {
+        queryClient.invalidateQueries({ queryKey: ["record-photos", session.company.id] });
+        queryClient.invalidateQueries({ queryKey: socialKey(session.company.id) });
+      }
     },
   });
   const remove = useMutation({
@@ -124,15 +137,44 @@ export function ClientPage() {
     mutationFn: () => api.get<{ link: string }>(`/referrals/link/${id}`),
     onSuccess: (r) => copyText(r.link, "Referral link copied"),
   });
-  const review = useMutation({
-    mutationFn: (channel: "email" | "sms") => api.post<{ sent: boolean; detail: string }>("/reviews/request", { client_id: id, channel }),
+  const referralAsk = useMutation({
+    mutationFn: () => api.post<{ sent: boolean; detail: string }>("/referrals/request", { client_id: id }),
     onSuccess: (r) => toast.success(r.detail),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["referral-asks", session.company.id] });
+      queryClient.invalidateQueries({ queryKey: ["referral-ask", id] });
+    },
   });
+  // Credits they've earned and that aren't on an invoice yet: shown whether Marketing is installed
+  // or not, since they still go on their invoices.
+  const credits = useQuery({
+    queryKey: ["referral-credits-for", id],
+    enabled: isOffice && can(session, "invoices"),
+    meta: { silent: true },
+    queryFn: async () => unwrap(await supabase().rpc("referral_credits_for", { p_company: session.company.id, p_client: id })),
+  });
+  const review = useMutation({
+    mutationFn: (channel: AskChannel) => api.post<AskResult>("/reviews/request", { client_id: id, channel }),
+    onSuccess: (r) => toast[askToastKind(r)](r.detail),
+    // Marketing → Reviews lists the ask, failed or not, and "Ask a client now" says when they were last asked.
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["review-requests", session.company.id] });
+      queryClient.invalidateQueries({ queryKey: ["review-ask", id] });
+    },
+  });
+  // Review asks and referrals are Marketing's: while it's uninstalled they aren't offered here.
+  const marketing = marketingOn(session.company.settings);
 
   if (client.isPending) return <DetailSkeleton />;
   if (client.error || !c) return <PageError error={client.error} onRetry={() => client.refetch()} back={<BackLink to="/clients">Clients</BackLink>} />;
 
   const unpaid = work.data?.invoices.filter((i) => ["sent", "partially_paid", "overdue"].includes(i.status)) ?? [];
+  const stopped = textsOff(c);
+  // The review asks offered are the ones that can go: not to a client who opted out or is archived,
+  // nor by a way this Crewtavo can't send or the client can't get.
+  const ready = { email: session.config.features.email, sms: session.config.features.sms };
+  const cannotAsk = (channel: AskChannel) => Boolean(askRefusal(c, channel, ready));
+  const bothWays = !notAsked(c) && askChannels("both", reachOf(c, ready), false).send.length === 2;
   const owed = unpaid.reduce((sum, i) => sum + Number(i.balance_due), 0);
   const pastDue = unpaid.reduce((sum, i) => sum + (i.status === "overdue" ? Number(i.balance_due) : 0), 0);
   // Never paid, and taken as a loss: worth knowing before taking on more work for them.
@@ -202,10 +244,15 @@ export function ClientPage() {
                 items={[
                   { label: "Edit client", icon: "edit", onSelect: () => setDialog("edit") },
                   { label: "Copy Client Hub link", icon: "link", onSelect: () => hubLink.mutate() },
-                  { separator: true },
-                  { label: "Ask for a review by email", icon: "star", onSelect: () => review.mutate("email"), disabled: !c.email },
-                  { label: "Ask for a review by text", icon: "star", onSelect: () => review.mutate("sms"), disabled: !c.phone },
-                  { label: "Copy referral link", icon: "gift", onSelect: () => referralLink.mutate() },
+                  { separator: true, hidden: !marketing },
+                  // A client who already left a Google review isn't asked again: the one line says so.
+                  { label: "Already left a Google review", icon: "star", onSelect: () => undefined, disabled: true, hidden: !marketing || !c.reviewed_at },
+                  { label: "Ask for a review by email", icon: "star", onSelect: () => review.mutate("email"), disabled: cannotAsk("email"), hidden: !marketing || Boolean(c.reviewed_at) },
+                  { label: "Ask for a review by text", icon: "star", onSelect: () => review.mutate("sms"), disabled: cannotAsk("sms"), hidden: !marketing || Boolean(c.reviewed_at) },
+                  { label: "Ask for a review by text and email", icon: "star", onSelect: () => review.mutate("both"), disabled: !bothWays, hidden: !marketing || Boolean(c.reviewed_at) },
+                  { label: "Ask for referrals by email", icon: "gift", onSelect: () => referralAsk.mutate(), hidden: !marketing,
+                    disabled: !referralsReady(session.company.settings) || Boolean(referralAskRefusal(c, session.config.features.email)) },
+                  { label: "Copy referral link", icon: "link", onSelect: () => referralLink.mutate(), hidden: !marketing },
                   { separator: true, hidden: !isOffice },
                   { label: c.status === "archived" ? "Restore client" : "Archive client", icon: c.status === "archived" ? "undo" : "archive", onSelect: () => update.mutate({ status: c.status === "archived" ? "active" : "archived" }), hidden: !isOffice },
                   { label: "Delete client", icon: "trash", danger: true, onSelect: deleteClient, hidden: !isOffice },
@@ -220,6 +267,10 @@ export function ClientPage() {
         {c.company_name && c.company_name !== c.display_name && <span className="muted">{c.company_name}</span>}
         {c.tags.map((t) => <span key={t} className="tag">{t}</span>)}
         {c.marketing_opt_out && <span className="chip chip-amber">Unsubscribed from marketing</span>}
+        {c.review_opt_out && <span className="chip chip-amber">No review asks</span>}
+        {c.social_photos_opt_out && <span className="chip chip-amber">No social photos</span>}
+        {c.reviewed_at && <ReviewedChip clientId={c.id} />}
+        {stopped && <span className="chip chip-amber">Texts off</span>}
       </div>
       {c.status === "archived" && (
         <div className="callout callout-warning">
@@ -332,6 +383,8 @@ export function ClientPage() {
             )}
           </section>
 
+          <PhotosCard clientId={c.id} />
+
           {c.properties.length > 0 && <PlansCard scope={{ kind: "client", properties: c.properties.map((p) => ({ id: p.id, label: p.label || p.line1 })) }} />}
 
           <Timeline clientId={c.id} />
@@ -347,6 +400,7 @@ export function ClientPage() {
             <dl className="kv">
               <dt>Email</dt><dd>{c.email ? <a href={`mailto:${c.email}`}>{c.email}</a> : "—"}</dd>
               <dt>Phone</dt><dd>{c.phone ? <a href={`tel:${c.phone}`}>{c.phone}</a> : "—"}</dd>
+              {c.sms_opt_out_at && <><dt>Texts</dt><dd>Off since {formatDate(c.sms_opt_out_at)}. They texted STOP, and can text START to turn texts back on.</dd></>}
               {owed > 0 && (
                 <>
                   <dt>Balance</dt>
@@ -359,6 +413,18 @@ export function ClientPage() {
               {writtenOff > 0 && <><dt>Written off</dt><dd className="tabular">{formatMoney(writtenOff)}</dd></>}
               <dt>Lead source</dt><dd>{c.lead_source ?? "—"}</dd>
               {referrer && <><dt>Referred by</dt><dd><Link to={`/clients/${referrer.id}`}>{referrer.display_name}</Link></dd></>}
+              {credits.data?.some((r) => Number(r.credit_left) > 0) && (
+                <>
+                  <dt>Referral credit</dt>
+                  <dd className="stack-sm" style={{ gap: 2 }}>
+                    {credits.data.filter((r) => Number(r.credit_left) > 0).map((r) => (
+                      <span key={r.referral_id}>
+                        {creditMoney(Number(r.credit_left))} for referring {r.friend_name}. {r.auto_apply ? "Goes on their next invoice." : "Kept off invoices."}
+                      </span>
+                    ))}
+                  </dd>
+                </>
+              )}
               <dt>Client since</dt><dd>{formatDate(c.created_at)}</dd>
               {billing?.line1 && <><dt>Billing</dt><dd>{addressLine(billing)}</dd></>}
               {isOffice && (
@@ -367,8 +433,28 @@ export function ClientPage() {
                   <dd>
                     <label className="switch-row" style={{ fontWeight: 400 }}>
                       <input type="checkbox" className="switch" checked={!c.marketing_opt_out} onChange={(e) => update.mutate({ marketing_opt_out: !e.target.checked })} />
-                      Gets emails
+                      Gets campaigns, review and referral asks
                     </label>
+                  </dd>
+                  <dt>Reviews</dt>
+                  <dd>
+                    <label className="switch-row" style={{ fontWeight: 400 }}>
+                      <input type="checkbox" className="switch" checked={!c.review_opt_out && !c.marketing_opt_out && !c.reviewed_at} disabled={c.marketing_opt_out || Boolean(c.reviewed_at)} onChange={(e) => update.mutate({ review_opt_out: !e.target.checked })} />
+                      Gets review asks
+                    </label>
+                    {c.marketing_opt_out ? (
+                      <span className="muted small" style={{ display: "block" }}>Off while they're unsubscribed from marketing</span>
+                    ) : c.reviewed_at ? (
+                      <span className="muted small" style={{ display: "block" }}>Left a Google review, so not asked</span>
+                    ) : null}
+                  </dd>
+                  <dt>Photos</dt>
+                  <dd>
+                    <label className="switch-row" style={{ fontWeight: 400 }}>
+                      <input type="checkbox" className="switch" checked={!c.social_photos_opt_out} onChange={(e) => update.mutate({ social_photos_opt_out: !e.target.checked })} />
+                      Can be posted on social pages
+                    </label>
+                    {c.social_photos_opt_out && <span className="muted small" style={{ display: "block" }}>Photos of their property aren't offered for posts</span>}
                   </dd>
                 </>
               )}
@@ -402,4 +488,21 @@ function WorkList({ rows, empty }: { rows: Array<{ to: string; number: number | 
       ))}
     </>
   );
+}
+
+/**
+ * A client matched to a Google review: they aren't asked for reviews again. Its stars, and a link to
+ * their review in Marketing → Reviews (where a wrong match is undone), for those who can open it.
+ */
+function ReviewedChip({ clientId }: { clientId: string }) {
+  const session = useSession();
+  const sees = hasRole(session, "admin", "office") && can(session, "marketing") && marketingOn(session.company.settings);
+  const review = useQuery({
+    queryKey: ["client-review", clientId],
+    enabled: sees,
+    queryFn: async () => unwrap(await supabase().from("reviews").select("rating").eq("client_id", clientId).is("deleted_at", null).order("posted_at").limit(1)),
+  });
+  const rating = review.data?.[0]?.rating;
+  const words = rating ? `Left a ${rating}-star Google review` : "Left a Google review";
+  return sees ? <Link className="chip chip-green" to={`/marketing?tab=reviews&client=${clientId}`}>{words}</Link> : <span className="chip chip-green">{words}</span>;
 }

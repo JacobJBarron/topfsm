@@ -3,6 +3,7 @@ import {
   actionsForTrigger,
   amountWords,
   changeText,
+  byEmail,
   DEFAULT_NOTIFICATION_PREFS,
   insuranceWarning,
   insuranceWarningItems,
@@ -11,6 +12,8 @@ import {
   moneyShort,
   notificationTopic,
   NOTIFICATION_TOPICS,
+  REVIEW_ACCESS_HINT,
+  reviewNoticesFor,
   offerClosedMessage,
   offerDate,
   offerDays,
@@ -180,6 +183,28 @@ describe("hearing about offers", () => {
     expect(DEFAULT_NOTIFICATION_PREFS.sms).toEqual(["jobs"]);
     expect(DEFAULT_NOTIFICATION_PREFS.push).toContain("jobs");
     expect(DEFAULT_NOTIFICATION_PREFS.email).toContain("jobs");
+  });
+
+  it("gives Google reviews a topic, by push and email, where email carries only the low ratings", () => {
+    expect(NOTIFICATION_TOPICS.find((t) => t.key === "reviews")).toEqual({ key: "reviews", label: "Google reviews", hint: "New reviews, low ratings first. Email only for 1 and 2 stars" });
+    expect(["review", "review_low", "review_access"].map(notificationTopic)).toEqual(["reviews", "reviews", "reviews"]);
+    expect(notificationTopic("reviewed")).toBe("alerts");
+    expect(DEFAULT_NOTIFICATION_PREFS.email).toContain("reviews");
+    expect(DEFAULT_NOTIFICATION_PREFS.push).toContain("reviews");
+    expect(DEFAULT_NOTIFICATION_PREFS.sms).not.toContain("reviews");
+    expect([byEmail("review"), byEmail("review_low"), byEmail("review_access"), byEmail("schedule")]).toEqual([false, true, true, true]);
+  });
+
+  // As private.marketing_office and private.apps_admins pick who gets them (supabase/tests/google_reviews_test.sql).
+  it("offers Google reviews to everyone they reach: the marketing office, and owners and admins who connect apps", () => {
+    const who = (role: string, permissions: string[] = []) => reviewNoticesFor({ role, permissions }, true);
+    expect([who("owner"), who("admin", ["marketing"]), who("office", ["marketing"])]).toEqual(["reviews", "reviews", "reviews"]);
+    // An admin without the marketing area still hears when Google Business Profile needs them.
+    expect(who("admin", ["apps", "reports"])).toBe("access");
+    expect([who("office", ["apps"]), who("admin", ["reports"]), who("estimator", ["marketing"]), who("field_crew", ["marketing", "apps"])]).toEqual([null, null, null, null]);
+    // Nothing goes while Marketing is uninstalled.
+    expect(reviewNoticesFor({ role: "owner", permissions: [] }, false)).toBeNull();
+    expect(REVIEW_ACCESS_HINT).toBe("When Google Business Profile needs signing in again or a location picked");
   });
 
   it("lets automations react to offers, on the job", () => {

@@ -22,6 +22,8 @@ import {
   type ConditionOp,
   type SubjectKind,
 } from "@crewtavo/core/automations";
+import { AUTOMATED_CAMPAIGNS, campaignKeyOf } from "@crewtavo/core/campaigns";
+import { marketingOn, ordinal, RECURRING_TRIGGER, reviewSettings } from "@crewtavo/core/marketing";
 import { STAFF } from "@crewtavo/core/roles";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -62,7 +64,7 @@ const BLANK: Draft = {
 
 // Who a rule can notify: the team's levels (automations never notify subs).
 const ROLE_OPTIONS: Array<[string, string]> = STAFF.map((r) => [r, ROLE_GROUP_LABELS[r] ?? r]);
-const ACTION_ICON: Record<ActionType, IconName> = { notify: "bell", send_email: "mail", send_sms: "messages", add_tag: "tag", remove_tag: "tag", add_note: "note", create_task: "calendarCheck", request_review: "star", update_status: "archive" };
+const ACTION_ICON: Record<ActionType, IconName> = { notify: "bell", send_email: "mail", send_sms: "messages", add_tag: "tag", remove_tag: "tag", add_note: "note", create_task: "calendarCheck", request_review: "star", request_referral: "gift", update_status: "archive" };
 const STEP_COLORS = { when: "#3474d4", wait: "#8b5cf6", if: "#c9852a", then: "#3b7d23" };
 
 function blankAction(type: ActionType, subject: SubjectKind): Action {
@@ -74,6 +76,7 @@ function blankAction(type: ActionType, subject: SubjectKind): Action {
     case "add_note": return { type, body: "" };
     case "create_task": return { type, title: "", days_from_now: 1 };
     case "request_review": return { type, channel: "email" };
+    case "request_referral": return { type };
     case "update_status": return { type, status: STATUS_ACTION_CHOICES[subject]?.[0]?.value ?? "archived" };
   }
 }
@@ -130,6 +133,11 @@ function RulePageScreen() {
 
   const trigger = triggerDef(draft.trigger);
   const subject: SubjectKind = trigger?.subject ?? "quote";
+  // A rule that's an automated campaign (Marketing → Campaigns): any on client.inactive is Re-engage.
+  const campaignKey = campaignKeyOf({ template_key: isNew ? null : rule.data?.template_key, trigger: draft.trigger });
+  const campaign = campaignKey ? AUTOMATED_CAMPAIGNS[campaignKey] : null;
+  // Only an email to the client goes as the campaign's, tracked (a notice to the team doesn't).
+  const emailsClient = draft.actions.some((a) => a.type === "send_email");
   // Rules about subs' offers (their prices) are for people with the Subcontractors area.
   const triggers = TRIGGERS.filter((t) => t.verb === draft.trigger || triggerAllowed(t.verb, (area) => can(session, area)));
   const errors = useMemo(() => validateRule(draft), [draft]);
@@ -209,6 +217,24 @@ function RulePageScreen() {
         }
       />
       <div className="callout callout-info"><Icon name="bolt" size={20} /><div className="grow" style={{ fontWeight: 600 }}>{describeRuleSentence(draft)}</div></div>
+      {campaign && (
+        <div className="callout callout-info">
+          <Icon name="mail" size={20} />
+          <div className="grow">
+            {campaign.marketing && !marketingOn(session.company.settings) && <div>Marketing is off, so this rule is skipped.</div>}
+            <span style={{ fontWeight: 400 }}>
+              {rule.data?.template_key === campaign.templateKey ? "This is" : "Rules on this trigger are part of"} {campaign.name} in <Link to="/marketing?tab=campaigns">Marketing → Campaigns</Link>.{" "}
+              {emailsClient
+                ? campaign.marketing
+                  ? "Its email to the client goes as a marketing email with an unsubscribe link, and opens and clicks are counted."
+                  : "Its email's opens and clicks are counted."
+                : campaign.marketing
+                  ? "It runs only while Marketing is installed, and not for clients who unsubscribed from marketing. Nothing is emailed to the client unless you add Email the client."
+                  : null}
+            </span>
+          </div>
+        </div>
+      )}
 
       <div className="two-col">
         <div className="wide stack">
@@ -223,7 +249,12 @@ function RulePageScreen() {
                 const next = triggerDef(e.target.value);
                 // Who can be told about it may be fewer (a sub's offer: the office only).
                 const actions = draft.actions.map((a) => (a.type === "notify" && next?.notifyRoles ? { ...a, roles: (a.roles ?? []).filter((r) => next.notifyRoles!.includes(r)) } : a));
-                set({ trigger: e.target.value, conditions: next?.subject === subject ? draft.conditions : [], delay_minutes: next?.delayable ? draft.delay_minutes : 0, actions });
+                const conditions = next?.subject === subject ? draft.conditions : [];
+                // client.inactive needs to know how many days: a year, until it's changed.
+                const days = e.target.value === "client.inactive" && !conditions.some((c) => c.field === "days_since_visit")
+                  ? [...conditions, { field: "days_since_visit", op: "gte" as const, value: 365 }]
+                  : conditions;
+                set({ trigger: e.target.value, conditions: days, delay_minutes: next?.delayable ? draft.delay_minutes : 0, actions });
               }} aria-label="Trigger">
                 {[...new Set(triggers.map((t) => t.group))].map((group) => (
                   <optgroup key={group} label={group}>
@@ -231,6 +262,14 @@ function RulePageScreen() {
                   </optgroup>
                 ))}
               </select>
+              {draft.trigger === "client.inactive" && (
+                <p className="muted small" style={{ margin: 0 }}>Checked each morning at 10. Set the number of days under Only if.</p>
+              )}
+              {draft.trigger === RECURRING_TRIGGER && (
+                <p className="muted small" style={{ margin: 0 }}>
+                  The {ordinal(reviewSettings(session.company.settings).recurringAfterVisits)} visit, set in <Link to="/marketing?tab=reviews">Marketing → Reviews</Link>.
+                </p>
+              )}
             </Step>
 
             {trigger?.delayable && (
@@ -251,6 +290,7 @@ function RulePageScreen() {
                     </>
                   )}
                 </div>
+                {!isNew && <p className="muted small" style={{ margin: 0 }}>Runs already waiting move to the new wait.</p>}
               </Step>
             )}
 
@@ -372,7 +412,7 @@ function ConditionRow({ subject, value, invalid, onChange, onRemove }: { subject
       <select className="select" value={def.field} aria-label="Field" onChange={(e) => {
         const f = fields.find((x) => x.field === e.target.value)!;
         const firstChoice = f.kind === "status" ? statusChoices(subject)[0].value : f.choices?.[0]?.value ?? "";
-        onChange({ field: f.field, op: f.ops[0], value: f.kind === "tags" ? [] : firstChoice });
+        onChange({ field: f.field, op: f.ops[0], value: f.kind === "tags" ? [] : f.kind === "days" ? 365 : firstChoice });
       }}>
         {fields.map((f) => <option key={f.field} value={f.field}>{f.label}</option>)}
       </select>
@@ -392,6 +432,12 @@ function ConditionRow({ subject, value, invalid, onChange, onRemove }: { subject
         <select className="select" value={String(value.value)} aria-label="Value" onChange={(e) => onChange({ ...value, value: e.target.value })}>
           {choices.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
         </select>
+      ) : def.kind === "days" ? (
+        <span className="row" style={{ flex: "0 1 180px", gap: 6 }}>
+          <input className="input" type="number" min={30} max={730} style={{ maxWidth: 100 }} value={String(value.value ?? "")} aria-label="Days"
+            onChange={(e) => onChange({ ...value, value: e.target.value === "" ? "" : Math.round(Number(e.target.value)) })} />
+          <span className="muted small">days</span>
+        </span>
       ) : def.kind === "money" ? (
         <span className="input-group" style={{ flex: "0 1 160px" }}><span className="addon">$</span><input className="input" inputMode="decimal" style={{ paddingLeft: 22 }} value={String(value.value ?? "")} aria-label="Amount" onChange={(e) => onChange({ ...value, value: e.target.value.replace(/[^0-9.]/g, "") })} /></span>
       ) : (
@@ -457,6 +503,7 @@ function ActionEditor({ index, count, subject, verb, value, onChange, onRemove, 
     else if ("body" in value) onChange({ ...value, body: text } as Action);
   };
   const def = actionsFor(subject).find((a) => a.type === value.type);
+  const session = useSession();
   return (
     <div className="card" style={{ padding: 14, display: "grid", gap: 10, boxShadow: "none", background: "var(--fill)" }}>
       <div className="row">
@@ -529,13 +576,28 @@ function ActionEditor({ index, count, subject, verb, value, onChange, onRemove, 
 
       {value.type === "request_review" && (
         <>
+          {!marketingOn(session.company.settings) && (
+            <div className="callout callout-info"><Icon name="info" size={18} /><div className="grow">Marketing is off, so this action is skipped.</div></div>
+          )}
           <Field label="Send by">
-            <select className="select" value={value.channel} onChange={(e) => onChange({ ...value, channel: e.target.value as "email" | "sms" })}>
+            <select className="select" value={value.channel} onChange={(e) => onChange({ ...value, channel: e.target.value as "email" | "sms" | "both" })}>
               <option value="email">Email</option>
               <option value="sms">Text message</option>
+              <option value="both">Text and email</option>
             </select>
           </Field>
-          <p className="muted small" style={{ margin: 0 }}>Uses your <Link to="/marketing?tab=reviews">review settings</Link>.</p>
+          <p className="muted small" style={{ margin: 0 }}>Uses your <Link to="/marketing?tab=reviews">review settings</Link>, and asks each client at most once every 6 months.</p>
+        </>
+      )}
+
+      {value.type === "request_referral" && (
+        <>
+          {!marketingOn(session.company.settings) && (
+            <div className="callout callout-info"><Icon name="info" size={18} /><div className="grow">Marketing is off, so this action is skipped.</div></div>
+          )}
+          <p className="muted small" style={{ margin: 0 }}>
+            Emails each client their referral link, at most once every 6 months. The message is in your <Link to="/marketing?tab=referrals">referral settings</Link>.
+          </p>
         </>
       )}
 

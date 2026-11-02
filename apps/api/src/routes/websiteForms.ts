@@ -15,8 +15,9 @@
  *   OPTIONS /f/:key                          lets fetch() send from any website
  *   GET     /f/:key                          what the address is, for someone who opens it
  *   GET     /f/:key/thanks                   the thank-you page people see after sending
- *   GET     /api/website-forms               the app's page: the forms, and whether email is set up
- *                                            (?kind=careers: Careers' page and its forms)
+ *   GET     /api/website-forms               the app's page: the forms, whether email is set up, and
+ *                                            whether there are promo codes (?kind=careers: Careers'
+ *                                            page and its forms)
  *   POST    /api/website-forms/enabled       Install and Uninstall (kind: careers for Careers)
  *   POST    /api/website-forms               another form (kind: careers for a careers form)
  *   PATCH   /api/website-forms/:id           its name, who gets its email, its thank-you page, websites
@@ -174,13 +175,19 @@ formInbox.post("/f/:key", async (c) => {
       p_answers: asJson(message.answers),
       p_contact: asJson(message.contact),
       p_web_visit: visit ?? undefined,
+      // Checked as a promo code: a valid one waits on the request for the quote; one that isn't never loses the message.
+      p_promo: message.promo ?? undefined,
     });
     if (error) throw dbError(error);
-    const made = data as { request_id: string; property_id: string | null; new_property: boolean };
+    const made = data as {
+      request_id: string; property_id: string | null; new_property: boolean;
+      promo_code: string | null; rejected_promo_code: string | null; promo_problem: string | null;
+    };
+    const promo = made.promo_code ? { code: made.promo_code, problem: null } : made.rejected_promo_code ? { code: made.rejected_promo_code, problem: made.promo_problem ?? "It isn't valid." } : null;
     if (made.new_property && made.property_id && message.address.line1) geocodeLater(c, made.property_id, { line1: message.address.line1, city: message.address.city, postal_code: message.address.postal_code });
     kickAutomations(c, company.id);
     if (form.email_to.length) {
-      runInBackground(c, emailMessage(c.env, { base: appUrl(c), company, form, submission: message, requestId: made.request_id }));
+      runInBackground(c, emailMessage(c.env, { base: appUrl(c), company, form, submission: message, requestId: made.request_id, promo }));
     }
     return done();
   } catch (error) {
@@ -271,9 +278,11 @@ const kindOf = (value: unknown): Kind => (value === "careers" ? "careers" : "con
 websiteForms.get("/website-forms", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
   const { db, companyId } = c.var;
   const kind = kindOf(c.req.query("kind"));
-  const [company, forms] = await Promise.all([
+  const [company, forms, codes] = await Promise.all([
     db.from("companies").select("settings").eq("id", companyId).maybeSingle(),
     db.from("website_forms").select(FORM_COLUMNS).eq("company_id", companyId).eq("kind", kind).order("created_at"),
+    // A contact form to paste has a promo code box only for a business with codes.
+    kind === "contact" ? db.from("promo_codes").select("id", { count: "exact", head: true }).eq("company_id", companyId).eq("active", true) : null,
   ]);
   const rows = must(forms);
   // The latest message to each form, so the page can say it's working: a request, or an applicant.
@@ -284,6 +293,7 @@ websiteForms.get("/website-forms", requireUser, requireCompany(ADMINS, "apps"), 
   return c.json({
     enabled: installed(must(company).settings, kind),
     email_ready: await emailReady(c.env, companyId),
+    ...(codes ? { promo_codes: (codes.count ?? 0) > 0 } : {}),
     forms: rows.map((f, i) => ({ ...f, url: `${base}/f/${f.key}`, last_message_at: latest[i]?.data?.created_at ?? null })),
   });
 });

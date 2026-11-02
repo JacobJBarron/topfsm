@@ -337,6 +337,50 @@ describe("a price range in the Client Hub", () => {
   });
 });
 
+describe("referrals on the client's home page", () => {
+  it("offers the client their link while Marketing is installed, and not once it's uninstalled", async () => {
+    const company = state.tables.companies![0]!;
+    company.settings = { ...(company.settings as Row), referrals: { reward: { kind: "amount", value: 50 }, offer: "$25 off your next roof check" }, marketing: { enabled: true } };
+    let body = await (await hub({ t: "client", id: CLIENT })).json();
+    expect(body.refer).toMatchObject({
+      offer: "$25 off your next roof check", link: expect.stringContaining("/refer/"),
+      rewards: "You'll get a $50 credit on your next invoice once they pay their first one.", credit_left: 0,
+    });
+    company.settings = { ...(company.settings as Row), marketing: { enabled: false } };
+    body = await (await hub({ t: "client", id: CLIENT })).json();
+    expect(body.refer).toBeNull();
+  });
+
+  it("says what the client gets, and the credit they've earned that goes on their next invoice", async () => {
+    const company = state.tables.companies![0]!;
+    company.settings = { ...(company.settings as Row), referrals: { reward: { kind: "percent", value: 10 } }, marketing: { enabled: true } };
+    state.tables.referrals = [
+      { company_id: ROOFER, referrer_client_id: CLIENT, reward_status: "earned", reward_amount: 50, given_amount: 0, auto_apply: true, credits: [{ amount: 20 }] },
+      { company_id: ROOFER, referrer_client_id: CLIENT, reward_status: "earned", reward_amount: 45.06, given_amount: 0, auto_apply: true, credits: [] },
+      // $50 given outside Crewtavo, $30 still to go on an invoice.
+      { company_id: ROOFER, referrer_client_id: CLIENT, reward_status: "earned", reward_amount: 80, given_amount: 50, auto_apply: true, credits: [] },
+    ];
+    const body = await (await hub({ t: "client", id: CLIENT })).json();
+    expect(body.refer).toMatchObject({ offer: null, rewards: "You'll get 10% of their first job back as a credit on your next invoice.", credit_left: 105.06 });
+  });
+
+  it("leaves out a credit the office keeps off invoices, since it won't go on the next one", async () => {
+    const company = state.tables.companies![0]!;
+    company.settings = { ...(company.settings as Row), referrals: { reward: { kind: "amount", value: 50 } }, marketing: { enabled: true } };
+    state.tables.referrals = [
+      { company_id: ROOFER, referrer_client_id: CLIENT, reward_status: "earned", reward_amount: 50, given_amount: 0, auto_apply: false, credits: [] },
+    ];
+    const body = await (await hub({ t: "client", id: CLIENT })).json();
+    expect(body.refer.credit_left).toBe(0);
+  });
+
+  it("isn't offered with no credit or offer to tell friends about", async () => {
+    const company = state.tables.companies![0]!;
+    company.settings = { ...(company.settings as Row), referrals: { reward: { kind: "amount", value: 0 } }, marketing: { enabled: true } };
+    expect((await (await hub({ t: "client", id: CLIENT })).json()).refer).toBeNull();
+  });
+});
+
 describe("the crew on the client's home page", () => {
   it("is first names only, and a sub is named from the office's record, never their own profile", async () => {
     const visit = (id: string, assignees: string[]) => ({
@@ -448,6 +492,32 @@ describe("signing online", () => {
     const body = await (await hub({ t: "quote", id: QUOTE })).json();
     expect(body.quote.approval).toBeNull();
     expect(JSON.stringify(body)).not.toContain("198.51.100.4");
+  });
+});
+
+describe("how a quote's promo code comes off, in the Client Hub", () => {
+  const coded = (status: string, everyVisit: boolean, signedRule: boolean | null = null) =>
+    roofer({
+      status, range_low: null, range_high: null, approved_at: status === "sent" ? null : "2026-10-25T18:00:00Z",
+      approval: status === "sent" ? null : { name: "Dana Whitfield", signature: PNG, signed_at: "2026-10-25T18:00:00Z", total: 18304 },
+      promo_code_id: "p-1", discount_amount: 25, promo_every_visit: signedRule,
+      promo: { code: "WEEKLY25", kind: "amount", value: 25, description: null, min_subtotal: 0, every_visit: everyVisit },
+    });
+
+  it("says the code's rule while the quote is open", async () => {
+    coded("sent", false);
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).quote.promo).toMatchObject({ code: "WEEKLY25", every_visit: false });
+  });
+
+  it("keeps the rule the client approved, whatever the code says now", async () => {
+    // Approved while the code came off once; the code was switched to every visit since.
+    coded("converted", true, false);
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).quote.promo).toMatchObject({ code: "WEEKLY25", every_visit: false });
+    coded("approved", false, true);
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).quote.promo.every_visit).toBe(true);
+    // Approved before quotes said how a code comes off: it still says nothing.
+    coded("converted", true, null);
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).quote.promo.every_visit).toBeNull();
   });
 });
 
@@ -928,11 +998,13 @@ describe("an invoice in the Client Hub", () => {
       client: { display_name: "Dana Whitfield", billing_address: { line1: "PO Box 12", city: "Springfield", region: "IL", postal_code: "62705" } },
       job: { property: { line1: "1482 Ridgeview Dr", city: "Springfield", region: "IL", postal_code: "62704" } },
       lines: [{ name: "Architectural shingle roof", description: null, quantity: 1, unit: "ea", unit_price: 18304, sort: 1 }],
-      payments: [],
+      payments: [], credit_amount: 50, credits: [{ amount: 50, note: "Referral credit: thanks for referring Maria", created_at: "2026-10-02T12:00:00Z" }],
     }];
     const res = await hub({ t: "invoice", id: INVOICE });
     expect(res.status).toBe(200);
     const body = await res.json();
+    // A referral credit on it goes out with its note, as the paper and the totals show it.
+    expect(body.invoice).toMatchObject({ credit_amount: 50, credits: [{ amount: 50, note: "Referral credit: thanks for referring Maria" }] });
     expect(body.contract).toEqual({
       // Plain text: the paper escapes it as it prints.
       terms: "Due by October 1, 2026. Thanks, Dana Whitfield.",
@@ -946,6 +1018,25 @@ describe("an invoice in the Client Hub", () => {
     expect(body.invoice).not.toHaveProperty("job");
     const text = JSON.stringify(body);
     for (const hidden of ["billing_address", "PO Box 12", "Another business's words", "may cancel"]) expect(text).not.toContain(hidden);
+    expect(body.promo_line).toBe(false);
+  });
+
+  it("says when its job's promo code is on a line, so no other code goes on it, without sending the line's key", async () => {
+    withOptions();
+    state.tables.invoices = [{
+      id: INVOICE, company_id: ROOFER, number: 78, status: "sent", subject: "Weekly mowing", notes: null, issued_on: "2026-10-01", due_on: "2026-10-31",
+      subtotal: 20, discount_amount: 0, tax_amount: 0, total: 20, retainage_amount: 0, amount_paid: 0, balance_due: 20, client_id: CLIENT, promo: null,
+      client: { display_name: "Dana Whitfield", billing_address: null }, job: { property: null },
+      lines: [
+        { name: "Mowing", description: null, quantity: 1, unit: "visit", unit_price: 45, sort: 1, discount_quote_id: null },
+        { name: "Promo code WEEKLY25", description: null, quantity: 1, unit: "ea", unit_price: -25, sort: 2, discount_quote_id: QUOTE },
+      ],
+      payments: [], credit_amount: 0, credits: [],
+    }];
+    const body = await (await hub({ t: "invoice", id: INVOICE })).json();
+    expect(body.promo_line).toBe(true);
+    expect(body.invoice.lines.map((l: { name: string }) => l.name)).toEqual(["Mowing", "Promo code WEEKLY25"]);
+    expect(JSON.stringify(body.invoice.lines)).not.toContain("discount_quote_id");
   });
 });
 

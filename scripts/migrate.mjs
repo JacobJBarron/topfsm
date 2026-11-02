@@ -32,6 +32,25 @@ if (!url) {
 const dir = join(dirname(fileURLToPath(import.meta.url)), "../supabase/migrations");
 const files = readdirSync(dir).filter((f) => /^\d+_.+\.sql$/.test(f)).sort();
 
+/**
+ * Run first in each migration's transaction. Triggers that wait for commit (referral credits
+ * following invoices, 20261031000100_referral_credits.sql) fire as each statement ends instead, so a
+ * migration can write rows and then alter their table: Postgres refuses an alter while trigger
+ * events are pending. Deferred foreign keys and unique constraints stay deferred.
+ */
+const FIRE_TRIGGERS_NOW = `do $$
+declare t record;
+begin
+  for t in
+    select distinct n.nspname, tg.tgname from pg_trigger tg
+      join pg_constraint c on c.oid = tg.tgconstraint
+      join pg_namespace n on n.oid = c.connamespace
+     where c.contype = 't' and tg.tgdeferrable and n.nspname = 'public'
+  loop
+    execute format('set constraints %I.%I immediate', t.nspname, t.tgname);
+  end loop;
+end $$`;
+
 /** Errors that mean "not up yet" while an instance is starting, so worth waiting out. */
 const TRANSIENT = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ECONNRESET", "CONNECT_TIMEOUT", "57P03"]);
 const UNREACHABLE = new Set([...TRANSIENT, "SERVICES_NOT_READY"]);
@@ -95,6 +114,7 @@ try {
     current = file;
     const body = readFileSync(join(dir, file), "utf8");
     await sql.begin(async (tx) => {
+      await tx.unsafe(FIRE_TRIGGERS_NOW);
       await tx.unsafe(body);
       await tx`insert into supabase_migrations.schema_migrations (version, name, statements) values (${version}, ${rest.join("_")}, ${[body]})`;
     });

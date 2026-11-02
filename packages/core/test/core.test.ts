@@ -10,9 +10,16 @@ import {
   dueTone,
   FORMULA_VARIABLES,
   FormulaError,
+  ACTIONS,
+  actionsForTrigger,
+  variablesForTrigger,
   checkCondition,
   cutOut,
+  describeAction,
+  describeCondition,
   describeRuleSentence,
+  fieldsFor,
+  triggerDef,
   drawingPitchFactor,
   drawingSquares,
   edgeLengths,
@@ -621,6 +628,41 @@ describe("automations", () => {
       .toBe("When a quote is sent, wait 3 days, if its status is Awaiting response: email the client.");
     expect(describeRuleSentence({ trigger: "visit.completed", delay_minutes: 0, conditions: [{ field: "client.tags", op: "includes", value: ["HOA"] }], actions: [{ type: "add_tag", tag: "Serviced 2026" }] }))
       .toBe("When a visit is completed, if client tags include HOA: tag the client “Serviced 2026”.");
+  });
+
+  it("asks for referrals by email, and thanks a client who earned a referral credit", () => {
+    expect(ACTIONS.find((a) => a.type === "request_referral")).toMatchObject({ label: "Ask for referrals", subjects: "all" });
+    expect(actionsForTrigger("job.completed").map((a) => a.type)).toContain("request_referral");
+    expect(describeAction({ type: "request_referral" })).toBe("Ask for referrals by email");
+    expect(validateRule({ name: "Ask for referrals after a job", trigger: "job.completed", delay_minutes: 10080, conditions: [{ field: "kind", op: "not_equals", value: "recurring" }], actions: [{ type: "request_referral" }] })).toEqual([]);
+    expect(describeRuleSentence({ trigger: "job.completed", delay_minutes: 10080, conditions: [{ field: "kind", op: "not_equals", value: "recurring" }], actions: [{ type: "request_referral" }] }))
+      .toBe("When a job is completed, wait 7 days, if type is not Recurring job: ask for referrals by email.");
+    expect(triggerDef("referral.earned")).toMatchObject({ label: "A client earns a referral credit", group: "Clients", subject: "client", delayable: true });
+    expect(variablesForTrigger("referral.earned").map((v) => v.token)).toEqual(expect.arrayContaining(["client.first_name", "referral.name", "referral.credit", "referral.invoice"]));
+    expect(actionsForTrigger("referral.earned").map((a) => a.type)).toEqual(expect.arrayContaining(["send_email", "notify", "add_tag"]));
+    expect(validateRule({ name: "Thank them", trigger: "referral.earned", delay_minutes: 0, conditions: [], actions: [{ type: "send_email", subject: "Thanks!", body: "Thanks for referring {{referral.name}}: {{referral.credit}} is yours." }] })).toEqual([]);
+  });
+
+  it("asks for a review by text and email, after the recurring visit set in Marketing", () => {
+    expect(describeAction({ type: "request_review", channel: "both" })).toBe("Ask for a review by text and email");
+    expect(describeAction({ type: "request_review", channel: "sms" })).toBe("Ask for a review by text");
+    expect(triggerDef("job.recurring_third_visit")?.label).toBe("A recurring job reaches the visit set in Marketing");
+    expect(describeRuleSentence({ trigger: "job.recurring_third_visit", delay_minutes: 1440, conditions: [], actions: [{ type: "request_review", channel: "both" }] }))
+      .toBe("When a recurring job reaches the visit set in Marketing, wait 1 day: ask for a review by text and email.");
+  });
+
+  it("tells visits and invoices on recurring jobs apart, and deposit invoices from the rest", () => {
+    expect(fieldsFor("visit").map((f) => f.field)).toContain("job_kind");
+    expect(fieldsFor("invoice").map((f) => f.field)).toEqual(expect.arrayContaining(["job_kind", "invoice_kind"]));
+    expect(fieldsFor("job").map((f) => f.field)).not.toContain("job_kind");
+    expect(fieldsFor("visit").map((f) => f.field)).not.toContain("invoice_kind");
+    const notRecurring = { field: "job_kind", op: "not_equals" as const, value: "recurring" };
+    expect(checkCondition(notRecurring, { job_kind: "recurring" })).toBe(false);
+    expect(checkCondition(notRecurring, { job_kind: "one_off" })).toBe(true);
+    // An invoice on no job isn't recurring work.
+    expect(checkCondition(notRecurring, { job_kind: null })).toBe(true);
+    expect(describeCondition(notRecurring, "visit")).toBe("Job type is not Recurring job");
+    expect(describeCondition({ field: "invoice_kind", op: "not_equals", value: "deposit" }, "invoice")).toBe("Invoice type is not Deposit");
   });
 });
 

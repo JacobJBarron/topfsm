@@ -152,6 +152,7 @@ update public.quotes set status = 'sent' where id = :'q2';
 select t2.check((select status from public.referrals where id = :'ref') = 'quoted', 'referral moves to quoted when the friend gets a quote');
 update public.quotes set status = 'approved' where id = :'q2';
 select t2.check((select status from public.referrals where id = :'ref') = 'won', 'referral is won when the quote is approved');
+select t2.check((select reward_status from public.referrals where id = :'ref') = 'pending', 'and its credit waits for the friend to pay their first invoice');
 commit;
 
 -- ===== Notifications are private to each person =============================================

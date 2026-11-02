@@ -1,5 +1,6 @@
 import type { TablesUpdate } from "@crewtavo/core/database";
 import { paymentProblem, taxPercent, taxRateFromPercent } from "@crewtavo/core/money";
+import { givenBackWords, goneInvoiceWords } from "@crewtavo/core/promos";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -27,9 +28,12 @@ import { toast } from "@/lib/toast";
 import { undoable } from "@/lib/undo";
 import { contractTemplate, documentCompany, invoiceDocument, invoiceFill, NO_CONTRACT, useDocumentTemplate, useInvoiceContract, useLetterhead, type DocumentInvoice, type InvoiceQuote } from "../documents/data";
 import { DocumentSheet } from "../documents/EstimateDocument";
+import { readJobDiscounts, refreshJobInvoices } from "../jobs/JobDiscountNote";
 import { InvoiceDrawings } from "../measure/drawings";
 import { LineItems } from "../quotes/LineItems";
 import { DiscountRows } from "../quotes/PromoRow";
+import { paidWords } from "./creditRules";
+import { ReferralCredits } from "./ReferralCredits";
 import { SendDialog } from "../quotes/SendDialog";
 import { refundable } from "./refunds";
 import { settle } from "./settle";
@@ -58,11 +62,12 @@ function InvoicePageScreen() {
       unwrapOne(
         await supabase()
           .from("invoices")
-          .select("*, promo:promo_codes(code, kind, value, description), client:clients(id, display_name, email, phone, billing_address), job:jobs(id, number, title, po_number, property:properties(line1, city, region, postal_code), quote:quotes!jobs_company_id_quote_id_fkey(approval, option_id, option:quote_options!quotes_option_fkey(name, warranty), package:roof_packages!quotes_roof_package_fkey(name, warranty))), lines:invoice_line_items(id, name, description, quantity, unit, unit_price, taxable, sort, service_id), payments(id, amount, tip_amount, method, received_at, processor, notes, fee_amount, payout:payouts(arrival_on, status)), stripe:stripe_invoices(stripe_id, origin, status, number, hosted_url, livemode, amount_due, created_at, detached_at, processing_at)")
+          .select("*, promo:promo_codes(code, kind, value, description), client:clients(id, display_name, email, phone, billing_address, sms_opt_out_at), job:jobs(id, number, title, po_number, kind, billing_mode, property:properties(line1, city, region, postal_code), quote:quotes!jobs_company_id_quote_id_fkey(approval, option_id, option:quote_options!quotes_option_fkey(name, warranty), package:roof_packages!quotes_roof_package_fkey(name, warranty))), lines:invoice_line_items(id, name, description, quantity, unit, unit_price, taxable, sort, service_id, discount_quote_id), credits:referral_credits(id, amount, note, referral_id, created_at), payments(id, amount, tip_amount, method, received_at, processor, notes, fee_amount, payout:payouts(arrival_on, status)), stripe:stripe_invoices(stripe_id, origin, status, number, hosted_url, livemode, amount_due, created_at, detached_at, processing_at)")
           .eq("id", id)
           .order("sort", { referencedTable: "invoice_line_items" })
           .order("received_at", { referencedTable: "payments" })
           .order("created_at", { referencedTable: "stripe_invoices", ascending: false })
+          .order("created_at", { referencedTable: "referral_credits" })
           .maybeSingle(),
         "This invoice",
       ),
@@ -72,15 +77,34 @@ function InvoicePageScreen() {
   useRememberRecent(session.company.id, inv ? { kind: "invoice", id: inv.id, title: `Invoice #${inv.number}`, subtitle: inv.client?.display_name, path: `/invoices/${inv.id}` } : null);
 
   const refresh = () => {
-    queryClient.invalidateQueries({ queryKey: ["invoice", id] });
+    // On a job's invoice, every invoice page and the job's: a change here can move the job's promo
+    // discount to or off its other drafts (a promo line taken off, its Undo, Void).
+    if (inv?.job) refreshJobInvoices(queryClient, { jobId: inv.job.id, clientId: inv.client_id });
+    else queryClient.invalidateQueries({ queryKey: ["invoice", id] });
     queryClient.invalidateQueries({ queryKey: ["invoices", session.company.id] });
     queryClient.invalidateQueries({ queryKey: ["dashboard"] });
   };
-  // Status changes, from the header and its menu.
+  // A job's once-per-job promo discount on this invoice goes on the job's next invoice when it's voided
+  // or deleted (the database moves it at commit): read where it is before and after, so the toast can say.
+  const promoJobId = inv?.job && inv.lines.some((l) => l.discount_quote_id) ? inv.job.id : null;
+  const followingPromo = async (change: () => Promise<unknown>) => {
+    const before = promoJobId ? await readJobDiscounts(promoJobId) : null;
+    await change();
+    return before && promoJobId ? goneInvoiceWords(id, before, await readJobDiscounts(promoJobId)) : null;
+  };
+  // Status changes, from the header and its menu. Voided, the toast says where a promo discount went.
   const update = useMutation({
-    meta: { success: (_: unknown, p: TablesUpdate<"invoices">) => (p.status === "void" ? "Invoice voided" : p.status === "sent" ? "Invoice marked as sent" : p.status === "draft" ? "Invoice moved back to draft" : null), tone: "invoice" },
-    mutationFn: async (patch: TablesUpdate<"invoices">) => unwrap(await supabase().from("invoices").update(patch).eq("id", id)),
-    onSuccess: refresh,
+    meta: { success: (_: unknown, p: TablesUpdate<"invoices">) => (p.status === "sent" ? "Invoice marked as sent" : p.status === "draft" ? "Invoice moved back to draft" : null), tone: "invoice" },
+    mutationFn: async (patch: TablesUpdate<"invoices">) => {
+      const change = async () => unwrap(await supabase().from("invoices").update(patch).eq("id", id));
+      if (patch.status === "void") return followingPromo(change);
+      await change();
+      return null;
+    },
+    onSuccess: (note, patch) => {
+      if (patch.status === "void") toast.success("Invoice voided", { description: note ?? undefined, tone: "invoice" });
+      refresh();
+    },
   });
   // The fields on the page, saved as they're left: "Saving…" and "Saved" beside the status.
   const save = useSaveStatus();
@@ -103,9 +127,10 @@ function InvoicePageScreen() {
     onSuccess: refresh,
   });
   const remove = useMutation({
-    meta: { success: "Draft invoice deleted", tone: "invoice" },
-    mutationFn: async () => unwrap(await supabase().from("invoices").delete().eq("id", id)),
-    onSuccess: () => {
+    mutationFn: () => followingPromo(async () => unwrap(await supabase().from("invoices").delete().eq("id", id))),
+    onSuccess: (note) => {
+      toast.success("Draft invoice deleted", { description: note ?? undefined, tone: "invoice" });
+      if (inv?.job) refreshJobInvoices(queryClient, { jobId: inv.job.id, clientId: inv.client_id, gone: id });
       queryClient.invalidateQueries({ queryKey: ["invoices", session.company.id] });
       navigate("/invoices", { replace: true });
     },
@@ -127,6 +152,8 @@ function InvoicePageScreen() {
 
   const draft = inv.status === "draft";
   const isVoid = inv.status === "void";
+  // For the question before voiding or deleting: the promo discount it gives back to the job.
+  const givenBack = async () => (promoJobId ? givenBackWords(inv.id, await readJobDiscounts(promoJobId)) : null);
   const writtenOff = inv.status === "written_off";
   const balance = Number(inv.balance_due);
   const paid = Number(inv.amount_paid);
@@ -200,7 +227,8 @@ function InvoicePageScreen() {
                   danger: true,
                   hidden: isVoid || paid !== 0,
                   onSelect: async () => {
-                    if (await confirm({ title: `Void invoice #${inv.number}?`, body: "It stays on record but no longer counts as owed. Visits it covered can be invoiced again.", confirmLabel: "Void invoice", danger: true })) update.mutate({ status: "void" });
+                    const promo = await givenBack();
+                    if (await confirm({ title: `Void invoice #${inv.number}?`, body: `It stays on record but no longer counts as owed. Visits it covered can be invoiced again.${promo ? ` ${promo}` : ""}`, confirmLabel: "Void invoice", danger: true })) update.mutate({ status: "void" });
                   },
                 },
                 {
@@ -209,7 +237,8 @@ function InvoicePageScreen() {
                   danger: true,
                   hidden: !draft || paid !== 0,
                   onSelect: async () => {
-                    if (await confirm({ title: `Delete draft invoice #${inv.number}?`, body: "This can't be undone.", confirmLabel: "Delete", danger: true })) remove.mutate();
+                    const promo = await givenBack();
+                    if (await confirm({ title: `Delete draft invoice #${inv.number}?`, body: `This can't be undone.${promo ? ` ${promo}` : ""}`, confirmLabel: "Delete", danger: true })) remove.mutate();
                   },
                 },
               ]}
@@ -238,7 +267,7 @@ function InvoicePageScreen() {
           <Button size="sm" icon="undo" disabled={writeOff.isPending} onClick={() => writeOff.mutate(false)}>Undo write-off</Button>
         </div>
       )}
-      {inv.status === "paid" && <div className="callout callout-good"><Icon name="check" size={20} /><div className="grow">Paid in full{lastPayment ? ` on ${formatDate(lastPayment.received_at)}` : ""}.</div></div>}
+      {inv.status === "paid" && <div className="callout callout-good"><Icon name="check" size={20} /><div className="grow">{paidWords(paid, Number(inv.credit_amount), lastPayment?.received_at ? formatDate(lastPayment.received_at) : null)}</div></div>}
       {bankNote && <div className="callout callout-info"><Icon name="clock" size={20} /><div className="grow">{bankNote}</div></div>}
       {/* Up front, rather than refused once someone has filled in a payment. */}
       {paysInStripe && !bank && !isVoid && balance > 0 && <div className="callout callout-info"><Icon name="info" size={20} /><div className="grow">{RECORD_IN_STRIPE}</div></div>}
@@ -255,7 +284,16 @@ function InvoicePageScreen() {
       <div className="two-col">
         <div className="wide stack-lg">
           {draft && <SubjectCard value={inv.subject} onEdit={save.edited} onUnchanged={unchanged} onSave={(subject) => saveField({ subject })} />}
-          <LineItems table="invoice_line_items" parent="invoice_id" parentId={inv.id} lines={inv.lines} editable={draft} onChanged={refresh} />
+          <LineItems
+            table="invoice_line_items"
+            parent="invoice_id"
+            parentId={inv.id}
+            lines={inv.lines}
+            editable={draft}
+            onChanged={refresh}
+            // Work that repeats has a next invoice for a once-per-job code to go on, which the toast can say.
+            promoJob={inv.job ? { id: inv.job.id, repeats: inv.job.kind === "recurring" || inv.job.billing_mode === "per_visit" } : null}
+          />
           <NotesCard value={inv.notes} editable={!isVoid} onEdit={save.edited} onUnchanged={unchanged} onSave={(notes) => saveField({ notes })} />
           <section className="stack">
             <h2 className="section-title">Payments</h2>
@@ -305,12 +343,15 @@ function InvoicePageScreen() {
               discount={Number(inv.discount_amount)}
               subtotal={Number(inv.subtotal)}
               canEditDiscount={draft}
-              canChangePromo={!isVoid && !fromStripe && inv.payments.length === 0 && ["draft", "sent", "overdue"].includes(inv.status)}
+              // Not while a bank payment clears: the client is paying what Stripe asked for (the database says why).
+              // One code to an invoice: one with its job's code on a line takes no other.
+              canChangePromo={!isVoid && !fromStripe && !bank && inv.payments.length === 0 && ["draft", "sent", "overdue"].includes(inv.status) && (Boolean(inv.promo) || !promoJobId)}
               onSaveDiscount={(v) => saveField({ discount_amount: v })}
               onEditDiscount={save.edited}
               onUnchangedDiscount={unchanged}
               onChanged={refresh}
             />
+            <ReferralCredits invoice={inv} onChanged={refresh} />
             <div className="line">
               <span>Tax {draft ? "" : `(${formatTaxRate(inv.tax_rate)})`}</span>
               {draft ? <MoneyInput percent label="Tax rate" value={taxPercent(inv.tax_rate)} max={99.99} onSave={(v) => saveField({ tax_rate: taxRateFromPercent(v) })} onEdit={save.edited} onUnchanged={unchanged} /> : <AnimatedNumber value={Number(inv.tax_amount)} format={MONEY_CENTS} />}
@@ -348,7 +389,7 @@ function InvoicePageScreen() {
         </aside>
       </div>
 
-      {dialog === "send" && <SendDialog kind="invoice" id={inv.id} number={inv.number} email={inv.client?.email ?? null} phone={inv.client?.phone ?? null} onClose={() => setDialog(null)} onSent={refresh} />}
+      {dialog === "send" && <SendDialog kind="invoice" id={inv.id} number={inv.number} email={inv.client?.email ?? null} phone={inv.client?.phone ?? null} textsOffSince={inv.client?.sms_opt_out_at} onClose={() => setDialog(null)} onSent={refresh} />}
       {dialog === "payment" && <PaymentDialog invoice={{ id: inv.id, client_id: inv.client_id, balance, draft }} bank={bankNote} onClose={() => setDialog(null)} onSaved={refresh} />}
       {refunding && <RefundDialog invoice={{ id: inv.id, client_id: inv.client_id }} payment={refunding} left={refundable(refunding, inv.payments)} onClose={() => setRefunding(null)} onSaved={refresh} />}
     </>

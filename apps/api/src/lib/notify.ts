@@ -20,6 +20,8 @@ export interface SendResult {
   reason?: string;
   /** The provider's HTTP status when it turned the email down: 401/403 is the key, 429 a limit. */
   status?: number;
+  /** Twilio's error code when it refused a text: 21610 is a number that texted STOP. */
+  code?: number;
 }
 
 export interface EmailMessage {
@@ -239,6 +241,8 @@ export function resendProblem(status: number, message: string): string {
   if (/monthly .*quota/i.test(message)) {
     return "This Resend account has reached its monthly sending limit (3,000 emails on the free plan). Upgrade the Resend plan to keep sending this month.";
   }
+  // A bounced address, not Resend's: said so, not in Resend's own words (an ask to a client's typo).
+  if (status === 422 && /`to`|\bto\b field/i.test(message)) return "That email address isn't valid, so Resend didn't send it.";
   if (status === 429) return "Resend got too many emails at once. Try again in a minute.";
   if (status >= 500) return "Resend is having trouble right now. Try again in a few minutes.";
   return `Resend refused it (${status}${message ? `: ${message}` : ""}).`;
@@ -272,7 +276,7 @@ export async function sendSms(env: Env, message: { to: string; body: string }): 
     const digits = message.to.replace(/[^0-9]/g, "") || "unknown";
     return mailpit(env, { to: `sms-${digits}@sms.local`, subject: `Text to ${message.to}`, text: message.body });
   }
-  if (!sid || !token || !from) return { sent: false, reason: "Text messaging isn't set up (TWILIO_*)." };
+  if (!sid || !token || !from) return { sent: false, reason: "Texting isn't set up on this Crewtavo yet." };
   const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
     method: "POST",
     headers: { Authorization: `Basic ${btoa(`${sid}:${token}`)}`, "Content-Type": "application/x-www-form-urlencoded" },
@@ -281,8 +285,12 @@ export async function sendSms(env: Env, message: { to: string; body: string }): 
   }).catch(() => null);
   if (!response) return { sent: false, reason: "Couldn't reach the text provider. Try again." };
   if (!response.ok) {
-    const detail = (await response.json().catch(() => ({}))) as { message?: string };
-    return { sent: false, reason: `The text provider refused it (${response.status}${detail.message ? `: ${detail.message}` : ""}).` };
+    const detail = (await response.json().catch(() => ({}))) as { message?: string; code?: number };
+    return {
+      sent: false,
+      reason: `The text provider refused it (${response.status}${detail.message ? `: ${detail.message}` : ""}).`,
+      ...(typeof detail.code === "number" ? { code: detail.code } : {}),
+    };
   }
   const body = (await response.json().catch(() => ({}))) as { sid?: string };
   return { sent: true, id: body.sid };

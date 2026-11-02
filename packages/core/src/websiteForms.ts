@@ -3,9 +3,11 @@
  * /f/<key> on its Crewtavo, the way Formspree works (apps/api/src/routes/websiteForms.ts). Fields
  * are read here by their names, in the usual spellings of each: name, email, phone, company and
  * address go on the client and property, message on the request, and every other field comes along
- * as an answer under its own name. Formspree's own fields work the same, so a form moves over by
- * changing its action: _gotcha (left empty by people, filled in by bots), _subject, _next and
- * _replyto. Other fields that start with _ are instructions, never answers.
+ * as an answer under its own name. A promo code (promo, promo_code, promocode, coupon, coupon_code or
+ * discount_code, in any case, with spaces or dashes) is checked as one too, and stays an answer.
+ * Formspree's own fields work the same, so a form moves over by changing its action: _gotcha (left
+ * empty by people, filled in by bots), _subject, _next and _replyto. Other fields that start with _
+ * are instructions, never answers.
  */
 import { emailKey } from "./email";
 
@@ -20,7 +22,7 @@ export const MAX_FIELDS = 60;
 export const MAX_VALUE = 5000;
 export const MAX_TOTAL = 50_000;
 
-export type Role = "name" | "first" | "last" | "email" | "phone" | "company" | "line1" | "line2" | "city" | "region" | "postal_code" | "message";
+export type Role = "name" | "first" | "last" | "email" | "phone" | "company" | "line1" | "line2" | "city" | "region" | "postal_code" | "message" | "promo";
 
 // Spellings as they're compared: lower-case, letters and digits only ("E-mail Address" is emailaddress).
 const SPELLINGS: Record<Role, string[]> = {
@@ -36,6 +38,7 @@ const SPELLINGS: Record<Role, string[]> = {
   region: ["state", "province", "region"],
   postal_code: ["zip", "zipcode", "postalcode", "postcode", "postal"],
   message: ["message", "comments", "comment", "details", "inquiry", "enquiry", "question", "questions", "notes", "yourmessage", "description", "body", "msg", "projectdetails"],
+  promo: ["promo", "promocode", "coupon", "couponcode", "discountcode"],
 };
 const ROLE_OF = new Map<string, Role>(Object.entries(SPELLINGS).flatMap(([role, names]) => names.map((n) => [n, role as Role])));
 /** Captcha answers other form services' widgets add. */
@@ -62,6 +65,8 @@ export interface Submission {
   next: string | null;
   /** _gotcha filled in: a bot. Treated as sent, and nothing is kept. */
   bot: boolean;
+  /** The first promo code field, trimmed, to check as a code. It stays among the answers too. */
+  promo: string | null;
   /** Every field people filled in, in the order the form sent them (for the email). */
   fields: Array<[string, FieldValue]>;
   /** The fields that aren't the client, the property or the message, under their own names. */
@@ -167,6 +172,7 @@ export function readSubmission(fields: Array<[string, FieldValue]>): ReadResult 
       subject,
       next,
       bot,
+      promo: found.promo?.slice(0, 40) || null,
       fields: kept,
       answers,
       contact,
@@ -221,8 +227,18 @@ export function fieldLabel(name: string): string {
   return label ? label.charAt(0).toUpperCase() + label.slice(1) : name;
 }
 
+/** What became of a message's promo code: ready to apply (no problem), or why it wasn't applied. */
+export type PromoResult = { code: string; problem: string | null } | null;
+
+/** The office email's line for a message's promo code. */
+export function promoLine(promo: PromoResult): string | null {
+  if (!promo) return null;
+  if (!promo.problem) return `Promo code ${promo.code}, ready to apply on the quote.`;
+  return `Promo code ${promo.code} wasn't applied: ${promo.problem.charAt(0).toLowerCase()}${promo.problem.slice(1)}`;
+}
+
 /** The email the people a form names get for each message: its subject and words (lib/email.ts renders them). */
-export function messageEmail(input: { formName: string; submission: Submission; link: string }): { subject: string; text: string } {
+export function messageEmail(input: { formName: string; submission: Submission; link: string; promo?: PromoResult }): { subject: string; text: string } {
   const { submission: s, formName, link } = input;
   const who = s.name ?? s.email ?? s.phone ?? "someone";
   const short: string[] = [];
@@ -239,14 +255,18 @@ export function messageEmail(input: { formName: string; submission: Submission; 
       `New message from your website's ${formName}.`,
       short.join("\n"),
       ...long,
+      promoLine(input.promo ?? null),
       link,
       s.email ? `Reply to this email to answer ${first || "them"}.` : null,
     ].filter(Boolean).join("\n\n"),
   };
 }
 
-/** A form to start from: paste it into the website and it works. */
-export function exampleForm(action: string): string {
+/**
+ * A form to start from: paste it into the website and it works. `promo`: a promo code box too, for a
+ * business that has codes (an empty box sends visitors looking for one).
+ */
+export function exampleForm(action: string, options: { promo?: boolean } = {}): string {
   return [
     `<form action="${action}" method="POST">`,
     `  <label>Name <input type="text" name="name" autocomplete="name" required></label>`,
@@ -254,6 +274,7 @@ export function exampleForm(action: string): string {
     `  <label>Phone <input type="tel" name="phone" autocomplete="tel"></label>`,
     `  <label>Address <input type="text" name="address" autocomplete="street-address"></label>`,
     `  <label>Message <textarea name="message" rows="5" required></textarea></label>`,
+    ...(options.promo ? [`  <label>Promo code <input type="text" name="promo" autocomplete="off"></label>`] : []),
     `  <!-- Keeps bots out. Leave it here, hidden. -->`,
     `  <input type="text" name="_gotcha" style="display:none" tabindex="-1" autocomplete="off">`,
     `  <button type="submit">Send</button>`,

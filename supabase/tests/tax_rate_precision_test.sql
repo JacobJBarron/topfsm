@@ -68,8 +68,12 @@ commit;
 
 -- ===== The upgrade leaves what's stored as it was ================================================
 -- Put the columns back the way a live instance had them, store rates there, and widen them again
--- as 20261019001000_tax_rate_precision.sql does. All rolled back.
+-- as 20261019001000_tax_rate_precision.sql does. All rolled back. Referral credits and promo
+-- discounts follow invoices at commit (20261031000100_referral_credits.sql,
+-- 20261031000600_promo_once_per_job.sql), and a column can't change while that waits, so here every
+-- trigger that waits for commit fires as each statement ends, as scripts/migrate.mjs has them.
 begin;
+set constraints all immediate;
 alter table public.quotes alter column tax_rate type numeric(6, 4);
 alter table public.invoices alter column tax_rate type numeric(6, 4);
 set local role authenticated;

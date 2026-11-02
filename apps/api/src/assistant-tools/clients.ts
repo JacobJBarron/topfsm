@@ -22,7 +22,8 @@ const clientFields = {
   lead_source: optional(80),
   notes: optional(4000),
   billing_address: address.nullable().optional(),
-  marketing_opt_out: z.boolean().optional().describe("True: no marketing emails or texts."),
+  marketing_opt_out: z.boolean().optional().describe("True: no marketing emails or texts, and no review requests."),
+  review_opt_out: z.boolean().optional().describe("True: don't ask them for reviews."),
 };
 
 const propertyFields = {
@@ -54,6 +55,7 @@ function clientRow(a: z.infer<z.ZodObject<typeof clientFields>>) {
     ...(a.notes !== undefined && { notes: a.notes || null }),
     ...(a.billing_address !== undefined && { billing_address: (a.billing_address ?? {}) as never }),
     ...(a.marketing_opt_out !== undefined && { marketing_opt_out: a.marketing_opt_out }),
+    ...(a.review_opt_out !== undefined && { review_opt_out: a.review_opt_out }),
   };
 }
 

@@ -148,6 +148,50 @@ select wft.expect_error($q$select public.website_form_request('00000000-0000-000
 select wft.check((select count(*) = 4 from public.requests where website_form_id = :'form'), 'four requests from the form');
 commit;
 
+-- ===== Promo codes (20261031000620_website_form_promo.sql) ===================================
+insert into public.promo_codes (company_id, code, kind, value, ends_on, once_per_client, new_clients_only) values
+  (:'co', 'SPRING15', 'percent', 15, null, true, false),
+  (:'co', 'OLD10', 'amount', 10, current_date - 30, true, false),
+  (:'co', 'WELCOME20', 'amount', 20, null, true, true),
+  (:'co', 'ONCE5', 'amount', 5, null, true, false),
+  (:'co', 'LONGSPRINGSPECIAL-2026-X', 'amount', 5, null, false, false);
+-- Carla has had work done, and has used ONCE5 on a quote.
+insert into public.jobs (company_id, client_id, title) values (:'co', :'carla', 'Gutters');
+insert into public.quotes (company_id, client_id, title, status, promo_code_id)
+select :'co', :'carla', 'Gutters', 'sent', id from public.promo_codes where company_id = :'co' and code = 'ONCE5';
+
+begin;
+set local role service_role;
+select public.website_form_request(p_form => :'form', p_name => 'Fay New', p_email => 'fay@new.test', p_details => 'Spring cleanup?',
+  p_answers => '{"Promo Code": " spring 15 "}', p_promo => ' spring 15 ') as sent \gset
+select wft.check(:'sent'::jsonb ->> 'promo_code' = 'SPRING15' and :'sent'::jsonb -> 'promo_problem' = 'null', 'a valid code, in any case and with spaces, is ready for the quote');
+select wft.check((select promo_code = 'SPRING15' and rejected_promo_code is null and answers = '{"Promo Code": " spring 15 "}' from public.requests where id = (:'sent'::jsonb ->> 'request_id')::uuid),
+  'kept as the code is spelled, with what was typed still among the answers');
+
+select public.website_form_request(p_form => :'form', p_name => 'Gil New', p_email => 'gil@new.test', p_promo => 'old10') as sent \gset
+select wft.check((select promo_code is null and rejected_promo_code = 'old10' and promo_problem = 'That code expired on ' || to_char(current_date - 30, 'FMMonth FMDD') || '.'
+                    from public.requests where id = (:'sent'::jsonb ->> 'request_id')::uuid), 'an expired code keeps the request, and says why it wasn''t applied');
+select public.website_form_request(p_form => :'form', p_name => 'Hal New', p_email => 'hal@new.test', p_promo => 'NOPE') as sent \gset
+select wft.check(:'sent'::jsonb ->> 'promo_problem' = 'There''s no active code with that name.' and :'sent'::jsonb ->> 'rejected_promo_code' = 'NOPE',
+  'an unknown code is said in the office''s words');
+
+select public.website_form_request(p_form => :'form', p_name => 'Ivy New', p_email => 'ivy@new.test', p_promo => 'welcome20') as sent \gset
+select wft.check(:'sent'::jsonb ->> 'promo_code' = 'WELCOME20', 'a new customers'' code works for a new lead');
+select public.website_form_request(p_form => :'form', p_name => 'Carla', p_email => 'carla@home.test', p_promo => 'WELCOME20') as sent \gset
+select wft.check((:'sent'::jsonb ->> 'client_id')::uuid = :'carla' and :'sent'::jsonb ->> 'promo_problem' = 'That code is for new customers, and this client has worked with you before.',
+  'and not for a client who''s had work done');
+select public.website_form_request(p_form => :'form', p_name => 'Carla', p_email => 'carla@home.test', p_promo => 'once5') as sent \gset
+select wft.check(:'sent'::jsonb ->> 'promo_problem' = 'This client has already used that code.' and :'sent'::jsonb -> 'promo_code' = 'null',
+  'a code each client uses once, used already');
+
+select public.website_form_request(p_form => :'form', p_name => 'Jo New', p_email => 'jo@new.test', p_promo => '  Long Spring Special-2026-X ') as sent \gset
+select wft.check(:'sent'::jsonb ->> 'promo_code' = 'LONGSPRINGSPECIAL-2026-X', 'a long code typed with spaces is kept as the code, which fits');
+select public.website_form_request(p_form => :'form', p_name => 'Kit New', p_email => 'kit@new.test', p_promo => repeat('Z', 300)) as sent \gset
+select wft.check((select char_length(rejected_promo_code) = 40 and promo_problem is not null from public.requests where id = (:'sent'::jsonb ->> 'request_id')::uuid),
+  'anything far too long is cut to 40 characters, and the request is still made');
+select wft.check((select count(*) = 12 from public.requests where website_form_id = :'form'), 'every message became a request, codes or not');
+commit;
+
 -- ===== Deleting a form keeps its requests ======================================================
 begin;
 set local role authenticated;

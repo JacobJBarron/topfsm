@@ -46,6 +46,20 @@ const SUB_VARIABLES = [
 
 export const TRIGGERS: TriggerDef[] = [
   { verb: "client.created", label: "A client is added", group: "Clients", subject: "client", delayable: true },
+  // Checked each morning from 10, in the company's time zone, for each rule on it (Marketing →
+  // Campaigns' Re-engage past clients, supabase/migrations/20261031000200_automated_campaigns.sql).
+  // How many days is the rule's own days_since_visit condition.
+  // Its {{title}} is only the client's name again, so the token isn't offered.
+  { verb: "client.inactive", label: "A client hasn't had a visit in a while", group: "Clients", subject: "client", delayable: false, hides: ["title"] },
+  // On the client who referred a friend, once the friend pays their first invoice (Marketing → Referrals).
+  {
+    verb: "referral.earned", label: "A client earns a referral credit", group: "Clients", subject: "client", delayable: true,
+    variables: [
+      { token: "referral.name", label: "Friend's first name" },
+      { token: "referral.credit", label: "Their credit" },
+      { token: "referral.invoice", label: "Invoice the credit went on" },
+    ],
+  },
   { verb: "request.created", label: "A request comes in", group: "Requests", subject: "request", delayable: true },
   { verb: "quote.sent", label: "A quote is sent", group: "Quotes", subject: "quote", delayable: true },
   { verb: "quote.approved", label: "A quote is approved", group: "Quotes", subject: "quote", delayable: true },
@@ -54,6 +68,10 @@ export const TRIGGERS: TriggerDef[] = [
   { verb: "quote.lost", label: "A quote is marked lost", group: "Quotes", subject: "quote", delayable: true },
   { verb: "job.created", label: "A job is created", group: "Jobs", subject: "job", delayable: true },
   { verb: "job.completed", label: "A job is completed", group: "Jobs", subject: "job", delayable: true },
+  // A recurring job stays active, so it's never "completed": the visit chosen in Marketing → Reviews
+  // stands in, once (settings.reviews.recurring_after_visits, 3 unless changed). The verb keeps its
+  // old name so rules that name it keep working (20261030000400_recurring_review_visits.sql).
+  { verb: "job.recurring_third_visit", label: "A recurring job reaches the visit set in Marketing", group: "Jobs", subject: "job", delayable: true },
   { verb: "visit.reminder", label: "A visit is tomorrow", group: "Visits", subject: "visit", delayable: false },
   { verb: "visit.en_route", label: "A crew is on the way", group: "Visits", subject: "visit", delayable: false },
   { verb: "visit.started", label: "A visit starts", group: "Visits", subject: "visit", delayable: false },
@@ -94,7 +112,7 @@ export interface Condition {
 export interface ConditionFieldDef {
   field: string;
   label: string;
-  kind: "status" | "tags" | "text" | "money" | "choice";
+  kind: "status" | "tags" | "text" | "money" | "choice" | "days";
   ops: ConditionOp[];
   subjects: SubjectKind[] | "all";
   choices?: Array<{ value: string; label: string }>;
@@ -129,6 +147,8 @@ export const CONDITION_FIELDS: ConditionFieldDef[] = [
   { field: "client.status", label: "Client status", kind: "choice", ops: ["equals", "not_equals"], subjects: "all", choices: STATUS_CHOICES.client },
   { field: "client.lead_source", label: "Client lead source", kind: "text", ops: ["equals", "contains", "not_equals"], subjects: "all" },
   { field: "amount", label: "Total", kind: "money", ops: ["gte", "lte"], subjects: ["quote", "job", "invoice"] },
+  // What the client paid: an invoice a referral credit covered whole (or a 100%-off promo) is paid with $0.00 of it.
+  { field: "amount_paid", label: "Amount paid", kind: "money", ops: ["gte", "lte"], subjects: ["invoice"] },
   { field: "line_items", label: "Line items", kind: "text", ops: ["contains"], subjects: ["quote", "job", "invoice"] },
   {
     field: "source", label: "Where the request came from", kind: "choice", ops: ["equals", "in", "not_equals"], subjects: ["request"],
@@ -142,6 +162,17 @@ export const CONDITION_FIELDS: ConditionFieldDef[] = [
     field: "kind", label: "Type", kind: "choice", ops: ["equals", "not_equals"], subjects: ["job", "visit"],
     choices: [{ value: "one_off", label: "One-off job" }, { value: "recurring", label: "Recurring job" }, { value: "job", label: "Job visit" }, { value: "assessment", label: "Assessment" }, { value: "task", label: "Task" }],
   },
+  // The job a visit or invoice is on: Marketing → Reviews leaves recurring work to its own rule.
+  {
+    field: "job_kind", label: "Job type", kind: "choice", ops: ["equals", "not_equals"], subjects: ["visit", "invoice"],
+    choices: [{ value: "one_off", label: "One-off job" }, { value: "recurring", label: "Recurring job" }],
+  },
+  {
+    field: "invoice_kind", label: "Invoice type", kind: "choice", ops: ["equals", "not_equals"], subjects: ["invoice"],
+    choices: [{ value: "standard", label: "Standard" }, { value: "deposit", label: "Deposit" }, { value: "progress", label: "Progress billing" }, { value: "visits", label: "Visits" }],
+  },
+  // A client's last completed job visit or assessment, counted in the company's own days.
+  { field: "days_since_visit", label: "Days since their last visit", kind: "days", ops: ["gte"], subjects: ["client"] },
 ];
 
 export const OP_LABELS: Record<ConditionOp, string> = {
@@ -161,9 +192,17 @@ export const fieldsFor = (subject: SubjectKind) => CONDITION_FIELDS.filter((f) =
 export interface Facts {
   status?: string | null;
   amount?: number | null;
+  /** What an invoice has been paid (0 for one a referral credit covered whole). */
+  amount_paid?: number | null;
   source?: string | null;
   kind?: string | null;
+  /** The kind of job a visit or invoice is on (one_off, recurring), and the job's own. */
+  job_kind?: string | null;
+  /** An invoice's kind: standard, deposit, progress or visits. */
+  invoice_kind?: string | null;
   line_items?: string[];
+  /** Days since the client's last completed visit, or null when they've had none. */
+  days_since_visit?: number | null;
   client?: { tags?: string[]; status?: string | null; lead_source?: string | null } | null;
 }
 
@@ -216,6 +255,7 @@ function valueLabel(condition: Condition, subject: SubjectKind): string {
   const choices = def?.kind === "status" ? STATUS_CHOICES[subject] : def?.choices;
   const one = (v: string) => choices?.find((c) => c.value === v)?.label ?? v;
   if (def?.kind === "money") return `$${Number(condition.value).toLocaleString("en-US")}`;
+  if (def?.kind === "days") return `${Number(condition.value).toLocaleString("en-US")} ${Number(condition.value) === 1 ? "day" : "days"}`;
   if (Array.isArray(condition.value)) return condition.value.map(one).join(", ");
   return one(String(condition.value));
 }
@@ -238,7 +278,8 @@ export type Action =
   | { type: "remove_tag"; tag: string }
   | { type: "add_note"; body: string }
   | { type: "create_task"; title: string; days_from_now: number }
-  | { type: "request_review"; channel: "email" | "sms" }
+  | { type: "request_review"; channel: "email" | "sms" | "both" }
+  | { type: "request_referral" }
   | { type: "update_status"; status: string };
 
 export type ActionType = Action["type"];
@@ -252,6 +293,7 @@ export const ACTIONS: Array<{ type: ActionType; label: string; description: stri
   { type: "add_note", label: "Add a note to the client", description: "An internal note on the client's timeline.", subjects: "all" },
   { type: "create_task", label: "Create a task", description: "A task on the schedule for the office.", subjects: "all" },
   { type: "request_review", label: "Ask for a Google review", description: "Sends your review link (set it in Marketing).", subjects: "all" },
+  { type: "request_referral", label: "Ask for referrals", description: "Emails the client their referral link (set it up in Marketing).", subjects: "all" },
   { type: "update_status", label: "Change the status", description: "Archive a quote or request automatically.", subjects: ["quote", "request"] },
 ];
 
@@ -288,7 +330,9 @@ export const TEMPLATE_VARIABLES: Array<{ token: string; label: string; subjects:
   { token: "title", label: "Title", subjects: "all" },
   { token: "total", label: "Total", subjects: ["quote", "job", "invoice"] },
   { token: "balance", label: "Balance due", subjects: ["invoice"] },
-  { token: "link", label: "Client link", subjects: ["quote", "invoice"] },
+  // A quote's or invoice's Client Hub page, or for a client the Hub's home, where they can ask for work.
+  { token: "link", label: "Client Hub link", subjects: ["client", "quote", "invoice"] },
+  { token: "last_visit", label: "Last visit date", subjects: ["client"] },
   { token: "date", label: "Visit date", subjects: ["visit"] },
   { token: "time", label: "Visit time", subjects: ["visit"] },
   { token: "address", label: "Address", subjects: ["visit", "request", "quote", "job"] },
@@ -370,6 +414,12 @@ export function validateRule(rule: RuleShape): string[] {
   if (rule.delay_minutes < 0 || rule.delay_minutes > 525_600) errors.push("The wait must be between 0 minutes and a year.");
   if (!rule.actions.length) errors.push("Add at least one action.");
   if (rule.actions.length > 10) errors.push("A rule can have at most 10 actions.");
+  if (rule.trigger === "client.inactive") {
+    const days = rule.conditions.filter((c) => c.field === "days_since_visit" && c.op === "gte");
+    if (!days.length || days.some((c) => !Number.isInteger(Number(c.value)) || Number(c.value) < 30 || Number(c.value) > 730)) {
+      errors.push("Say how many days without a visit, from 30 to 730.");
+    }
+  }
   rule.conditions.forEach((c, i) => {
     const value = Array.isArray(c.value) ? c.value.join("") : String(c.value ?? "");
     if (!value.trim()) errors.push(`Condition ${i + 1} needs a value.`);
@@ -427,7 +477,9 @@ export function describeAction(action: Action): string {
     case "create_task":
       return `Create a task${action.days_from_now ? ` due in ${action.days_from_now} ${action.days_from_now === 1 ? "day" : "days"}` : ""}`;
     case "request_review":
-      return `Ask for a review by ${action.channel === "sms" ? "text" : "email"}`;
+      return `Ask for a review by ${action.channel === "both" ? "text and email" : action.channel === "sms" ? "text" : "email"}`;
+    case "request_referral":
+      return "Ask for referrals by email";
     case "update_status":
       return action.status === "lost" ? "Mark it lost" : "Archive it";
   }

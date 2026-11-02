@@ -14,6 +14,7 @@ export function Dialog({
   title,
   description,
   size = "md",
+  focusField = true,
   className,
   children,
 }: {
@@ -24,6 +25,8 @@ export function Dialog({
   title: string;
   description?: ReactNode;
   size?: "sm" | "md" | "lg" | "xl";
+  /** False when its first field isn't where to start (a composer that starts with picking photos). */
+  focusField?: boolean;
   className?: string;
   children: ReactNode;
 }) {
@@ -51,7 +54,7 @@ export function Dialog({
       announceTopLayer();
       // Start typing straight away on desktop; on phones don't pop the keyboard over the sheet.
       const finePointer = window.matchMedia("(pointer: fine)").matches;
-      const target = finePointer
+      const target = finePointer && focusField
         ? bodyRef.current?.querySelector<HTMLElement>('[autofocus], input:not([type="hidden"]):not([disabled]):not([type="checkbox"]):not([type="radio"]), textarea:not([disabled]), select:not([disabled])')
         : null;
       (target ?? dialog).focus({ preventScroll: true });

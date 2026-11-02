@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cleanFields, exampleForm, fieldLabel, MAX_VALUE, messageEmail, readSubmission, siteAllowed, siteHost, webAddress, type FieldValue } from "../src/websiteForms";
+import { cleanFields, exampleForm, fieldLabel, fieldRole, MAX_VALUE, messageEmail, promoLine, readSubmission, siteAllowed, siteHost, webAddress, type FieldValue } from "../src/websiteForms";
 
 const read = (entries: Array<[string, unknown]>) => {
   const cleaned = cleanFields(entries);
@@ -117,7 +117,31 @@ describe("reading a message", () => {
     const names = [...exampleForm("https://crm.example.com/f/abc123def0").matchAll(/name="([^"]+)"/g)].map((m) => m[1]!);
     expect(names).toEqual(["name", "email", "phone", "address", "message", "_gotcha"]);
     const s = submission(names.filter((n) => n !== "_gotcha").map((n) => [n, n === "email" ? "jane@example.com" : `my ${n}`] as [string, FieldValue]));
-    expect(s).toMatchObject({ name: "my name", email: "jane@example.com", phone: null, address: { line1: "my address" }, message: "my message", answers: { phone: "my phone" } });
+    expect(s).toMatchObject({ name: "my name", email: "jane@example.com", phone: null, address: { line1: "my address" }, message: "my message", answers: { phone: "my phone" }, promo: null });
+  });
+
+  it("offers a promo code box in the example form only to a business with codes", () => {
+    const form = exampleForm("https://crm.example.com/f/abc123def0", { promo: true });
+    const names = [...form.matchAll(/name="([^"]+)"/g)].map((m) => m[1]!);
+    expect(names).toEqual(["name", "email", "phone", "address", "message", "promo", "_gotcha"]);
+    expect(form).toContain(`<label>Promo code <input type="text" name="promo" autocomplete="off"></label>`);
+    expect(submission([["email", "jane@example.com"], ["promo", "SPRING15"]]).promo).toBe("SPRING15");
+    expect(exampleForm("https://crm.example.com/f/abc123def0", { promo: false })).not.toContain("promo");
+  });
+
+  it("reads a promo code in its usual spellings, whatever the case, spaces or dashes", () => {
+    for (const name of ["promo", "Promo Code", "promo_code", "PROMOCODE", "coupon", "Coupon-Code", "coupon_code", "Discount Code", "discount-code"]) {
+      expect(fieldRole(name)).toBe("promo");
+      expect(submission([["email", "j@x.co"], [name, "  spring15 "]]).promo).toBe("spring15");
+    }
+    expect(fieldRole("discount")).toBeUndefined();
+  });
+
+  it("keeps the first promo field, and every one stays an answer so nothing typed is lost", () => {
+    const s = submission([["email", "j@x.co"], ["coupon", "FIRST10"], ["promo", "SECOND"], ["message", "Hi"]]);
+    expect(s.promo).toBe("FIRST10");
+    expect(s.answers).toEqual({ coupon: "FIRST10", promo: "SECOND" });
+    expect(submission([["email", "j@x.co"], ["promo", "X".repeat(80)]]).promo).toBe("X".repeat(40));
   });
 });
 
@@ -166,6 +190,24 @@ describe("the email for a message", () => {
       ].join("\n\n"),
     );
     expect(messageEmail({ formName: "Quote form", submission: { ...s, subject: "Quote please" }, link: "x" }).subject).toBe("Quote please");
+  });
+
+  it("says what became of a promo code, in the office's words", () => {
+    const s = submission([["name", "Jane Smith"], ["email", "jane@example.com"], ["Promo Code", "spring15"]]);
+    const ready = messageEmail({ formName: "Contact form", submission: s, link: "https://crm.example.com/requests/r1", promo: { code: "SPRING15", problem: null } });
+    expect(ready.text).toBe(
+      [
+        "New message from your website's Contact form.",
+        "Name: Jane Smith\nEmail: jane@example.com\nPromo code: spring15",
+        "Promo code SPRING15, ready to apply on the quote.",
+        "https://crm.example.com/requests/r1",
+        "Reply to this email to answer Jane.",
+      ].join("\n\n"),
+    );
+    const refused = messageEmail({ formName: "Contact form", submission: s, link: "x", promo: { code: "OLD10", problem: "That code expired on October 1." } });
+    expect(refused.text).toContain("\n\nPromo code OLD10 wasn't applied: that code expired on October 1.\n\nx");
+    expect(promoLine(null)).toBeNull();
+    expect(messageEmail({ formName: "Contact form", submission: s, link: "x" }).text).not.toContain("Promo code ");
   });
 
   it("names fields the way people say them", () => {

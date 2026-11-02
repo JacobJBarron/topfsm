@@ -622,6 +622,28 @@ describe("the signed copy", () => {
     expect(state.tables.messages).toEqual([expect.objectContaining({ channel: "sms", subject: "Signed estimate #1042", related_type: "quote", related_id: QUOTE })]);
   });
 
+  it("isn't texted to a client who texted STOP, but goes to another number", async () => {
+    roofer({ status: "approved", approval: { name: "Alex Morgan", signature: HOMEOWNER } });
+    state.tables.clients = [{ id: CLIENT, company_id: ROOFER, display_name: "Alex Morgan", phone: "(614) 555-0142", sms_opt_out_at: "2026-10-01T12:00:00.000Z" }];
+    const res = await call(`/quotes/${QUOTE}/send-copy`, { channel: "sms" });
+    expect(await res.json()).toEqual({ sent: false, reason: "Alex Morgan texted STOP, so texts to them are off. Send it by email instead.", link: expect.any(String) });
+    expect(sendSms).not.toHaveBeenCalled();
+    expect(await (await call(`/quotes/${QUOTE}/send-copy`, { channel: "sms", to: "614-555-0199" })).json()).toMatchObject({ sent: true });
+    expect(sendSms.mock.calls[0]![1].to).toBe("614-555-0199");
+  });
+
+  it("learns that the client's own phone texted STOP when Twilio says so, and only theirs", async () => {
+    roofer({ status: "approved", approval: { name: "Alex Morgan", signature: HOMEOWNER } });
+    const alex = { id: CLIENT, company_id: ROOFER, display_name: "Alex Morgan", phone: "(614) 555-0142", sms_opt_out_at: null as string | null };
+    state.tables.clients = [alex];
+    sendSms.mockImplementationOnce(async () => ({ sent: false, reason: "The text provider refused it (400).", code: 21610 }));
+    await call(`/quotes/${QUOTE}/send-copy`, { channel: "sms", to: "614-555-0199" });
+    expect(alex.sms_opt_out_at).toBeNull();
+    sendSms.mockImplementationOnce(async () => ({ sent: false, reason: "The text provider refused it (400).", code: 21610 }));
+    expect(await (await call(`/quotes/${QUOTE}/send-copy`, { channel: "sms" })).json()).toMatchObject({ sent: false });
+    expect(typeof alex.sms_opt_out_at).toBe("string");
+  });
+
   it("emails it to another address when asked", async () => {
     roofer({ status: "converted", approval: { name: "Alex Morgan", signature: HOMEOWNER } });
     const res = await call(`/quotes/${QUOTE}/send-copy`, { channel: "email", to: "alex.work@example.com" });

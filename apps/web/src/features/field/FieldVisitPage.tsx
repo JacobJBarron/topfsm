@@ -23,7 +23,7 @@ import { PageError } from "@/components/ui/States";
 import { EntityStatus, StatusPill } from "@/components/ui/StatusPill";
 import { supabase, unwrap, unwrapOne } from "@/lib/api";
 import { errorMessage, isAuthError } from "@/lib/errors";
-import { signedUrls, uploadFile } from "@/lib/files";
+import { signedUrls, storedType, uploadFile } from "@/lib/files";
 import { addressLine, formatDateTime, timeAgo } from "@/lib/format";
 import { useListAnimation } from "@/lib/motion";
 import { FIELD_SCOPE } from "@/lib/offline";
@@ -31,6 +31,7 @@ import { hasRole, isSub, keepsTime, useSession } from "@/lib/session";
 import { startTask } from "@/lib/tasks";
 import { toast } from "@/lib/toast";
 import { IN_TRASH } from "../drive/trash";
+import { ShareToggle, shareToggleState } from "../marketing/ShareToggle";
 import { undoable } from "@/lib/undo";
 import { ExpenseDialog } from "../jobs/ExpensesCard";
 import { MaterialsCard } from "../jobs/JobMaterials";
@@ -76,7 +77,7 @@ export function FieldVisitPage() {
       const row = unwrapOne(
         await supabase()
           .from("visits")
-          .select("id, title, kind, status, starts_at, ends_at, scheduled_on, notes, hold_reason, completed_at, series_day, series_total, equipment:visit_equipment(equipment:equipment(id, name, kind)), job:jobs(id, number, title, instructions, property_id, client:clients(display_name, phone)), request:requests(id, title, details, client:clients(display_name, phone)), property:properties(id, line1, city, region, postal_code, lat, lng, notes)")
+          .select("id, title, kind, status, starts_at, ends_at, scheduled_on, notes, hold_reason, completed_at, series_day, series_total, equipment:visit_equipment(equipment:equipment(id, name, kind)), job:jobs(id, number, title, instructions, property_id, client:clients(display_name, phone, social_photos_opt_out)), request:requests(id, title, details, client:clients(display_name, phone, social_photos_opt_out)), property:properties(id, line1, city, region, postal_code, lat, lng, notes)")
           .eq("id", id)
           .maybeSingle(),
         "This visit",
@@ -260,7 +261,8 @@ export function FieldVisitPage() {
         </section>
       )}
 
-      <VisitWork visitId={v.id} visitStatus={v.status} checklist={checklist} onProgress={setProgress} jobId={v.job && !sub ? v.job.id : null} />
+      <VisitWork visitId={v.id} visitStatus={v.status} checklist={checklist} onProgress={setProgress} jobId={v.job && !sub ? v.job.id : null}
+        clientOptOut={Boolean(v.job?.client?.social_photos_opt_out ?? v.request?.client?.social_photos_opt_out)} />
 
       <section className="card card-pad stack-sm">
         <div className="row-between">
@@ -291,13 +293,13 @@ export function FieldVisitPage() {
 }
 
 /** The checklist, materials and photos, sharing the visit's photos (a checklist item can ask for them). */
-function VisitWork({ visitId, visitStatus, checklist, onProgress, jobId }: { visitId: string; visitStatus: string; checklist: RefObject<ChecklistHandle>; onProgress: (p: ChecklistProgress | null | undefined) => void; jobId: string | null }) {
+function VisitWork({ visitId, visitStatus, checklist, onProgress, jobId, clientOptOut }: { visitId: string; visitStatus: string; checklist: RefObject<ChecklistHandle>; onProgress: (p: ChecklistProgress | null | undefined) => void; jobId: string | null; clientOptOut: boolean }) {
   const photos = useVisitPhotos(visitId);
   return (
     <>
       <Checklist ref={checklist} visitId={visitId} visitStatus={visitStatus} photos={photos} onProgress={onProgress} />
       {jobId && <MaterialsCard jobId={jobId} visitId={visitId} compact />}
-      <Photos photos={photos} />
+      <Photos photos={photos} clientOptOut={clientOptOut} />
     </>
   );
 }
@@ -597,7 +599,7 @@ const Checklist = forwardRef<ChecklistHandle, { visitId: string; visitStatus: st
   );
 });
 
-interface Photo { id: string; path: string; file_name: string; caption: string | null; created_at: string; created_by: string | null; url: string | null }
+interface Photo { id: string; path: string; file_name: string; caption: string | null; content_type: string | null; shareable: boolean; created_at: string; created_by: string | null; url: string | null }
 type VisitPhotos = ReturnType<typeof useVisitPhotos>;
 
 /**
@@ -615,7 +617,7 @@ function useVisitPhotos(visitId: string) {
   const list = useQuery({
     queryKey: key,
     queryFn: async () => {
-      const rows = unwrap(await supabase().from("attachments").select("id, path, file_name, caption, created_at, created_by").eq("owner_type", "visit").eq("owner_id", visitId).order("created_at"));
+      const rows = unwrap(await supabase().from("attachments").select("id, path, file_name, caption, content_type, shareable, created_at, created_by").eq("owner_type", "visit").eq("owner_id", visitId).order("created_at"));
       const urls = await signedUrls(rows.map((r) => r.path)).catch(() => ({}) as Record<string, string>);
       return rows.map((r): Photo => ({ ...r, url: urls[r.path] ?? null }));
     },
@@ -634,7 +636,7 @@ function useVisitPhotos(visitId: string) {
         if (!stopped) {
           try {
             const path = await uploadFile(company.id, `visit/${visitId}`, file);
-            unwrap(await supabase().from("attachments").insert({ company_id: company.id, owner_type: "visit", owner_id: visitId, path, file_name: file.name.slice(0, 200), content_type: file.type || "image/jpeg", size_bytes: file.size }));
+            unwrap(await supabase().from("attachments").insert({ company_id: company.id, owner_type: "visit", owner_id: visitId, path, file_name: file.name.slice(0, 200), content_type: storedType(path, file), size_bytes: file.size }));
           } catch (error) {
             problems.push(`${file.name}: ${errorMessage(error)}`);
           }
@@ -661,6 +663,8 @@ function useVisitPhotos(visitId: string) {
   const without = (id: string) => (h: ReadonlySet<string>) => new Set([...h].filter((x) => x !== id));
   return {
     photos: (list.data ?? []).filter((p) => !hidden.has(p.id)),
+    /** OK to share shown at once, as the field action goes (or waits for signal). */
+    showShareable: (id: string, shareable: boolean) => queryClient.setQueryData<Photo[]>(key, (rows) => rows?.map((r) => (r.id === id ? { ...r, shareable } : r))),
     loading: list.isPending,
     uploading,
     add: (files: File[]) => upload.mutate(files),
@@ -708,9 +712,13 @@ function PhotoPicker({ photos }: { photos: VisitPhotos }) {
   );
 }
 
-function Photos({ photos }: { photos: VisitPhotos }) {
+function Photos({ photos, clientOptOut }: { photos: VisitPhotos; clientOptOut: boolean }) {
+  const session = useSession();
   const grid = useListAnimation<HTMLDivElement>();
   const count = photos.photos.length;
+  // OK to share is only offered while Marketing is installed, never to subs (ShareToggle).
+  const sharing = photos.photos.some((p) => shareToggleState(session, p, clientOptOut) === "ready");
+  const unsupported = photos.photos.filter((p) => shareToggleState(session, p, clientOptOut) === "unsupported").length;
   return (
     <section className="card card-pad stack-sm">
       <div className="row-between"><strong>Photos</strong>{count > 0 && <span className="muted small tabular"><AnimatedNumber value={count} /></span>}</div>
@@ -720,10 +728,14 @@ function Photos({ photos }: { photos: VisitPhotos }) {
           <div key={p.id} className="thumb">
             {p.url ? <a href={p.url} target="_blank" rel="noreferrer"><img src={p.url} alt={p.caption ?? p.file_name} loading="lazy" /></a> : <span className="muted small">Unavailable</span>}
             {photos.canRemove(p) && <button type="button" className="thumb-x" aria-label="Remove photo" onClick={() => photos.remove(p)}><Icon name="x" size={12} strokeWidth={2} /></button>}
+            <ShareToggle photo={p} clientOptOut={clientOptOut} onShown={(shareable) => photos.showShareable(p.id, shareable)} />
           </div>
         ))}
         {Array.from({ length: photos.uploading }, (_, i) => <div key={`u${i}`} className="thumb" style={{ display: "grid", placeItems: "center" }}><span className="spinner" style={{ width: 20, height: 20, color: "var(--text-3)" }} /></div>)}
       </div>
+      {sharing && <span className="muted small">Tap the corner to mark photos OK to share, and the office can post them. Posts never show the client's name or address. Check the photo doesn't show a house number, a car plate or people's faces.</span>}
+      {unsupported > 0 && !clientOptOut && <span className="muted small">{unsupported === photos.photos.length ? (unsupported === 1 ? "This photo" : "These photos") : unsupported === 1 ? "The photo marked Can't share" : "The photos marked Can't share"} can't be marked OK to share: only JPEG and PNG photos can be posted.</span>}
+      {count > 0 && clientOptOut && shareToggleState(session, { content_type: "image/jpeg" }) !== "hidden" && <span className="muted small">This client asked us not to post photos of their property.</span>}
       <span style={{ justifySelf: "start" }}><PhotoPicker photos={photos} /></span>
     </section>
   );

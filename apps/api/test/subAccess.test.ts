@@ -263,7 +263,11 @@ const NOT_SIGNED_IN_ROUTES = [
   "POST /api/hub/:token/request", "POST /api/public/forms/:company/:form/promo", "GET /api/public/forms/:company/:form", "POST /api/public/forms/:company/:form",
   "POST /api/public/forms/:company/:form/files", "GET /api/public/logo/:company/:file", "GET /api/public/letterhead/:company/:file",
   "GET /api/public/package/:company/:file", "GET /api/public/service/:company/:file", "GET /api/public/unsubscribe/:token", "POST /api/public/unsubscribe/:token",
-  "GET /api/public/r/:token", "GET /api/public/refer/:token", "POST /api/public/refer/:token", "GET /api/calendar/:file",
+  "GET /api/public/r/:token", "GET /api/public/refer/:token", "POST /api/public/refer/:token",
+  // A campaign email's tracking image and tracked links (routes/public.ts): a random token each.
+  "GET /api/public/o/:token", "GET /api/public/c/:token/:n", "GET /api/calendar/:file",
+  // A social post's picture, fetched by Meta and Google (routes/public.ts): a random token each, for 7 days.
+  "GET /api/public/social/:file", "HEAD /api/public/social/:file",
   // The instance's own documents, AI assistants (their own tokens) and website analytics.
   "GET /.well-known/crewtavo-instance", "GET /.well-known/oauth-protected-resource", "GET /.well-known/oauth-protected-resource/mcp",
   "GET /.well-known/oauth-authorization-server", "GET /.well-known/oauth-authorization-server/auth/v1", "GET /.well-known/openid-configuration/auth/v1",

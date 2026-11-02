@@ -131,7 +131,7 @@ insert into public.routes (company_id, crew_id, route_date) values (:'co', :'cre
 insert into public.measurements (company_id, property_id, geojson) values (:'co', :'p1', '{"type": "FeatureCollection", "features": []}');
 insert into public.sop_categories (company_id, name) values (:'co', 'Safety') returning id as cat \gset
 insert into public.sop_pages (company_id, category_id, title, status) values (:'co', :'cat', 'Ladder safety', 'published');
-insert into public.promo_codes (company_id, code, kind, value) values (:'co', 'SPRING', 'percent', 10);
+insert into public.promo_codes (company_id, code, kind, value) values (:'co', 'SPRING', 'percent', 10) returning id as spring \gset
 insert into public.user_signatures (company_id, user_id, image) values (:'co', 'd1070000-0000-0000-0000-000000000001', 'data:image/png;base64,AAAA');
 insert into public.time_entries (company_id, user_id, category, started_at, ended_at) values
   (:'co', 'd1070000-0000-0000-0000-000000000004', 'shop', now() - interval '3 hours', now() - interval '2 hours'),
@@ -260,7 +260,29 @@ insert into public.payments (company_id, client_id, invoice_id, amount, method) 
 insert into public.payouts (company_id, processor_ref, amount, status, arrival_on) values (:'co', 'po_t1070', 100, 'paid', current_date);
 insert into public.recurrence_skips (company_id, job_id, recurrence_key) values (:'co', :'j1', 'k1');
 insert into public.referrals (company_id, referrer_client_id, referred_name) values (:'co', :'c1', 'Neighbor Ned');
+-- A referral credit Ann earned, which goes on her new invoice as its line goes in, one taken off
+-- another invoice, and an ask for referrals.
+insert into public.referrals (company_id, referrer_client_id, referred_name, reward_value, reward_amount, reward_status, earned_at)
+values (:'co', :'c1', 'Neighbor Nia', 50, 50, 'earned', now()) returning id as earned_ref \gset
+insert into public.invoices (company_id, client_id) values (:'co', :'c1') returning id as credit_invoice \gset
+insert into public.invoice_line_items (company_id, invoice_id, name, quantity, unit_price) values (:'co', :'credit_invoice', 'Gutter cleaning', 1, 200);
+insert into public.referral_credit_skips (company_id, referral_id, invoice_id) values (:'co', :'earned_ref', :'roof_invoice');
+-- A draft a job's promo discount was taken off (20261031000600_promo_once_per_job.sql): the office's.
+insert into public.job_discount_skips (company_id, invoice_id, discount_key) values (:'co', :'credit_invoice', gen_random_uuid());
+insert into public.referral_asks (company_id, client_id) values (:'co', :'c1');
 insert into public.review_requests (company_id, client_id) values (:'co', :'c1');
+-- A Google review of Ann's, and the company's review sync.
+insert into public.review_syncs (company_id, account, location_id) values (:'co', 'accounts/1070', 'locations/1070');
+insert into public.reviews (company_id, location_id, review_id, external_name, reviewer_name, rating, posted_at, google_updated_at, client_id, match)
+values (:'co', 'locations/1070', 'r1070', 'accounts/1070/locations/1070/reviews/r1070', 'Ann C.', 5, now(), now(), :'c1', 'hand');
+insert into public.review_match_choices (company_id, location_id, review_id, client_id) values (:'co', 'locations/1070', 'r1070', :'c1');
+-- A photo of Ann's marked OK to share, and a social post of it, how it went on Facebook and its picture's link.
+insert into public.attachments (company_id, owner_type, owner_id, path, file_name, content_type, shareable, shareable_at)
+values (:'co', 'client', :'c1', :'co' || '/client/' || :'c1' || '/porch.jpg', 'porch.jpg', 'image/jpeg', true, now()) returning id as porch \gset
+insert into public.social_posts (company_id, source, attachment_ids, caption, networks, status) values (:'co', 'photos', array[:'porch']::uuid[], 'New porch steps', '{facebook}', 'posting') returning id as social_post \gset
+insert into public.social_post_networks (post_id, company_id, network, status) values (:'social_post', :'co', 'facebook', 'posted');
+insert into public.social_post_images (company_id, post_id, n, variant, attachment_id, path, token, width, height, bytes, expires_at)
+values (:'co', :'social_post', 0, 'feed', :'porch', :'co' || '/social/' || :'social_post' || '/0-feed.jpg', repeat('b', 32), 10, 10, 100, now() + interval '7 days');
 insert into public.roof_packages (company_id, name) values (:'co', 'Good') returning id as roof_package \gset
 insert into public.roof_package_items (company_id, package_id, service_id, kind) values (:'co', :'roof_package', :'shingles_service', 'included');
 insert into public.service_materials (company_id, service_id, item_number, name, uom, per_unit) values (:'co', :'shingles_service', 'ABC-1', 'Shingle bundle', 'BD', 3);
@@ -479,20 +501,25 @@ select t1070.check(array(
   select p.proname || '(' || oidvectortypes(p.proargtypes) || ')' from pg_proc p join pg_namespace n on n.oid = p.pronamespace
   where n.nspname = 'public' and has_function_privilege('authenticated', p.oid, 'execute') order by 1) = array[
   'accept_terms(uuid, text)', 'answer_sub_offer(uuid, boolean, text, integer, uuid)', 'apply_promo_code(text, uuid, text, uuid, uuid[])',
-  'apply_quote_options(uuid, jsonb, text, uuid[], jsonb)', 'campaign_audience(uuid, jsonb)', 'careers_set_enabled(uuid, boolean)',
+  'apply_quote_options(uuid, jsonb, text, uuid[], jsonb)', 'apply_referral_credit(uuid, uuid)', 'automated_campaign_states(uuid)', 'campaign_audience(uuid, jsonb)', 'campaign_audience_choices(uuid)',
+  'campaign_recipient_results(uuid, integer, integer, text)', 'campaign_results(uuid, uuid)', 'careers_set_enabled(uuid, boolean)',
   'change_sub_offer(uuid, jsonb, timestamp with time zone)', 'chat_create_channel(uuid, text, text, text, text, uuid)', 'chat_mark_read(uuid)', 'chat_members(uuid)', 'chat_overview(uuid)',
   'chat_save_roles(uuid, jsonb, jsonb)', 'chat_set_enabled(uuid, boolean)', 'company_basics(uuid)', 'convert_quote_to_job(uuid)',
   'create_company(text, text, text)', 'create_invoice_for_job(uuid, text, numeric)', 'dashboard(uuid)',
   'drive_clients(uuid, text, integer)', 'drive_list(uuid, text, uuid, text, integer)', 'drive_restore(text, uuid)', 'drive_root(uuid)',
   'drive_set_enabled(uuid, boolean)', 'drive_trash(uuid)', 'drive_trash_file(uuid)', 'drive_trash_folder(uuid)', 'drive_trash_version(uuid)',
   'drive_versions(uuid)', 'duplicate_quote(uuid)',
-  'equipment_conflicts(uuid, uuid[], date, timestamp with time zone, timestamp with time zone, uuid)', 'global_search(uuid, text, integer)',
+  'equipment_conflicts(uuid, uuid[], date, timestamp with time zone, timestamp with time zone, uuid)', 'global_search(uuid, text, integer)', 'inactive_client_count(uuid, integer)',
   'job_material_costs(uuid)', 'job_pay_accept(uuid, uuid[])', 'job_pay_cancel(uuid)', 'job_pay_costs(uuid[])', 'job_pay_covers(uuid, uuid, uuid)', 'job_pay_mark_done(uuid, date)',
   'job_pay_mark_paid(uuid[], text, date, text, numeric)', 'job_pay_start(uuid, uuid, uuid, uuid[])', 'job_pay_suggest(uuid, uuid, uuid, uuid[])',
-  'job_pay_unmark_paid(uuid[])', 'job_scope(uuid)', 'marketing_summary(uuid)', 'material_choices(uuid)', 'my_crew_ids(uuid)', 'my_sub_offers(boolean, uuid)', 'my_sub_pay_totals(uuid)',
-  'promo_code_usage(uuid)', 'put_quote_package(uuid, uuid, jsonb, boolean)', 'remove_promo_code(text, uuid)', 'remove_quote_option(uuid, uuid)',
-  'search_sops(uuid, text, integer, boolean)', 'send_sub_offer(uuid, timestamp with time zone)', 'set_sub_reminders(uuid, boolean)',
-  'set_sub_sign_in_countries(uuid, text[])', 'sign_quote(uuid, jsonb, uuid, numeric)',
+  'job_pay_unmark_paid(uuid[])', 'job_promo_discounts(uuid)', 'job_scope(uuid)', 'last_referral_ask(uuid, uuid)', 'last_review_ask(uuid, uuid)', 'marketing_set_enabled(uuid, boolean)', 'marketing_summary(uuid)', 'material_choices(uuid)', 'my_crew_ids(uuid)', 'my_sub_offers(boolean, uuid)', 'my_sub_pay_totals(uuid)',
+  'promo_code_jobs(uuid, boolean)', 'promo_code_usage(uuid)', 'put_quote_package(uuid, uuid, jsonb, boolean)', 'record_photos(uuid, uuid, uuid)',
+  'referral_auto_apply(uuid, boolean)', 'referral_credits_for(uuid, uuid)', 'referral_give_credit(uuid)', 'referral_no_reward(uuid)', 'referral_set_given(uuid)',
+  'referral_stats(uuid, timestamp with time zone, timestamp with time zone)',
+  'remove_promo_code(text, uuid)', 'remove_quote_option(uuid, uuid)', 'remove_referral_credit(uuid)', 'review_stats(uuid)',
+  'search_sops(uuid, text, integer, boolean)', 'send_sub_offer(uuid, timestamp with time zone)', 'set_job_discount_billing(uuid, uuid, boolean)', 'set_photo_shareable(uuid, boolean)',
+  'set_promo_code_jobs(uuid, boolean)', 'set_sub_reminders(uuid, boolean)',
+  'set_sub_sign_in_countries(uuid, text[])', 'sign_quote(uuid, jsonb, uuid, numeric)', 'social_photos(uuid, timestamp with time zone, uuid, integer, uuid)',
   'storage_overview(uuid)', 'storage_set_allowance(uuid, uuid, text, bigint)', 'storage_set_limit(uuid, text, bigint)', 'sub_1099_totals(uuid, integer)', 'sub_wc_audit(uuid, date, date)', 'time_entry_places(uuid, uuid[])',
   'trash_delete_forever(uuid, jsonb)', 'visit_contact(uuid)', 'web_analytics_save(uuid, jsonb)', 'web_stats(uuid, date, date)',
   'website_forms_set_enabled(uuid, boolean)', 'withdraw_sub_offer(uuid)']::text[],
@@ -509,6 +536,12 @@ select t1070.check(not exists (select 1 from unnest(array['public.sign_in_code_s
 select t1070.check(not exists (select 1 from unnest(array['public.storage_snapshot(uuid, uuid)', 'public.storage_set_default(uuid, bigint, text)']) as f
   where has_function_privilege('authenticated', f, 'execute') or has_function_privilege('anon', f, 'execute')),
   'the storage check before an upload, and the default limit, are the server''s alone');
+-- And so are the referral page's lead and recording a referral ask (20261031000100_referral_credits.sql,
+-- 20261031000120_referral_asks.sql): the server checks the link, Turnstile and the 6 months first.
+select t1070.check(not exists (select 1 from unnest(array['public.record_referral(uuid, uuid, text, text, text, jsonb, text)',
+    'public.begin_referral_ask(uuid, uuid, boolean, integer, uuid)']) as f
+  where has_function_privilege('authenticated', f, 'execute') or has_function_privilege('anon', f, 'execute')),
+  'recording a referral and a referral ask are the server''s alone');
 
 -- The owner sees where Cy clocked in, so the check on a sub below is about a real entry with a place.
 begin;
@@ -547,6 +580,11 @@ select t1070.expect_error(format('select public.create_company(%L)', 'Al''s Roof
 select t1070.expect_error(format('select public.create_invoice_for_job(%L)', :'j1'), 'create_invoice_for_job refuses, though they see the job');
 select t1070.expect_error(format('select public.convert_quote_to_job(%L)', :'q1'), 'convert_quote_to_job finds no quote');
 select t1070.expect_error(format('select public.apply_promo_code(%L, %L, %L)', 'quote', :'q1', 'SPRING'), 'apply_promo_code finds no quote');
+-- A job's promo discounts (20261031000600_promo_once_per_job.sql) are the office's and sales'.
+select t1070.expect_error(format('select public.job_promo_discounts(%L)', :'j1'), 'job_promo_discounts refuses, though they see the job');
+select t1070.expect_error(format('select public.set_job_discount_billing(%L, gen_random_uuid(), true)', :'j1'), 'set_job_discount_billing refuses');
+select t1070.expect_error(format('select public.promo_code_jobs(%L, true)', :'spring'), 'promo_code_jobs finds no code');
+select t1070.expect_error(format('select public.set_promo_code_jobs(%L, true)', :'spring'), 'set_promo_code_jobs finds no code');
 -- The estimate's options, its package and signing it on the iPad (20261025000100_contracts_and_options.sql)
 -- run as the caller, and a sub sees no quote.
 select t1070.expect_error(format('select public.apply_quote_options(%L, %L, %L)', :'q1', '[]', 'add'), 'apply_quote_options finds no quote');
@@ -576,11 +614,34 @@ select t1070.expect_error(format('select * from public.trash_delete_forever(%L, 
 select t1070.expect_error(format('select public.storage_overview(%L)', :'co'), 'storage_overview refuses');
 select t1070.expect_error(format('select public.storage_set_limit(%L, %L)', :'co', 'none'), 'storage_set_limit refuses');
 select t1070.expect_error(format('select public.storage_set_allowance(%L, %L, null, 1)', :'co', 'd1070000-0000-0000-0000-000000000005'), 'storage_set_allowance refuses');
+-- Referral credits and their numbers are the office's.
+select t1070.expect_error(format('select public.apply_referral_credit(%L, %L)', gen_random_uuid(), gen_random_uuid()), 'apply_referral_credit refuses');
+select t1070.expect_error(format('select public.remove_referral_credit(%L)', gen_random_uuid()), 'remove_referral_credit refuses');
+select t1070.expect_error(format('select public.referral_auto_apply(%L)', gen_random_uuid()), 'referral_auto_apply refuses');
+select t1070.expect_error(format('select public.referral_set_given(%L)', gen_random_uuid()), 'referral_set_given refuses');
+select t1070.expect_error(format('select public.referral_no_reward(%L)', gen_random_uuid()), 'referral_no_reward refuses');
+select t1070.expect_error(format('select public.referral_give_credit(%L)', gen_random_uuid()), 'referral_give_credit refuses');
+select t1070.expect_error(format('select public.referral_stats(%L)', :'co'), 'referral_stats refuses');
+select t1070.check(not exists (select 1 from public.referral_credits_for(:'co', :'c1')), 'referral_credits_for finds nothing');
+-- Campaigns' results, and who a campaign would reach, are the office's too.
+select t1070.expect_error(format('select public.campaign_results(%L)', :'co'), 'campaign_results refuses');
+select t1070.expect_error(format('select public.campaign_recipient_results(%L)', gen_random_uuid()), 'campaign_recipient_results refuses');
+select t1070.expect_error(format('select public.inactive_client_count(%L, 365)', :'co'), 'inactive_client_count refuses');
+select t1070.expect_error(format('select public.automated_campaign_states(%L)', :'co'), 'automated_campaign_states refuses');
+select t1070.check(public.campaign_audience_choices(:'co') = '{"cities": [], "services": []}', 'campaign_audience_choices finds nothing');
 select t1070.check((select (public.marketing_summary(:'co') ->> 'opted_out')::int = 0
+  and public.last_referral_ask(:'co', :'c1') is null and public.marketing_summary(:'co') -> 'referral_revenue' = 'null'::jsonb
+  and public.last_review_ask(:'co', :'c1') is null
   and (public.dashboard(:'co') -> 'receivables' ->> 'total')::numeric = 0
   and (public.dashboard(:'co') -> 'workflow' -> 'quotes' ->> 'draft')::int = 0
   and coalesce((public.dashboard(:'co') -> 'today' ->> 'total')::int, 0) = 0),
-  'the dashboard and marketing summary count nothing (they run as the person, who can''t read the company)');
+  'the dashboard, marketing summary and when a client was last asked count nothing (they run as the person, who can''t read the company)');
+select t1070.check((select (s ->> 'count')::int = 0 and (s ->> 'asks_12m')::int = 0 and s -> 'average' = 'null'::jsonb from (select public.review_stats(:'co') as s) x),
+  'Google reviews'' numbers count nothing either');
+-- Social posts are the office's: a sub marks no photo OK to share and gets none to post.
+select t1070.expect_error(format('select public.set_photo_shareable(%L, true)', :'porch'), 'set_photo_shareable refuses');
+select t1070.expect_error(format('select * from public.social_photos(%L)', :'co'), 'social_photos refuses');
+select t1070.check(not exists (select 1 from public.record_photos(:'co', null, :'c1')), 'record_photos finds none of the client''s photos');
 select t1070.check((select array_agg(visit_id) from public.equipment_conflicts(:'co', array[:'e1', :'e2']::uuid[], private.company_today(:'co') + 1, null, null)) is null
   and (select array_agg(visit_id) from public.equipment_conflicts(:'co', array[:'e1']::uuid[], private.company_today(:'co'), null, null)) = array[:'v1']::uuid[],
   'equipment_conflicts only sees their own visits');
@@ -952,8 +1013,8 @@ select set_config('request.jwt.claims', '{"sub": "d1070000-0000-0000-0000-000000
 select t1070.check((select array_agg(title order by title) from public.visits) = '{"Clean up","Tear off and shingle"}'
   and (select array_agg(display_name) from public.clients) = '{"Ann Client"}' and (select count(*) from public.client_contacts) = 1
   and (select count(*) from public.crews) = 1 and (select count(*) from public.visit_assignees) = 6 and (select count(*) from public.equipment) = 2
-  and (select count(*) from public.checklist_templates) = 3 and (select count(*) from public.attachments) = 3 and (select count(*) from public.time_entries) = 2,
-  'field crew read what they always did (their own two time entries)');
+  and (select count(*) from public.checklist_templates) = 3 and (select count(*) from public.attachments) = 4 and (select count(*) from public.time_entries) = 2,
+  'field crew read what they always did (their own two time entries, and Ann''s porch photo OK to share)');
 select t1070.check((select count(*) from public.memberships where company_id = :'co') = 7 and (select count(*) from public.profiles where full_name in ('Al Apex', 'Bo Birch')) = 2,
   'and see the subs on the team''s visits: their sign-ins and profiles');
 select t1070.check(not exists (select 1 from public.subcontractors) and not exists (select 1 from public.sub_documents) and not exists (select 1 from public.sub_paperwork)

@@ -1,4 +1,5 @@
 /** Message center: conversations by client (emails, texts, notes), with replies by email or text. */
+import { textsOff, textsOffReason } from "@crewtavo/core/marketing";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fragment, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -15,6 +16,7 @@ import { formatDateTime, timeAgo } from "@/lib/format";
 import { useListAnimation } from "@/lib/motion";
 import { hasRole, useSession } from "@/lib/session";
 import { ClientPicker, type PickedClient } from "../clients/ClientForm";
+import { MessageBody } from "../clients/MessageBody";
 import { ConnectEmailHint } from "../settings/ConnectEmailHint";
 
 const FILTERS = [
@@ -91,7 +93,7 @@ export function MessagesPage() {
                 <span className="grow" style={{ minWidth: 0 }}>
                   <span className="row-between"><strong className="ellipsis">{c.client!.display_name}</strong><span className="muted small nowrap">{timeAgo(c.created_at)}</span></span>
                   <span className="muted small ellipsis" style={{ display: "block" }}>
-                    <Icon name={ICON[c.channel] ?? "messages"} size={12} /> {c.direction === "in" ? "" : c.direction === "internal" ? "Note: " : "You: "}{c.subject ? `${c.subject} · ` : ""}{c.body}
+                    <Icon name={ICON[c.channel] ?? "messages"} size={12} /> {c.direction === "in" ? "" : c.direction === "internal" ? "Note: " : "You: "}{c.subject ? `${c.subject} · ` : ""}<MessageBody body={c.body} />
                   </span>
                 </span>
                 {c.direction === "in" && <span className="unread-dot" title="Latest message is from the client" style={{ marginTop: 6 }} />}
@@ -130,7 +132,7 @@ function Thread({ clientId, onBack }: { clientId: string; onBack: () => void }) 
     refetchInterval: 15_000,
     queryFn: async () => {
       const [client, rows] = await Promise.all([
-        supabase().from("clients").select("id, display_name, email, phone").eq("id", clientId).maybeSingle(),
+        supabase().from("clients").select("id, display_name, email, phone, sms_opt_out_at").eq("id", clientId).maybeSingle(),
         supabase().from("messages").select("id, channel, direction, subject, body, status, created_at").eq("client_id", clientId).order("created_at", { ascending: false }).limit(300),
       ]);
       return { client: unwrap(client), rows: unwrap(rows).reverse() };
@@ -174,7 +176,7 @@ function Thread({ clientId, onBack }: { clientId: string; onBack: () => void }) 
             <Fragment key={m.id}>
               {showDay && <span className="thread-day">{day}</span>}
               <div className="msg" data-mine={mine || undefined} data-note={note || undefined} data-failed={m.status === "failed" || undefined}>
-                <div className="msg-bubble">{m.subject && <span className="msg-subject">{m.subject}</span>}{m.body}</div>
+                <div className="msg-bubble">{m.subject && <span className="msg-subject">{m.subject}</span>}<MessageBody body={m.body} /></div>
                 <span className="msg-meta">
                   <Icon name={ICON[m.channel] ?? "messages"} size={12} />
                   {note ? "Internal note" : m.channel === "email" ? "Email" : m.channel === "sms" ? "Text" : "Call"} · <span title={formatDateTime(m.created_at)}>{new Date(m.created_at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</span>
@@ -190,10 +192,10 @@ function Thread({ clientId, onBack }: { clientId: string; onBack: () => void }) 
   );
 }
 
-function Composer({ client, onSent }: { client: { id: string; display_name: string; email: string | null; phone: string | null }; onSent: () => void }) {
+function Composer({ client, onSent }: { client: { id: string; display_name: string; email: string | null; phone: string | null; sms_opt_out_at: string | null }; onSent: () => void }) {
   const session = useSession();
   const { features } = session.config;
-  const [channel, setChannel] = useState<"email" | "sms" | "note">(client.phone && features.sms ? "sms" : client.email && features.email ? "email" : "note");
+  const [channel, setChannel] = useState<"email" | "sms" | "note">(client.phone && features.sms && !textsOff(client) ? "sms" : client.email && features.email ? "email" : "note");
   const [subject, setSubject] = useState(`A note from ${session.company.name}`);
   const [body, setBody] = useState("");
   const send = useMutation({
@@ -212,7 +214,7 @@ function Composer({ client, onSent }: { client: { id: string; display_name: stri
   });
   const problem =
     channel === "email" ? (!client.email ? "No email address on file for this client." : !features.email ? "Email isn't turned on yet." : null)
-    : channel === "sms" ? (!client.phone ? "No phone number on file for this client." : !features.sms ? "Texting isn't turned on yet." : null)
+    : channel === "sms" ? (!client.phone ? "No phone number on file for this client." : textsOff(client) ? textsOffReason(client.display_name) : !features.sms ? "Texting isn't turned on yet." : null)
     : null;
   const canSend = body.trim().length > 0 && !problem && (channel !== "email" || subject.trim().length > 0);
   return (

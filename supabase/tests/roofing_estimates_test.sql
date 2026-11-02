@@ -458,11 +458,12 @@ select public.create_company('Brand New Roofing', 'roofing_exteriors') as newco 
 commit;
 select t_roofing.check((select count(*) = 1 from public.automation_rules where company_id = :'newco' and template_key = 'notify_range_accepted' and enabled),
   'a new business gets it');
-select t_roofing.check((select count(*) = 10 from public.automation_rules where company_id = :'newco' and template_key in
+select t_roofing.check((select count(*) = 14 from public.automation_rules where company_id = :'newco' and template_key in
   ('notify_quote_approved', 'notify_changes_requested', 'notify_range_accepted', 'notify_new_request', 'notify_invoice_paid',
-   'quote_followup', 'invoice_overdue', 'visit_reminder', 'on_my_way', 'review_after_job')), 'along with all the other starter rules');
+   'quote_followup', 'invoice_overdue', 'visit_reminder', 'on_my_way', 'review_after_job', 'review_recurring', 'referral_after_job',
+   'reengage_past_clients', 'win_back_lost_quotes')), 'along with all the other starter rules');
 select private.install_default_automations(:'newco');
-select t_roofing.check((select count(*) = 10 from public.automation_rules where company_id = :'newco'), 'setting up the starter rules again adds nothing');
+select t_roofing.check((select count(*) = 14 from public.automation_rules where company_id = :'newco'), 'setting up the starter rules again adds nothing');
 delete from public.companies where id = :'newco';
 
 -- ===== Someone who leaves can't use their signature there ======================================

@@ -1,14 +1,23 @@
 /**
  * Sends email campaigns in small batches (every minute by cron, and right after Send). Each email
  * is personalized, carries a one-click unsubscribe link and the company's address, and every
- * recipient's outcome is recorded.
+ * recipient's outcome is recorded. Nothing goes while the company has Marketing uninstalled:
+ * uninstalling puts its scheduled campaigns back to drafts and stops ones sending
+ * (public.marketing_set_enabled), so installing it again sends nothing late.
+ *
+ * Each email's links go through the recipient's own tracked links, and it carries their tracking
+ * image (services/automatedCampaigns.ts trackedLinks), so the campaign's opens, clicks and the work
+ * it brought in can be counted. {{link}} is the client's Client Hub home, where they can ask for work
+ * (a link that lasts a year, and a "Request work" button on a line of its own).
  */
 import { renderTemplate } from "@crewtavo/core";
+import { HUB_HOME_BUTTON, trackableLinks } from "@crewtavo/core/campaigns";
 import type { Env } from "../env";
 import { firstName, renderEmail } from "../lib/email";
 import { clientLink } from "../lib/links";
 import { emailReady, sendEmail } from "../lib/notify";
 import { adminClient, type Db } from "../lib/supabase";
+import { CAMPAIGN_LINK_DAYS, trackedLinks } from "./automatedCampaigns";
 import { companyAddress } from "./automations";
 import { logoImage } from "./logo";
 
@@ -22,6 +31,19 @@ async function refreshCounts(admin: Db, campaignId: string) {
   // Recipients another run has claimed ('sending') aren't done yet either.
   const [sent, failed, unsent] = await Promise.all([count("sent"), count("failed"), count("pending", "sending")]);
   return { sent, failed, unsent };
+}
+
+/** How often, in emails, a batch writes its campaign's counts while it sends, so the page's header and progress move. */
+const COUNTS_EVERY = 5;
+
+/**
+ * Writes a campaign's sent and failed counts from its recipients, whatever its status: a campaign
+ * stopped partway keeps the counts of what went (the cancel route calls this too). Says the counts.
+ */
+export async function writeCampaignCounts(admin: Db, campaignId: string) {
+  const counts = await refreshCounts(admin, campaignId);
+  await admin.from("campaigns").update({ sent_count: counts.sent, failed_count: counts.failed }).eq("id", campaignId);
+  return counts;
 }
 
 // These change only recipients this run still holds (its claim's token): one another run has
@@ -41,12 +63,22 @@ export async function processCampaigns(env: Env, options: { campaignId?: string;
   const baseUrl = options.baseUrl ?? env.APP_URL ?? null;
   const now = new Date().toISOString();
 
-  // Scheduled campaigns whose time has come start sending.
-  let start = admin.from("campaigns").update({ status: "sending", started_at: now }).eq("status", "scheduled").lte("scheduled_at", now);
-  if (options.campaignId) start = start.eq("id", options.campaignId);
-  await start;
+  // Scheduled campaigns whose time has come start sending, for companies with Marketing installed.
+  let due = admin.from("campaigns").select("id, company:companies!inner(id)").eq("status", "scheduled").lte("scheduled_at", now).eq("company.settings->marketing->>enabled", "true").limit(100);
+  if (options.campaignId) due = due.eq("id", options.campaignId);
+  const { data: starting, error: dueError } = await due;
+  if (dueError) throw new Error(dueError.message);
+  if (starting?.length) {
+    await admin.from("campaigns").update({ status: "sending", started_at: now }).in("id", starting.map((c) => c.id)).eq("status", "scheduled");
+  }
 
-  let query = admin.from("campaigns").select("id, company_id, subject, body, company:companies(name, email, phone, address, settings)").eq("status", "sending").limit(5);
+  // Filtered in the query, so companies with Marketing uninstalled don't fill the batch.
+  let query = admin
+    .from("campaigns")
+    .select("id, company_id, subject, body, company:companies!inner(name, email, phone, address, settings)")
+    .eq("status", "sending")
+    .eq("company.settings->marketing->>enabled", "true")
+    .limit(5);
   if (options.campaignId) query = query.eq("id", options.campaignId);
   const { data: campaigns, error } = await query;
   if (error) throw new Error(error.message);
@@ -96,19 +128,27 @@ export async function processCampaigns(env: Env, options: { campaignId?: string;
           skipped++;
           continue;
         }
-        const vars = { client: { first_name: firstName(r.name), name: r.name ?? "" }, company: { name: company.name, phone: company.phone ?? "" } };
+        const vars = {
+          client: { first_name: firstName(r.name), name: r.name ?? "" },
+          company: { name: company.name, phone: company.phone ?? "" },
+          link: await clientLink(env, baseUrl, { c: campaign.company_id, t: "client", id: r.client_id }, CAMPAIGN_LINK_DAYS),
+        };
         const unsubscribe = await clientLink(env, baseUrl, { c: campaign.company_id, t: "unsub", id: r.client_id });
+        const text = renderTemplate(campaign.body, vars);
+        const links = trackableLinks(text);
         const email = renderEmail({
           companyName: company.name,
           logo: logoImage(baseUrl, campaign.company_id, company.settings),
-          text: renderTemplate(campaign.body, vars),
+          text,
           footer: [company.name, companyAddress(company.address)].filter(Boolean).join(" · "),
           unsubscribeUrl: unsubscribe,
+          ...trackedLinks(baseUrl, r.track_token, links),
+          buttons: { [vars.link]: HUB_HOME_BUTTON },
         });
-        // The claim is renewed right before each email. A slow mail server can take minutes per
-        // message, so a batch can outlast its claim; by now another run may have claimed this
-        // recipient, and then it's theirs to email.
-        const { data: held, error: renewError } = await admin.rpc("renew_campaign_recipient", { p_id: r.id, p_token: token });
+        // The claim is renewed right before each email, with the links it carries (its tracked links
+        // go only to these). A slow mail server can take minutes per message, so a batch can outlast
+        // its claim; by now another run may have claimed this recipient, and then it's theirs to email.
+        const { data: held, error: renewError } = await admin.rpc("renew_campaign_recipient", { p_id: r.id, p_token: token, p_links: links });
         if (renewError) {
           await release(admin, token, rest(index));
           break;
@@ -134,6 +174,7 @@ export async function processCampaigns(env: Env, options: { campaignId?: string;
         await record(admin, token, [r.id], result.sent ? "sent" : "failed", result.sent ? undefined : (result.reason ?? "Not sent"));
         if (result.sent) sent++;
         else failed++;
+        if ((index + 1) % COUNTS_EVERY === 0 && index + 1 < claimed.length) await writeCampaignCounts(admin, campaign.id);
       }
       next = claimed.length;
     } finally {
@@ -142,12 +183,11 @@ export async function processCampaigns(env: Env, options: { campaignId?: string;
       await release(admin, token, rest(next));
     }
 
-    const counts = await refreshCounts(admin, campaign.id);
-    await admin
-      .from("campaigns")
-      .update({ sent_count: counts.sent, failed_count: counts.failed, ...(counts.unsent === 0 ? { status: "sent", finished_at: new Date().toISOString() } : {}) })
-      .eq("id", campaign.id)
-      .eq("status", "sending");
+    // The counts whatever its status (stopped meanwhile, it keeps what went); only one still sending is finished.
+    const counts = await writeCampaignCounts(admin, campaign.id);
+    if (counts.unsent === 0) {
+      await admin.from("campaigns").update({ status: "sent", finished_at: new Date().toISOString() }).eq("id", campaign.id).eq("status", "sending");
+    }
   }
   return { campaigns: campaigns?.length ?? 0, sent, failed, skipped, lost };
 }

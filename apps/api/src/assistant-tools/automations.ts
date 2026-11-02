@@ -42,7 +42,8 @@ const action = z.discriminatedUnion("type", [
   z.object({ type: z.literal("remove_tag"), tag: z.string().max(60) }),
   z.object({ type: z.literal("add_note"), body: z.string().max(4000) }),
   z.object({ type: z.literal("create_task"), title: z.string().max(200), days_from_now: z.number().int() }),
-  z.object({ type: z.literal("request_review"), channel: z.enum(["email", "sms"]) }),
+  z.object({ type: z.literal("request_review"), channel: z.enum(["email", "sms", "both"]) }),
+  z.object({ type: z.literal("request_referral") }),
   z.object({ type: z.literal("update_status"), status: z.string().max(40) }),
 ]);
 

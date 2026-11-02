@@ -743,6 +743,12 @@ function Totals({ data }: { data: DocumentData }) {
           <dd>−{formatMoneyCents(data.discount)}</dd>
         </>
       )}
+      {data.credits?.map((c, i) => (
+        <Fragment key={i}>
+          <dt>{c.label}</dt>
+          <dd>−{formatMoneyCents(c.amount)}</dd>
+        </Fragment>
+      ))}
       {data.tax > 0 && (
         <>
           <dt>Tax</dt>

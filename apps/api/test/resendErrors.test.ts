@@ -38,8 +38,13 @@ describe("Resend's refusals", () => {
     expect(resendProblem(503, "Service unavailable")).toMatch(/^Resend is having trouble/);
   });
 
+  it("say an address that isn't valid in the app's words", () => {
+    expect(resendProblem(422, "Invalid `to` field.")).toBe("That email address isn't valid, so Resend didn't send it.");
+    expect(resendProblem(422, "The `to` field is invalid.")).toBe("That email address isn't valid, so Resend didn't send it.");
+  });
+
   it("keep Resend's own words for anything else", () => {
-    expect(resendProblem(422, "Invalid `to` field.")).toBe("Resend refused it (422: Invalid `to` field.).");
+    expect(resendProblem(422, "Invalid `scheduled_at` field.")).toBe("Resend refused it (422: Invalid `scheduled_at` field.).");
     expect(resendProblem(400, "")).toBe("Resend refused it (400).");
   });
 

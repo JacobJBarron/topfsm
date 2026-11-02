@@ -18,6 +18,7 @@ import { adminClient, type Db } from "../lib/supabase";
 import { companyAddress } from "./automations";
 import { loadOptions, manualApproval } from "./contracts";
 import { logoImage } from "./logo";
+import { noteRefusedText, textsOffRefusal, textsOffTo } from "./textsOff";
 
 /** Who's sending, from where: the person's client, their company, and the address client links use. */
 export interface SalesScope {
@@ -160,7 +161,11 @@ export async function deliver(s: SalesScope, kind: "quote" | "invoice", record: 
   } else if (body.channel === "sms") {
     const to = body.to || record.client?.phone;
     if (!to) throw new HttpError(400, "This client has no phone number.");
+    // A client who texted STOP isn't texted at their own phone, a quote or invoice included.
+    const { data: client } = await s.db.from("clients").select("id, display_name, phone, sms_opt_out_at").eq("id", record.client_id).maybeSingle();
+    if (client && textsOffTo(client, to)) throw new HttpError(400, textsOffRefusal(client.display_name));
     result = await sendSms(s.env, { to, body: `${company.name}: ${intro} ${link}` });
+    if (client) await noteRefusedText(adminClient(s.env), client, to, result);
   }
   if (result.sent) {
     await s.db.from("messages").insert({

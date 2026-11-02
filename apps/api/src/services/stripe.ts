@@ -26,7 +26,11 @@ export class StripeError extends Error {
 
 type Param = string | number | boolean | null | undefined | Param[] | { [key: string]: Param };
 
-/** Stripe's form encoding: nested objects as a[b]=1 and arrays as a[0]=x. Empty values are left out. */
+/**
+ * Stripe's form encoding: nested objects as a[b]=1 and arrays as a[0]=x. Null and undefined are left
+ * out; an empty string is sent, which is how Stripe is told to clear a value or not inherit one
+ * (discounts=).
+ */
 export function stripeForm(params: Record<string, Param>, prefix = "", out = new URLSearchParams()): URLSearchParams {
   for (const [key, value] of Object.entries(params)) {
     const name = prefix ? `${prefix}[${key}]` : key;
@@ -234,6 +238,9 @@ export interface BillableInvoice {
   subject: string | null;
   subtotal: number;
   discount_amount: number;
+  /** Referral credits, each with what it says on the invoice. */
+  credit_amount?: number;
+  credits?: Array<{ amount: number; note: string }> | null;
   tax_rate: number;
   tax_amount: number;
   retainage_pct: number;
@@ -249,8 +256,8 @@ const MAX_LINES = 20;
 
 /**
  * A Crewtavo invoice as Stripe invoice items. They add up to exactly what's owed plus the tip:
- * the lines, then the discount, tax, retainage held back and what was already paid, so the client
- * sees the same arithmetic in Stripe as in the Client Hub.
+ * the lines, then the discount, referral credits, tax, retainage held back and what was already
+ * paid, so the client sees the same arithmetic in Stripe as in the Client Hub.
  */
 export function stripeLineItems(invoice: BillableInvoice, tipCents = 0, currency = "USD"): Array<{ description: string; amount: number }> {
   const items: Array<{ description: string; amount: number }> = [];
@@ -268,6 +275,14 @@ export function stripeLineItems(invoice: BillableInvoice, tipCents = 0, currency
   }
   const discount = Math.min(Number(invoice.discount_amount), Math.max(Number(invoice.subtotal), 0));
   if (discount > 0) items.push({ description: invoice.promo?.code ? `Discount (${invoice.promo.code})` : "Discount", amount: -cents(discount) });
+  // Each credit under its note, as much of them as the invoice takes (credit_amount).
+  let credit = cents(invoice.credit_amount ?? 0);
+  for (const c of invoice.credits ?? []) {
+    const amount = Math.min(cents(c.amount), credit);
+    if (amount <= 0) break;
+    items.push({ description: c.note.slice(0, 500), amount: -amount });
+    credit -= amount;
+  }
   if (cents(invoice.tax_amount)) items.push({ description: `Tax (${taxPercent(invoice.tax_rate)}%)`, amount: cents(invoice.tax_amount) });
   if (cents(invoice.retainage_amount)) items.push({ description: `Retainage held (${Number(invoice.retainage_pct)}%), billed later`, amount: -cents(invoice.retainage_amount) });
   if (cents(invoice.amount_paid)) items.push({ description: "Already paid", amount: -cents(invoice.amount_paid) });

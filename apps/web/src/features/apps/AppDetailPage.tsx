@@ -8,6 +8,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
+import { featureOn } from "@/components/shell/nav";
 import { Button } from "@/components/ui/Button";
 import { confirm } from "@/components/ui/Confirm";
 import { Icon } from "@/components/ui/Icon";
@@ -19,7 +20,9 @@ import { api, supabase } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
 import { timeAgo } from "@/lib/format";
 import { useSession } from "@/lib/session";
+import { toast } from "@/lib/toast";
 import { useDriveSwitch } from "../drive/useDriveSwitch";
+import { useMarketingSwitch } from "../marketing/useMarketingSwitch";
 import { CalendarFeedCard } from "../settings/CalendarFeedCard";
 import { AbcSupplyPanel } from "./AbcSupplyPanel";
 import { AnalyticsPanel, useAnalyticsSwitch } from "./AnalyticsPanel";
@@ -28,10 +31,13 @@ import { AppKeysCard } from "./AppKeysCard";
 import { AssistantAccess, ConnectedAssistants, useAssistantConnections } from "./AssistantAccess";
 import { assistantAppFor, CONNECTOR_STEPS, disconnect as disconnectAssistant } from "./assistantConnections";
 import { CalendarRow, GoogleCalendarPanel, LinkCalendarsPanel, AddCalendarForm, useCalendars, type CalendarSource } from "./CalendarPanels";
-import { categoryName, infoFor, LINK_ACCESS, MORE_LABELS, useApps, type AppInfo, type AppRow } from "./catalog";
+import { categoryName, infoFor, LINK_ACCESS, MORE_LABELS, useApps, usesMarketing, type AppInfo, type AppRow } from "./catalog";
 import { DrivePanel } from "./DrivePanel";
+import { GoogleBeforeSignIn, GoogleBusinessPanel } from "./GoogleBusinessPanel";
 import { InstallRing, type InstallPhase } from "./InstallRing";
 import { useIsInstalled } from "./installed";
+import { MarketingPanel } from "./MarketingPanel";
+import { MetaPanel } from "./MetaPanel";
 import { SCREENSHOTS } from "./screenshots";
 import { StripePanel } from "./StripePanel";
 import { TeamChatPanel, useTeamChatSwitch } from "./TeamChatPanel";
@@ -66,6 +72,20 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 
 function statusOf(app: AppRow, installed: boolean): { label: string; tone: Tone } {
   if (app.status === "error" || app.calendar_errors) return { label: "Needs attention", tone: "danger" };
+  // Google Business Profile waits on Google's approval, and on Marketing being installed.
+  if (installed && app.google_business) {
+    if (!app.google_business.marketing_on) return { label: "Paused", tone: "warning" };
+    if (app.google_business.problem === "approval" || app.google_business.problem === "not_enabled") return { label: "Waiting on Google", tone: "warning" };
+    if (app.google_business.problem === "location" || app.google_business.problem === "pick") return { label: "Needs attention", tone: "warning" };
+    // Google erring: Crewtavo tries again by itself, but nothing is coming in meanwhile.
+    if (app.google_business.problem === "error") return { label: "Not syncing", tone: "warning" };
+  }
+  // Facebook & Instagram posts from Marketing → Social, and only to the public once the Meta app is Live.
+  if (installed && app.meta) {
+    if (!app.meta.marketing_on) return { label: "Paused", tone: "warning" };
+    if (app.meta.problem === "pick" || app.meta.problem === "permissions" || app.meta.needs_business_permissions) return { label: "Needs attention", tone: "warning" };
+    if (!app.meta.live_confirmed_at) return { label: "Not Live yet", tone: "warning" };
+  }
   if (installed) return app.calendars ? { label: plural(app.calendars, "calendar"), tone: "good" } : { label: "Installed", tone: "good" };
   if (!app.available && !byLinkOnly(app) && !app.takes_app_keys) return { label: "Not available yet", tone: "muted" };
   return { label: "Not installed", tone: "muted" };
@@ -137,19 +157,29 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
   const formsSwitch = useWebsiteFormsSwitch();
   const careersSwitch = useWebsiteFormsSwitch("careers");
   const driveSwitch = useDriveSwitch();
+  const marketingSwitch = useMarketingSwitch();
   // Built-in apps turn on and off in the company's settings.
   const builtinSwitch =
-    app.id === "website_analytics" ? analyticsSwitch : app.id === "website_forms" ? formsSwitch : app.id === "careers" ? careersSwitch : app.id === "drive" ? driveSwitch : chatSwitch;
+    app.id === "website_analytics" ? analyticsSwitch
+    : app.id === "website_forms" ? formsSwitch
+    : app.id === "careers" ? careersSwitch
+    : app.id === "drive" ? driveSwitch
+    : app.id === "marketing" ? marketingSwitch
+    : chatSwitch;
 
   // Uninstall takes this app's own assistants and calendars with it.
   const assistants = connections.filter((c) => assistantAppFor(c.name) === app.id);
   const sources = (calendars.data?.calendars ?? []).filter((s) => s.app === app.id);
   const uninstall = useMutation({
     meta: { success: `${app.name} uninstalled` },
-    mutationFn: async () => {
+    mutationFn: async (options: { remove_reviews?: boolean } = {}) => {
       for (const c of assistants) await disconnectAssistant(supabase(), c.clientId);
       // Google's own calendars go with its sign-in; the ones added by address are removed here.
-      if (hasAccount(app)) await api.post(`/apps/${app.id}/disconnect`);
+      if (hasAccount(app)) {
+        const res = await api.post<{ revoked?: boolean }>(`/apps/${app.id}/disconnect`, options);
+        // The other Google app signs in the same way, and Google would sign it out too.
+        if (res?.revoked === false) toast.info(`Your Google sign-in stays, since ${app.id === "google_business" ? "Google Calendar" : "Google Business Profile"} uses it too. Remove Crewtavo in your Google account's security settings to end both.`);
+      }
       if (app.auth === "site") await api.delete(`/apps/${app.id}/site`);
       await Promise.all(sources.filter((s) => s.kind !== "google").map((s) => api.delete(`/calendars/${s.id}`)));
     },
@@ -164,8 +194,14 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
 
   const askUninstall = async () => {
     if (app.auth === "builtin") return builtinSwitch.turnOff();
+    if (app.id === "google_business") {
+      const choice = { remove: false };
+      const body = <UninstallReviews count={app.google_business?.review_count ?? 0} onChange={(remove) => (choice.remove = remove)} />;
+      if (await confirm({ title: `Uninstall ${app.name}?`, body, confirmLabel: "Uninstall", danger: true })) uninstall.mutate({ remove_reviews: choice.remove });
+      return;
+    }
     const body = uninstallBody(app, { assistants: assistants.length, calendars: sources.length });
-    if (await confirm({ title: `Uninstall ${app.name}?`, body, confirmLabel: "Uninstall", danger: true })) uninstall.mutate();
+    if (await confirm({ title: `Uninstall ${app.name}?`, body, confirmLabel: "Uninstall", danger: true })) uninstall.mutate({});
   };
 
   const install = () => {
@@ -175,8 +211,9 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
       setPhase("working");
       return builtinSwitch.toggle.mutate(true, failed);
     }
-    // Signing in is the setup; Google also offers adding a calendar by its address instead.
-    if (app.auth === "oauth" && app.available && app.id !== "google_calendar" && !keysFirst(app)) {
+    // Signing in is the setup; Google also offers adding a calendar by its address instead. Google
+    // Business Profile has steps to take before signing in, Google's access request first.
+    if (app.auth === "oauth" && app.available && app.id !== "google_calendar" && app.id !== "google_business" && !keysFirst(app)) {
       setPhase("working");
       return connect.mutate(undefined, failed);
     }
@@ -204,10 +241,21 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
   }, [phase, installed]);
 
   const status = statusOf(app, installed);
-  const callback = params.get("status") ? { ok: params.get("status") === "connected", message: params.get("message") } : null;
+  const callback = params.get("status") ? { ok: params.get("status") === "connected", message: params.get("message"), pending: params.get("pending") } : null;
   const unavailable = !app.available && !byLinkOnly(app) && !app.takes_app_keys;
+  // Google Business Profile's reviews show in Marketing, and Facebook & Instagram posts from it, so Marketing is installed first.
+  const needsMarketing = (app.id === "google_business" || app.id === "meta") && !installed && !featureOn(session.company.settings, "marketing");
   const needsReconnect = app.auth === "oauth" && app.status === "error" && app.available;
+  // The business's own app keys are saved but it isn't signed in yet: their card shows, with the sign-in.
+  const keysSaved = keysFirst(app) && Boolean(app.app_keys);
   const open = openTarget(app, info);
+  // Google Business Profile opens Marketing → Reviews, which isn't there while Marketing is off.
+  const opens = !(app.id === "google_business" && app.google_business?.marketing_on === false);
+  // Facebook & Instagram opens Marketing → Social, which isn't there while Marketing is off either.
+  const metaOpens = !(app.id === "meta" && app.meta?.marketing_on === false);
+  // These three open Marketing, which an admin who connects apps without the marketing area can't
+  // open: no Open, rather than one that leads to "no access".
+  const marketingOpens = !OPENS_MARKETING.has(app.id) || usesMarketing(session);
 
   // The buttons next to the name: Install, which turns into its progress ring and then Uninstall,
   // like an app store's; and once it's installed, Open (or Reconnect when it needs it).
@@ -222,14 +270,14 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
         )}
         {needsReconnect ? (
           <Button className="app-get" variant="primary" icon="refresh" loading={connect.isPending} onClick={() => connect.mutate()}>Reconnect</Button>
-        ) : open.startsWith("/") ? (
+        ) : !opens || !metaOpens || !marketingOpens ? null : open.startsWith("/") ? (
           <Link className="btn app-get" to={open}>Open</Link>
         ) : (
           <a className="btn app-get" href={open} target="_blank" rel="noreferrer">Open <Icon name="external" size={14} /></a>
         )}
       </>
     );
-  } else if (unavailable) {
+  } else if (unavailable || needsMarketing) {
     actions = <Button className="app-get" disabled>Install</Button>;
   } else {
     actions = <Button className="app-get" variant="primary" onClick={install}>Install</Button>;
@@ -286,11 +334,18 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
       </dl>
 
       {callback && (
-        <div className={`callout ${callback.ok ? "callout-good" : "callout-warning"}`} role={callback.ok ? "status" : "alert"}>
-          <Icon name={callback.ok ? "check" : "alert"} size={20} />
+        <div className={`callout ${callback.ok && !signedInNotReady(callback.pending, app) ? "callout-good" : "callout-warning"}`} role={callback.ok ? "status" : "alert"}>
+          <Icon name={callback.ok && !signedInNotReady(callback.pending, app) ? "check" : "alert"} size={20} />
           <div className="grow">
-            {callback.ok ? `${app.name} is installed.` : (callback.message ?? `${app.name} couldn't be installed. Try again.`)}
-            {callback.ok && <span style={{ display: "block", fontWeight: 400 }}>{app.id === "google_calendar" ? "Now pick the calendars to show on your schedule." : app.category === "Accounting" ? "New invoices and payments will sync automatically." : null}</span>}
+            {callback.ok ? (signedInNotReady(callback.pending, app) ? signedInWaiting(callback.pending) : `${app.name} is installed.`) : (callback.message ?? `${app.name} couldn't be installed. Try again.`)}
+            {callback.ok && !signedInNotReady(callback.pending, app) && (
+              <span style={{ display: "block", fontWeight: 400 }}>
+                {app.id === "google_calendar" ? "Now pick the calendars to show on your schedule."
+                  : app.id === "google_business" ? googleBusinessNext(callback.pending, app)
+                  : app.id === "meta" ? metaNext(callback.pending)
+                  : app.category === "Accounting" ? "New invoices and payments will sync automatically." : null}
+              </span>
+            )}
           </div>
           <button type="button" className="icon-btn" aria-label="Dismiss" onClick={() => setParams({}, { replace: true })}><Icon name="x" size={16} /></button>
         </div>
@@ -298,12 +353,26 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
 
       {/* ---- Installing it ---- */}
       {!installed && unavailable && <NotAvailable app={app} />}
-      {!installed && setup && !unavailable && (
+      {needsMarketing && !unavailable && (
+        <div className="callout" role="note">
+          <Icon name="info" size={20} />
+          <div className="grow">{app.id === "meta" ? "Install Crewtavo - Marketing first: your posts are made in Marketing → Social." : "Install Crewtavo - Marketing first: your Google reviews show in Marketing → Reviews."} <Link to="/apps/marketing">Crewtavo - Marketing</Link></div>
+        </div>
+      )}
+      {!installed && (setup || keysSaved) && !unavailable && (
         <div id="app-install" className="stack" style={{ scrollMarginTop: 16 }}>
           {byLinkOnly(app) ? (
             <GoogleBySecretAddress app={app} sources={googleSources} />
           ) : keysFirst(app) ? (
             <AppKeysCard app={app} onChanged={refresh} onConnect={() => connect.mutate()} connecting={connect.isPending} />
+          ) : app.id === "google_business" ? (
+            <>
+              <GoogleBeforeSignIn app={app} onConnect={() => connect.mutate()} connecting={connect.isPending} />
+              <details className="card card-pad app-details">
+                <summary>Or use your own Google app</summary>
+                <div style={{ marginTop: 12 }}><AppKeysCard app={app} onChanged={refresh} onConnect={() => connect.mutate()} connecting={connect.isPending} anchor={false} /></div>
+              </details>
+            </>
           ) : app.id === "google_calendar" ? (
             <>{googleSignIn}{googleByAddress}</>
           ) : app.auth === "link" ? (
@@ -327,8 +396,11 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
       {installed && (
         <>
           {byLinkOnly(app) && <GoogleBySecretAddress app={app} sources={googleSources} />}
-          {app.auth === "oauth" && app.available && (app.status === "disconnected" ? app.id === "google_calendar" && googleSignIn : <AccountCard app={app} />)}
-          {app.app_keys && <AppKeysCard app={app} onChanged={refresh} onConnect={() => connect.mutate()} connecting={connect.isPending} />}
+          {app.auth === "oauth" && app.available && app.id !== "google_business" && app.id !== "meta" && (app.status === "disconnected" ? app.id === "google_calendar" && googleSignIn : <AccountCard app={app} />)}
+          {app.id === "meta" && <MetaPanel app={app} onChanged={refresh} />}
+          {app.id === "google_business" && <GoogleBusinessPanel app={app} onChanged={refresh} onReconnect={() => connect.mutate()} reconnecting={connect.isPending} />}
+          {/* Google Business Profile's and Facebook & Instagram's own panels are the page's setup anchor. */}
+          {app.app_keys && <AppKeysCard app={app} onChanged={refresh} onConnect={() => connect.mutate()} connecting={connect.isPending} anchor={app.id !== "google_business" && app.id !== "meta"} />}
           {app.id === "google_calendar" && app.status === "connected" && <GoogleCalendarPanel />}
           {app.id === "google_calendar" && app.available && googleByAddress}
           {app.auth === "link" && <LinkCalendarsPanel app={app.id} appName={app.name} steps={info.steps} />}
@@ -340,6 +412,7 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
           {app.id === "website_forms" && <WebsiteFormsPanel />}
           {app.id === "careers" && <WebsiteFormsPanel kind="careers" />}
           {app.id === "drive" && <DrivePanel />}
+          {app.id === "marketing" && <MarketingPanel />}
           {app.id === "team_chat" && <TeamChatPanel />}
           {app.auth === "site" && <WebsitePanel app={app} onSaved={refresh} />}
         </>
@@ -404,6 +477,67 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
   );
 }
 
+/** The apps whose Open goes to Marketing. */
+const OPENS_MARKETING = new Set(["marketing", "google_business", "meta"]);
+
+/**
+ * Back from signing in to Google Business Profile: a location to pick next, reviews on their way, or
+ * (installed, and waiting on Google's approval) when they start. The callout below says what to do
+ * about the wait, so this doesn't say it again.
+ */
+export function googleBusinessNext(pending: string | null, app: Pick<AppRow, "google_business">): string {
+  // What the sign-in came back with, while it's still so: a location picked since, or Google letting
+  // Crewtavo in on Check again, moves on to what's next.
+  const now = app.google_business;
+  const still = (problem: string) => !now || now.problem === problem;
+  if (pending === "pick" && (still("pick") || !now?.location)) return "Now pick your business's location.";
+  if (pending === "approval" && still("approval")) return "Reviews start coming in once Google approves access.";
+  if (pending === "not_enabled" && still("not_enabled")) return "Reviews start coming in once the Business Profile APIs are turned on.";
+  return now?.marketing_on === false ? "Your reviews come in once Marketing is installed again." : "Your reviews are on their way to Marketing → Reviews.";
+}
+
+/** Back from signing in to Facebook & Instagram: the Page to pick next, permissions to allow, or the last step, going Live. */
+function metaNext(pending: string | null): string {
+  if (pending === "pick") return "Now pick your Page below.";
+  if (pending === "permissions") return "Some permissions weren't allowed. See below for which.";
+  return "Last step: switch your Meta app to Live, below.";
+}
+
+/**
+ * Back from signing in while something's in the way, so it isn't installed in full yet: for Google
+ * Business Profile, what the page doesn't explain below (a location problem, Google erring, or a
+ * Google account that manages no Business Profile); for Facebook & Instagram, a Facebook account
+ * that manages no Page.
+ */
+const signedInNotReady = (pending: string | null, app: AppRow) =>
+  app.id === "meta" ? pending === "no_pages"
+  : pending === "location" || pending === "error" || (pending === "pick" && app.google_business?.problem_detail === "none");
+
+function signedInWaiting(pending: string | null): string {
+  if (pending === "no_pages") return "Signed in, but that Facebook account doesn't manage a Page. Sign in again with your Page's admin below.";
+  if (pending === "pick") return "Signed in, but that Google account doesn't manage a Business Profile. Sign in with the one that does below.";
+  // The location's problem itself is said in the panel below.
+  if (pending === "location") return "Signed in, but something about the location needs looking at first.";
+  return "Signed in. Google didn't answer, so Crewtavo tries again soon.";
+}
+
+/** Uninstalling Google Business Profile: its reviews stay, unless this is ticked. */
+function UninstallReviews({ count, onChange }: { count: number; onChange: (remove: boolean) => void }) {
+  const [remove, setRemove] = useState(false);
+  return (
+    <div className="stack-sm">
+      <p style={{ margin: 0 }}>Reviews stop coming in, and replies can't be posted from Crewtavo. Your reviews on Google aren't changed. You can install it again any time.</p>
+      {count > 0 && (
+        <label className="checkbox">
+          <input type="checkbox" checked={remove} onChange={(e) => { setRemove(e.target.checked); onChange(e.target.checked); }} />
+          <span>Also remove the {count.toLocaleString("en-US")} {count === 1 ? "review" : "reviews"} brought in (asks start again for clients they matched)</span>
+        </label>
+      )}
+      {count > 0 && !remove && <p className="muted small" style={{ margin: 0 }}>Kept, they still show in Marketing → Reviews and keep their clients from being asked again.</p>}
+    </div>
+  );
+}
+
 /** What Uninstall takes away, in the words of each kind of app. */
 function uninstallBody(app: AppRow, counts: { assistants: number; calendars: number }): string {
   const again = "You can install it again any time.";
@@ -416,6 +550,11 @@ function uninstallBody(app: AppRow, counts: { assistants: number; calendars: num
   if (app.category === "Accounting") {
     const keys = app.app_keys ? ` Your ${app.id === "quickbooks" ? "Intuit" : "Zoho"} app's keys stay, so installing it again is one sign-in.` : "";
     return `Syncing stops right away. Nothing already synced is deleted.${keys} ${again}`;
+  }
+  if (app.id === "meta") {
+    const n = app.meta?.scheduled_posts ?? 0;
+    const waiting = n ? ` ${n === 1 ? "1 scheduled post won't" : `${n} scheduled posts won't`} go to Facebook or Instagram. Use Post again once you've connected again.` : "";
+    return `Posts stop going to your Page and Instagram, and Crewtavo's access to them is removed at Meta.${waiting} Posts already made stay, and your app's keys stay, so installing it again is one sign-in.`;
   }
   if (app.id === "abc_supply") return `Estimates stop getting prices from ABC, and your ABC app's keys are removed from Crewtavo. The materials in your price list and the prices already on estimates stay. ${again}`;
   if (app.id === "fal") return `Find paving stops working, and your fal.ai key is removed from Crewtavo. Shapes it already found stay on your drawings. ${again}`;

@@ -49,6 +49,10 @@ describe("stripe form encoding", () => {
       "customer=cus_1&metadata%5Binvoice%5D=abc&expand%5B0%5D=charge.balance_transaction&custom_fields%5B0%5D%5Bname%5D=Invoice&custom_fields%5B0%5D%5Bvalue%5D=%234&auto_advance=false",
     );
   });
+
+  it("sends an empty string, which tells Stripe not to inherit a value", () => {
+    expect(stripeForm({ discounts: "" }).toString()).toBe("discounts=");
+  });
 });
 
 describe("stripe line items", () => {
@@ -68,6 +72,21 @@ describe("stripe line items", () => {
     );
     expect(items.map((i) => i.description)).toEqual(["Weekly mowing (4 visit × $35.00)", "Edging", "Discount (SPRING)", "Tax (8.25%)", "Retainage held (10%), billed later", "Already paid", "Tip for the crew"]);
     expect(total(items)).toBe(9614 + 1500);
+  });
+
+  it("shows each referral credit under its note, as much of it as the invoice takes, and still adds up", () => {
+    // $160 less a $10 promo less $55 of credits, taxed at 5%: $95 + $4.75.
+    const items = stripeLineItems(invoice({
+      discount_amount: 10, promo: { code: "SPRING" }, credit_amount: 55, tax_rate: 0.05, tax_amount: 4.75, balance_due: 99.75,
+      credits: [{ amount: 50, note: "Referral credit: thanks for referring Maria" }, { amount: 20, note: "Referral credit: thanks for referring Nia" }],
+    }));
+    expect(items.slice(2, 5)).toEqual([
+      { description: "Discount (SPRING)", amount: -1000 },
+      { description: "Referral credit: thanks for referring Maria", amount: -5000 },
+      { description: "Referral credit: thanks for referring Nia", amount: -500 },
+    ]);
+    expect(items.some((i) => i.description === "Rounding")).toBe(false);
+    expect(total(items)).toBe(9975);
   });
 
   it("names the tax rate as it's kept, to 0.0001%", () => {

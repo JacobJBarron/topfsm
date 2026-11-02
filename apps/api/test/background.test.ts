@@ -354,13 +354,13 @@ describe("accounting sync", () => {
      * Our side: the client (and maybe the invoice) sent before, and the links saved since. `others`
      * are other records' links, which the provider's id finds.
      */
-    async function ours(provider: "quickbooks" | "zoho_books", linked: Record<string, string>, others: Array<{ entity: string; local_id: string; external_id: string }> = []) {
+    async function ours(provider: "quickbooks" | "zoho_books", linked: Record<string, string>, others: Array<{ entity: string; local_id: string; external_id: string }> = [], sent: Record<string, unknown> = invoice) {
       const ciphertext = await encryptJson(env, { access_token: "token", expires_at: Date.now() + 3_600_000 });
       const links = new Map(Object.entries(linked));
       const { db } = fakeDb((q) => {
         if (q.table === "integrations") return verb(q) === "select" ? { data: { provider, external_account_id: "books-1", settings: {} } } : {};
         if (q.table === "integration_secrets") return { data: { ciphertext } };
-        if (q.table === "invoices") return { data: invoice };
+        if (q.table === "invoices") return { data: sent };
         if (q.table === "payments") return { data: payment };
         if (q.table === "sync_links") {
           if (verb(q) === "upsert") links.set(call(q, "upsert")![1].entity, call(q, "upsert")![1].external_id);
@@ -539,6 +539,29 @@ describe("accounting sync", () => {
       expect(links.get("invoice")).toBe("made-3");
     });
 
+    // $200 of mowing, a $20 promo and $50 of referral credits: the books get one $70 discount before tax.
+    const credited = { ...invoice, discount_amount: 20, credit_amount: 50, invoice_line_items: [{ ...invoice.invoice_line_items[0]!, unit_price: 200 }] };
+
+    it("sends QuickBooks referral credits in its one discount line, before tax", async () => {
+      const { db } = await ours("quickbooks", { client: "cust-1" }, [], credited);
+      const qbo = quickbooks({ first: "answered" });
+      await runAccountingJob(env, db, invoiceJob);
+      expect(qbo.made).toHaveLength(1);
+      expect(qbo.made[0]!.Line).toEqual(expect.arrayContaining([{ DetailType: "DiscountLineDetail", Amount: 70, DiscountLineDetail: { PercentBased: false } }]));
+      expect(qbo.made[0]!.Line.filter((l: { DetailType: string }) => l.DetailType === "DiscountLineDetail")).toHaveLength(1);
+      expect(qbo.made[0]!.ApplyTaxAfterDiscount).toBe(true);
+    });
+
+    it("sends Zoho Books referral credits in its discount, and finds the one it sent by its total less them", async () => {
+      const { db, links } = await ours("zoho_books", { client: "contact-1" }, [], credited);
+      const books = zoho();
+      await expect(runAccountingJob(env, db, invoiceJob)).rejects.toThrow("timeout");
+      await runAccountingJob(env, db, invoiceJob); // the outbox's retry finds the $130 invoice it sent
+      expect(books.made).toMatchObject([{ discount: 70, discount_type: "entity_level", is_discount_before_tax: true }]);
+      expect(books.posts).toHaveLength(1);
+      expect(links.get("invoice")).toBe("made-1");
+    });
+
     it("doesn't put a second payment in Zoho Books", async () => {
       const { db, links } = await ours("zoho_books", { client: "contact-1", invoice: "zoho-inv-1" });
       const books = zoho();
@@ -564,7 +587,7 @@ describe("automation runs", () => {
       (fn, args) =>
         fn === "claim_automation_runs" ? { data: runs } : fn === "start_automation_run" ? { data: args.p_id === 1 } : fn === "finish_automation_run" ? { data: true } : {},
     );
-    expect(await processAutomations(env, { limit: 50 })).toEqual({ claimed: 2, done: 0, skipped: 1, failed: 0, lost: 1 });
+    expect(await processAutomations(env, { limit: 50 })).toEqual({ claimed: 2, done: 0, skipped: 1, failed: 0, waiting: 0, lost: 1 });
 
     expect(rpcs.filter((r) => r.fn === "start_automation_run").map((r) => r.args)).toEqual([
       { p_id: 1, p_token: "claim-1" },
@@ -605,7 +628,7 @@ describe("automation runs", () => {
       // By the time it's done, another worker has claimed the run.
       (fn) => (fn === "claim_automation_runs" ? { data: [run(1)] } : fn === "start_automation_run" ? { data: true } : { data: false }),
     );
-    expect(await processAutomations(env, { limit: 50 })).toEqual({ claimed: 1, done: 0, skipped: 0, failed: 0, lost: 1 });
+    expect(await processAutomations(env, { limit: 50 })).toEqual({ claimed: 1, done: 0, skipped: 0, failed: 0, waiting: 0, lost: 1 });
     expect(rpcs.filter((r) => r.fn === "finish_automation_run").map((r) => r.args.p_status)).toEqual(["done"]);
     expect(queries.filter((q) => q.table === "automation_rules" && verb(q) === "update")).toEqual([]);
   });
