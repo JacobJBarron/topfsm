@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { FormError } from "@/components/ui/Field";
 import { Icon } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { CardSkeleton, Loading, Skeleton } from "@/components/ui/Skeleton";
+import { Loading, Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState, ErrorState } from "@/components/ui/States";
 import { api, supabase, unwrap } from "@/lib/api";
 import { timeAgo } from "@/lib/format";
@@ -168,23 +168,27 @@ export function KnowledgeBasePage() {
             {categories.error ? (
               <div className="card"><ErrorState compact error={categories.error} onRetry={() => categories.refetch()} /></div>
             ) : categories.isPending ? (
-              <Loading label="Loading categories"><div className="grid-cards">{[0, 1, 2, 3].map((i) => <CardSkeleton key={i} lines={1} />)}</div></Loading>
+              <CoverCardsSkeleton label="Loading categories" count={4} />
             ) : categories.data.length === 0 && uncategorized === 0 ? (
               <div className="card"><EmptyState icon="book" title="Your knowledge base is empty" action={editor && <Link className="btn" to="/kb/new"><Icon name="plus" size={16} />Write a guide</Link>} /></div>
             ) : (
-              <div className="grid-cards">
+              <div className="guide-cards">
                 {categories.data.map((c) => (
-                  <button key={c.id} type="button" className="card card-pad category-card" onClick={() => set({ category: c.id })}>
-                    <span className="c-icon"><Icon name="book" size={20} /></span>
-                    <strong>{c.name}</strong>
-                    <span className="muted small">{index.data ? `${countFor(c.id)} ${countFor(c.id) === 1 ? "guide" : "guides"}` : <Skeleton width={50} height={10} />}</span>
+                  <button key={c.id} type="button" className="card guide-card category-tile" onClick={() => set({ category: c.id })}>
+                    <GuideCover path={c.cover_path} />
+                    <span className="guide-card-body">
+                      <strong className="guide-card-title">{c.name}</strong>
+                      <span className="muted small">{index.data ? `${countFor(c.id)} ${countFor(c.id) === 1 ? "guide" : "guides"}` : <Skeleton width={50} height={10} />}</span>
+                    </span>
                   </button>
                 ))}
                 {uncategorized > 0 && (
-                  <button type="button" className="card card-pad category-card" onClick={() => set({ category: "none" })}>
-                    <span className="c-icon" style={{ background: "var(--fill-2)", color: "var(--text-3)" }}><Icon name="file" size={20} /></span>
-                    <strong>Uncategorized</strong>
-                    <span className="muted small">{uncategorized} {uncategorized === 1 ? "guide" : "guides"}</span>
+                  <button type="button" className="card guide-card" onClick={() => set({ category: "none" })}>
+                    <GuideCover path={null} />
+                    <span className="guide-card-body">
+                      <strong className="guide-card-title">Uncategorized</strong>
+                      <span className="muted small">{uncategorized} {uncategorized === 1 ? "guide" : "guides"}</span>
+                    </span>
                   </button>
                 )}
               </div>
@@ -207,16 +211,18 @@ function PageRowsSkeleton() {
   return <Loading label="Loading">{[0, 1, 2].map((i) => <div key={i} className="card-row"><Skeleton width={32} height={32} radius={8} /><span className="grow stack-sm"><Skeleton width="40%" /><Skeleton width="70%" height={10} /></span></div>)}</Loading>;
 }
 
+function CoverCardsSkeleton({ label, count }: { label: string; count: number }) {
+  return (
+    <Loading label={label}>
+      <div className="guide-cards">{Array.from({ length: count }, (_, i) => <div key={i} className="card guide-card"><span className="guide-cover" /><span className="guide-card-body"><Skeleton width="70%" /><Skeleton width="45%" height={10} /></span></div>)}</div>
+    </Loading>
+  );
+}
+
 /** Guides as cards: the cover photo (or a book) over the title. */
 function GuideCards({ pages, loading, error, retry, isRead, empty, showCategory }: { pages: SopIndexRow[]; loading: boolean; error?: unknown; retry?: () => void; isRead?: (p: SopIndexRow) => boolean; empty?: React.ReactNode; showCategory?: Array<{ id: string; name: string }> }) {
   if (error) return <div className="card"><ErrorState compact error={error} onRetry={retry} /></div>;
-  if (loading) {
-    return (
-      <Loading label="Loading guides">
-        <div className="guide-cards">{[0, 1, 2].map((i) => <div key={i} className="card guide-card"><span className="guide-cover" /><span className="guide-card-body"><Skeleton width="70%" /><Skeleton width="45%" height={10} /></span></div>)}</div>
-      </Loading>
-    );
-  }
+  if (loading) return <CoverCardsSkeleton label="Loading guides" count={3} />;
   if (!pages.length) return <div className="card"><EmptyState inline title="No guides here yet" action={empty} /></div>;
   return (
     <div className="guide-cards">
