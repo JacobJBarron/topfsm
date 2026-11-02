@@ -17,6 +17,7 @@ import { EmailSettings } from "./EmailSettings";
 import { HostingSettings } from "./HostingSettings";
 import { LicenseSettings } from "./LicenseSettings";
 import { MapsSettings } from "./MapsSettings";
+import { PaymentSettings } from "./PaymentSettings";
 import { PriceList } from "./PriceList";
 import { ProfileSettings } from "./ProfileSettings";
 import { RolesSettings } from "./RolesSettings";
@@ -67,6 +68,7 @@ export function SettingsPage() {
         <div className="settings-body">
           {tab === "profile" && <ProfileSettings />}
           {tab === "company" && <CompanySettings />}
+          {tab === "payments" && <PaymentSettings />}
           {tab === "schedule" && <ScheduleSettings />}
           {tab === "address" && <WebAddressSettings />}
           {tab === "hosting" && <HostingSettings />}

@@ -5,6 +5,7 @@ import type { Env } from "../src/env";
 import { runAccountingJob, SentButUnrecorded } from "../src/integrations/accounting";
 import { accessToken } from "../src/integrations/tokens";
 import { encryptJson } from "../src/lib/crypto";
+import { readClientLink } from "../src/lib/links";
 import type { Db } from "../src/lib/supabase";
 import { processAutomations } from "../src/services/automations";
 import { materializeJob, runTask } from "../src/tasks";
@@ -15,6 +16,21 @@ vi.mock("../src/lib/supabase", async (original) => ({
   ...(await original<typeof import("../src/lib/supabase")>()),
   adminClient: () => current.db,
   userClient: () => current.db,
+}));
+// Autopay invites are their own service (services/autopay.ts); here only the engine's part is tested.
+const invites = vi.hoisted(() => ({
+  send: null as null | ((input: Record<string, unknown>) => Promise<{ sent: boolean; detail: string }>),
+  calls: [] as Array<Record<string, unknown>>,
+  available: false,
+}));
+vi.mock("../src/services/autopay", async (original) => ({
+  ...(await original<typeof import("../src/services/autopay")>()),
+  sendAutopayInvite: async (_env: unknown, _admin: unknown, input: Record<string, unknown>) => {
+    invites.calls.push(input);
+    if (!invites.send) throw new Error("No invite expected.");
+    return invites.send(input);
+  },
+  autopayAvailable: async () => invites.available,
 }));
 
 const env: Env = {
@@ -83,6 +99,24 @@ function upTo1000<T>(rows: T[], q: Query): Answer {
   return { data: rows.slice(from, to + 1) };
 }
 
+/** A query that answers every builder call with itself, and `then` with `rows` (or `single` for maybeSingle/single). */
+function fakeChain(rows: unknown, single: { data: unknown } = { data: rows }): unknown {
+  let one = false;
+  const chain: unknown = new Proxy(
+    {},
+    {
+      get: (_, name) =>
+        name === "then"
+          ? (resolve: (value: unknown) => unknown) => resolve({ error: null, ...(one ? single : { data: rows }) })
+          : () => {
+              if (name === "maybeSingle" || name === "single") one = true;
+              return chain;
+            },
+    },
+  );
+  return chain;
+}
+
 const recurringJob = (id: string, rule: string, startsOn: string) => ({
   id,
   company_id: COMPANY,
@@ -99,6 +133,9 @@ const recurringJob = (id: string, rule: string, startsOn: string) => ({
 });
 
 afterEach(() => {
+  invites.send = null;
+  invites.calls = [];
+  invites.available = false;
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -678,6 +715,252 @@ describe("automation runs", () => {
     expect(await processAutomations(env, { limit: 50 })).toMatchObject({ failed: 1 });
     expect(queries.some((q) => q.table === "notifications" && verb(q) === "insert")).toBe(false);
     expect(rpcs.find((r) => r.fn === "finish_automation_run")!.args.p_error).toMatch(/Only the office with the Subcontractors area/);
+  });
+
+  /** An autopay rule's run, as the database would queue it: a charge on invoice #2 failed, or a client was added. */
+  const autopayRun = (trigger: string, actions: unknown[], memberships: unknown[] = [], roles: Record<string, string[]> = {}) => {
+    const rows: Record<string, unknown> = {
+      automation_rules: { id: "rule-1", name: "Autopay", trigger, enabled: true, conditions: [], run_count: 0, actions },
+      companies: { id: COMPANY, name: "Radford Lawn Care", timezone: "America/New_York", currency: "USD", trade_preset: "lawn_exterior", settings: { autopay: { enabled: true } }, address: {} },
+      invoices: { number: 2, subject: "Weekly mow", status: "sent", total: 45, balance_due: 45, client_id: "client-1", job_id: "job-1", lines: [{ name: "Mow" }] },
+      clients: { id: "client-1", display_name: "Pat Lee", email: "pat@example.com", phone: "+15405550111", tags: [], status: "active", lead_source: null },
+      activity: { data: { client_id: "client-1", card: "Visa ending 4242", reason: "Your card was declined.", status: "failed" } },
+      autopay_charges: [{ id: "charge-1" }],
+      memberships,
+    };
+    const subject = trigger === "autopay.failed" ? { subject_type: "invoice", subject_id: "invoice-1" } : { subject_type: "client", subject_id: "client-1" };
+    return fakeDb(
+      (q) => {
+        if (q.table === "company_roles") return { data: Object.entries(roles).map(([id, permissions]) => ({ id, permissions })) };
+        return { data: verb(q) === "select" ? (rows[q.table] ?? null) : null };
+      },
+      (fn) =>
+        fn === "claim_automation_runs"
+          ? { data: [{ ...run(1), ...subject, activity_id: 77 }] }
+          : fn === "start_automation_run" || fn === "renew_automation_run" || fn === "finish_automation_run" ? { data: true } : {},
+    );
+  };
+  const tokenOf = (link: string) => link.match(/\/hub\/([^?\s]+)/)![1]!;
+
+  it("invite a client to autopay by the channel the rule says, skipping who's invited already", async () => {
+    invites.send = async (input) => ({ sent: true, detail: input.channel === "sms" ? "Sent by text." : "Sent by email." });
+    const { rpcs } = autopayRun("client.created", [{ type: "invite_autopay", channel: "sms" }]);
+    expect(await processAutomations(env, { limit: 50, baseUrl: "https://app.test" })).toMatchObject({ done: 1 });
+    expect(invites.calls).toEqual([{ companyId: COMPANY, clientId: "client-1", channel: "sms", baseUrl: "https://app.test", createdBy: null, skipIfRecentDays: 7 }]);
+    expect(rpcs.find((r) => r.fn === "finish_automation_run")!.args.p_result).toEqual([{ type: "invite_autopay", ok: true, detail: "Sent by text." }]);
+
+    // A skip is fine; a reason it can't go out fails the action.
+    invites.send = async () => ({ sent: false, detail: "Skipped: already on autopay" });
+    const skipped = autopayRun("client.created", [{ type: "invite_autopay", channel: "email" }]);
+    expect(await processAutomations(env, { limit: 50, baseUrl: "https://app.test" })).toMatchObject({ done: 1 });
+    expect(skipped.rpcs.find((r) => r.fn === "finish_automation_run")!.args.p_result).toEqual([{ type: "invite_autopay", ok: true, detail: "Skipped: already on autopay" }]);
+
+    invites.send = async () => {
+      throw new Error("Turn on autopay in Settings → Payments first.");
+    };
+    const refused = autopayRun("client.created", [{ type: "invite_autopay", channel: "email" }]);
+    expect(await processAutomations(env, { limit: 50, baseUrl: "https://app.test" })).toMatchObject({ failed: 1 });
+    expect(refused.rpcs.find((r) => r.fn === "finish_automation_run")!.args.p_error).toBe("Turn on autopay in Settings → Payments first.");
+  });
+
+  it("about a failed autopay charge tell the office the card and why, and keep them out of the task", async () => {
+    const sent: Array<{ text: string; subject: string }> = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("resend")) sent.push(JSON.parse(String(init!.body)));
+      return Response.json({ id: "email-1" });
+    });
+    const memberships = [
+      { user_id: "owner-1", role: "owner", role_id: null },
+      { user_id: "office-1", role: "office", role_id: null },
+      // Office whose custom role has automations but not invoices, and the crew.
+      { user_id: "clerk-1", role: "office", role_id: "role-clerk" },
+      { user_id: "crew-1", role: "field_crew", role_id: null },
+    ];
+    const { queries, rpcs } = autopayRun(
+      "autopay.failed",
+      [
+        // Written straight to the database: a crew level too.
+        { type: "notify", roles: ["owner", "office", "field_crew"], title: "Autopay failed on {{autopay.card}}", body: "{{autopay.reason}} {{autopay.link}}" },
+        { type: "send_email", subject: "We couldn't charge your {{autopay.card}}", body: "Hi {{client.first_name}}, {{autopay.reason}} Update it here:\n\n{{autopay.link}}" },
+        { type: "create_task", title: "Call {{client.name}} about {{autopay.card}} ({{autopay.reason}}) {{autopay.link}}", days_from_now: 1 },
+      ],
+      memberships,
+      { "role-clerk": ["automations"] },
+    );
+    const mailing = { ...env, RESEND_API_KEY: "re_test", EMAIL_FROM: "Crewtavo <hi@crewtavo.test>" };
+    expect(await processAutomations(mailing, { limit: 50, baseUrl: "https://app.test" })).toMatchObject({ done: 1 });
+    expect(rpcs.find((r) => r.fn === "finish_automation_run")!.args.p_result.map((r: { ok: boolean }) => r.ok)).toEqual([true, true, true]);
+
+    // Only the office with the invoices area is told, with the card and the reason.
+    const notices = call(queries.find((q) => q.table === "notifications" && verb(q) === "insert")!, "insert")![1] as Array<{ user_id: string; title: string; body: string }>;
+    expect(notices.map((n) => n.user_id).sort()).toEqual(["office-1", "owner-1"]);
+    expect(notices[0]!.title).toBe("Autopay failed on Visa ending 4242");
+    expect(notices[0]!.body).toMatch(/^Your card was declined\. https:\/\/app\.test\/hub\/\S+\?view=autopay$/);
+    // The office's notice carries the office's copy of the link, which can't confirm a card or add a tip.
+    expect(await readClientLink(env, tokenOf(notices[0]!.body))).toMatchObject({ c: COMPANY, t: "client", id: "client-1", via: "office" });
+
+    // The client's email has their own link, and is kept as an autopay message (only the money office reads those).
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.subject).toBe("We couldn't charge your Visa ending 4242");
+    expect(sent[0]!.text).toContain("Hi Pat, Your card was declined. Update it here:");
+    const own = await readClientLink(env, tokenOf(sent[0]!.text));
+    expect(own).toMatchObject({ c: COMPANY, t: "client", id: "client-1", own: 1 });
+    expect(own!.via).toBeUndefined();
+    const message = call(queries.find((q) => q.table === "messages" && verb(q) === "insert")!, "insert")![1];
+    expect(message).toMatchObject({ channel: "email", related_type: "autopay", related_id: "client-1", client_id: "client-1" });
+    // The copy kept on the timeline has the office's copy of the link, in the same words.
+    expect(message.body).toContain("Hi Pat, Your card was declined. Update it here:");
+    expect(await readClientLink(env, tokenOf(message.body))).toMatchObject({ c: COMPANY, t: "client", id: "client-1", via: "office" });
+
+    // The task is on the schedule, where the crew sees it: no card, reason or link.
+    const task = call(queries.find((q) => q.table === "visits" && verb(q) === "insert")!, "insert")![1] as { title: string };
+    expect(task.title).toBe("Call Pat Lee about  ()");
+  });
+
+  it("text the client their own links, and keep the office's copies of them on the timeline", async () => {
+    const texts: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("twilio")) texts.push(new URLSearchParams(String(init!.body)).get("Body")!);
+      return Response.json({ sid: "SM1" });
+    });
+    const { queries, rpcs } = autopayRun("autopay.failed", [{ type: "send_sms", body: "Pay invoice #{{number}}: {{link}} Or update your card: {{autopay.link}}" }]);
+    const texting = { ...env, TWILIO_ACCOUNT_SID: "AC1", TWILIO_AUTH_TOKEN: "t", TWILIO_FROM_NUMBER: "+15405550000" };
+    expect(await processAutomations(texting, { limit: 50, baseUrl: "https://app.test" })).toMatchObject({ done: 1 });
+    expect(rpcs.find((r) => r.fn === "finish_automation_run")!.args.p_result).toEqual([expect.objectContaining({ type: "send_sms", ok: true })]);
+
+    const links = (text: string) => [...text.matchAll(/\/hub\/([^?\s]+)/g)].map((m) => m[1]!);
+    expect(texts).toHaveLength(1);
+    const sent = await Promise.all(links(texts[0]!).map((token) => readClientLink(env, token)));
+    expect(sent).toMatchObject([{ t: "invoice", id: "invoice-1" }, { t: "client", id: "client-1" }]);
+    for (const link of sent) expect(link!.via).toBeUndefined();
+    for (const link of sent) expect(link).toMatchObject({ own: 1 });
+
+    const message = call(queries.find((q) => q.table === "messages" && verb(q) === "insert")!, "insert")![1] as { channel: string; body: string };
+    expect(message.channel).toBe("sms");
+    expect(message.body).toMatch(/^Pay invoice #2: https:\/\/app\.test\/hub\/\S+ Or update your card: https:\/\/app\.test\/hub\/\S+\?view=autopay$/);
+    const kept = await Promise.all(links(message.body).map((token) => readClientLink(env, token)));
+    expect(kept).toMatchObject([{ t: "invoice", id: "invoice-1", via: "office" }, { t: "client", id: "client-1", via: "office" }]);
+  });
+
+  /** A quote.sent or invoice.sent rule's run, as the database would queue it: quote #7 or invoice #2, for Pat. */
+  const sentRun = (subject: "quote" | "invoice", actions: unknown[]) => {
+    const rows: Record<string, unknown> = {
+      automation_rules: { id: "rule-1", name: "Follow up", trigger: `${subject}.sent`, enabled: true, conditions: [], run_count: 0, actions },
+      companies: { id: COMPANY, name: "Radford Lawn Care", timezone: "America/New_York", currency: "USD", trade_preset: "lawn_exterior", settings: {}, address: {} },
+      quotes: {
+        number: 7, title: "Spring cleanup", status: "sent", total: 300, tax_rate: 0, discount_amount: 0, range_low: null, range_high: null, priced_on_site_at: null, exact_sent_at: null,
+        roof_package_id: null, option_id: null, client_id: "client-1", property_id: null, property: null, promo: null, lines: [], options: [],
+      },
+      invoices: { number: 2, subject: "Weekly mow", status: "sent", total: 45, balance_due: 45, client_id: "client-1", job_id: "job-1", lines: [{ name: "Mow" }] },
+      clients: { id: "client-1", display_name: "Pat Lee", email: "pat@example.com", phone: "+15405550111", tags: [], status: "active", lead_source: null },
+      autopay_charges: [],
+    };
+    return fakeDb(
+      (q) => ({ data: verb(q) === "select" ? (rows[q.table] ?? null) : null }),
+      (fn) =>
+        fn === "claim_automation_runs"
+          ? { data: [{ ...run(1), subject_type: subject, subject_id: `${subject}-1` }] }
+          : fn === "start_automation_run" || fn === "renew_automation_run" || fn === "finish_automation_run" ? { data: true } : {},
+    );
+  };
+
+  it("put the office's copy of the client's link in the notes and tasks they add, where the team reads them", async () => {
+    // A note on a sent quote: estimators and crews who see the client read it.
+    const note = sentRun("quote", [{ type: "add_note", body: "Sent {{link}}" }]);
+    expect(await processAutomations(env, { limit: 50, baseUrl: "https://app.test" })).toMatchObject({ done: 1 });
+    const kept = call(note.queries.find((q) => q.table === "messages" && verb(q) === "insert")!, "insert")![1] as { channel: string; body: string };
+    expect(kept.channel).toBe("note");
+    expect(kept.body).toMatch(/^Sent https:\/\/app\.test\/hub\/\S+$/);
+    const noted = await readClientLink(env, tokenOf(kept.body));
+    expect(noted).toMatchObject({ c: COMPANY, t: "quote", id: "quote-1", via: "office" });
+    expect(noted).not.toHaveProperty("own");
+
+    // A task on a sent invoice: it's on the schedule, where the crew sees it.
+    const task = sentRun("invoice", [{ type: "create_task", title: "Follow up on {{link}}", days_from_now: 2 }]);
+    expect(await processAutomations(env, { limit: 50, baseUrl: "https://app.test" })).toMatchObject({ done: 1 });
+    const visit = call(task.queries.find((q) => q.table === "visits" && verb(q) === "insert")!, "insert")![1] as { title: string };
+    expect(visit.title).toMatch(/^Follow up on https:\/\/app\.test\/hub\/\S+$/);
+    // A task's title stops at 200 characters, which cuts the link's signature, so what it was minted as is read straight from it.
+    const tasked = JSON.parse(Buffer.from(tokenOf(visit.title).split(".")[0]!, "base64url").toString());
+    expect(tasked).toMatchObject({ c: COMPANY, t: "invoice", id: "invoice-1", via: "office" });
+    expect(tasked).not.toHaveProperty("own");
+  });
+
+  it("email the client their own link, marked as theirs, for a quote or invoice", async () => {
+    const sent: Array<{ text: string }> = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("resend")) sent.push(JSON.parse(String(init!.body)));
+      return Response.json({ id: "email-1" });
+    });
+    sentRun("invoice", [{ type: "send_email", subject: "Invoice #{{number}}", body: "Pay it here: {{link}}" }]);
+    const mailing = { ...env, RESEND_API_KEY: "re_test", EMAIL_FROM: "Crewtavo <hi@crewtavo.test>" };
+    expect(await processAutomations(mailing, { limit: 50, baseUrl: "https://app.test" })).toMatchObject({ done: 1 });
+    expect(sent).toHaveLength(1);
+    const own = await readClientLink(env, tokenOf(sent[0]!.text));
+    expect(own).toMatchObject({ t: "invoice", id: "invoice-1", own: 1 });
+    expect(own).not.toHaveProperty("via");
+  });
+
+  it("about autopay fail rather than tell someone without the invoices area, and never add a client note", async () => {
+    const { queries, rpcs } = autopayRun(
+      "payment_method.expiring",
+      [{ type: "notify", user_ids: ["clerk-1"], title: "{{autopay.card}} expires" }, { type: "add_note", body: "{{autopay.card}}" }],
+      [{ user_id: "clerk-1", role: "office", role_id: "role-clerk" }],
+      { "role-clerk": ["automations"] },
+    );
+    expect(await processAutomations(env, { limit: 50, baseUrl: "https://app.test" })).toMatchObject({ failed: 1 });
+    expect(queries.some((q) => q.table === "notifications" && verb(q) === "insert")).toBe(false);
+    expect(queries.some((q) => q.table === "messages")).toBe(false);
+    expect(rpcs.find((r) => r.fn === "finish_automation_run")!.args.p_result).toEqual([
+      { type: "notify", ok: false, detail: "Only the office with the Invoices and payments area hears about autopay, and nobody this rule notifies has it." },
+      { type: "add_note", ok: false, detail: "This action doesn't fit what starts this rule." },
+    ]);
+  });
+
+  it("know whether the client and the invoice are on autopay, for the rule's conditions", async () => {
+    const { loadContext } = await import("../src/services/automations");
+    const { db, queries } = autopayRun("autopay.failed", []);
+    expect((await loadContext(db, COMPANY, "invoice", "invoice-1"))?.facts.autopay).toBe("yes");
+    const charges = queries.find((q) => q.table === "autopay_charges")!;
+    expect(charges.calls).toEqual(expect.arrayContaining([["eq", "company_id", COMPANY], ["eq", "invoice_id", "invoice-1"], ["neq", "status", "called_off"]]));
+    expect((await loadContext(db, COMPANY, "client", "client-1"))?.facts.autopay).toBe("no"); // no agreement row in this fake
+    const agreements = queries.find((q) => q.table === "autopay_authorizations")!;
+    expect(agreements.calls).toEqual(expect.arrayContaining([["eq", "client_id", "client-1"], ["is", "revoked_at", null], ["is", "paused_at", null]]));
+  });
+
+  it("about autopay preview with the event's card, the office's copy of the link, and a warning while autopay is off", async () => {
+    autopayRun("autopay.failed", []);
+    const db = current.db as { from: (table: string) => unknown };
+    const from = db.from;
+    // The person previewing is office staff; the latest autopay.failed event is on invoice #2.
+    db.from = (table: string) => {
+      if (table === "memberships") return fakeChain({ role: "office", role_id: null });
+      if (table === "activity") return fakeChain([{ id: 77, subject_type: "invoice", subject_id: "invoice-1" }], { data: { data: { card: "Visa ending 4242", reason: "Your card was declined." } } });
+      return from(table);
+    };
+    const preview = (actions: unknown[]) =>
+      app.request(
+        "/api/automations/preview",
+        { method: "POST", headers: { Authorization: "Bearer token", "X-Company-Id": COMPANY, "Content-Type": "application/json" }, body: JSON.stringify({ name: "Failed", trigger: "autopay.failed", conditions: [], actions }) },
+        { ...env, APP_URL: "https://app.test" },
+      );
+    const res = await preview([
+      { type: "notify", roles: ["owner"], title: "{{autopay.card}}", body: "{{autopay.link}}" },
+      { type: "invite_autopay", channel: "email" },
+    ]);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { previews: Array<{ type: string; title?: string; body?: string; to?: string }>; warnings: string[] };
+    expect(body.previews[0]).toMatchObject({ type: "notify", title: "Visa ending 4242" });
+    expect(await readClientLink(env, tokenOf(body.previews[0]!.body!))).toMatchObject({ t: "client", id: "client-1", via: "office" });
+    expect(body.previews[1]).toMatchObject({ type: "invite_autopay", to: "pat@example.com" });
+    expect(body.previews[1]!.body).toContain("[autopay link]");
+    expect(body.warnings).toContain("Autopay isn't on (Settings → Payments, and a Stripe key that can save cards), so invites won't go out until it is.");
+    invites.available = true;
+    const on = (await (await preview([{ type: "invite_autopay", channel: "email" }])).json()) as { warnings: string[] };
+    expect(on.warnings.some((w) => w.startsWith("Autopay isn't on"))).toBe(false);
+
+    // A task can't show the card, so the rule doesn't preview.
+    expect((await preview([{ type: "create_task", title: "{{autopay.card}}", days_from_now: 1 }])).status).toBe(400);
   });
 
   it("about a sub's offer only notify and make tasks, and a task never shows their price or reason", async () => {

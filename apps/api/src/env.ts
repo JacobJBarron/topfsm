@@ -91,6 +91,8 @@ export interface Env {
 export interface Vars {
   userId: string;
   token: string;
+  /** The sign-in this token belongs to (its session_id claim; empty for a token without one). */
+  sessionId: string;
   /** Supabase client acting as the signed-in user: RLS applies to everything it does. */
   db: Db;
   /** The session's app_metadata, which only the server sets (a sub's sign-in carries its mark: isSubLogin). */

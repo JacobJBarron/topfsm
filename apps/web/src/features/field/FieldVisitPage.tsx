@@ -101,6 +101,15 @@ export function FieldVisitPage() {
     meta: { silent: true },
     queryFn: async () => (unwrap(await supabase().rpc("visit_contact", { p_visit: id })) as VisitContact[])[0] ?? null,
   });
+  // Whether the job is charged automatically when the visit is done: a yes or no from
+  // visit_autopay(), never an amount or a card (crews don't see prices). Kept on the phone with the
+  // visit. Not for subs: their price is their own, and the client's billing isn't theirs to see.
+  const autopay = useQuery({
+    queryKey: ["field-visit", id, "autopay"],
+    enabled: !sub && Boolean(v?.job),
+    meta: { silent: true },
+    queryFn: async () => unwrap(await supabase().rpc("visit_autopay", { p_visit: id })) === true,
+  });
   const myTime = useQuery({
     queryKey: ["field-visit", id, "time"],
     enabled: clocks,
@@ -213,6 +222,7 @@ export function FieldVisitPage() {
           <span className="muted">{v.starts_at ? formatDateTime(v.starts_at) : v.scheduled_on ? "Anytime today" : "Not scheduled"}</span>
           {v.series_total && v.series_total > 1 && <span className="chip chip-blue">Day {v.series_day} of {v.series_total}</span>}
           {clocks && minutes > 0 && <span className="chip"><Icon name="clock" size={12} />You: {formatDuration(minutes)}</span>}
+          {!sub && autopay.data && <span className="chip" title="The client is charged automatically after the visit"><Icon name="card" size={12} />Autopay</span>}
         </div>
       </div>
       <OfflineNote />

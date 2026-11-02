@@ -32,6 +32,7 @@ export function ProfileSettings() {
   const [name, setName] = useState(session.profile.full_name);
   const [phone, setPhone] = useState(session.profile.phone ?? "");
   const [color, setColor] = useState(session.profile.color ?? COLORS[0]);
+  const [current, setCurrent] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
   const save = useMutation({
@@ -49,10 +50,11 @@ export function ProfileSettings() {
     mutationFn: async () => {
       if (password.length < 8) throw new Error("Use at least 8 characters.");
       if (password !== confirmPw) throw new Error("The passwords don't match.");
-      const { error } = await supabase().auth.updateUser({ password });
-      if (error) throw new Error(/same/i.test(error.message) ? "That's already your password." : error.message);
+      // Checked against the current one on the server (apps/api/src/routes/account.ts).
+      await api.post("/account/password", { current: current || undefined, password });
     },
     onSuccess: () => {
+      setCurrent("");
       setPassword("");
       setConfirmPw("");
     },
@@ -105,6 +107,7 @@ export function ProfileSettings() {
       )}
       {!madeForSub && <form className="card card-pad stack-sm" onSubmit={(e: FormEvent) => { e.preventDefault(); changePassword.mutate(); }}>
         <strong>Change password</strong>
+        <Field label="Current password" hint="Leave it empty if you don't have one yet."><input className="input" type="password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" /></Field>
         <Field label="New password" hint="At least 8 characters."><input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required minLength={8} /></Field>
         <Field label="Confirm new password" error={confirmPw && password !== confirmPw ? "The passwords don't match." : null}><input className="input" type="password" value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)} autoComplete="new-password" required /></Field>
         <FormError error={changePassword.error} />

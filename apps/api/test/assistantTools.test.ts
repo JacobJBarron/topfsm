@@ -19,6 +19,7 @@ vi.mock("../src/services/team", async (original) => ({
   },
 }));
 const { app } = await import("../src/app");
+const { ADMIN_FROM_TEAM_PAGE } = await import("../src/services/team");
 
 const env: Env = { SUPABASE_URL: "http://127.0.0.1:8080", SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test", SUPABASE_SECRET_KEY: "sb_secret_test", APP_URL: "https://ops.example.com" };
 const part = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -195,6 +196,19 @@ describe("tools", () => {
     expect(result).toEqual({ user_id: "user-9", invited: true, emailed: true, reason: null });
     expect(JSON.stringify(result)).not.toContain("SECRET");
     expect(invites.calls).toEqual([{ email: "new@example.com", full_name: undefined, role: "office", role_id: undefined }]);
+  });
+
+  it("never give admin access: that asks for the person's password, in Crewtavo", async () => {
+    const admin = { company_roles: [{ base_role: "admin", permissions: ["team"] }] };
+    const { sent } = supabase("owner", admin);
+    const person = "00000000-0000-4000-8000-000000000009";
+    for (const args of [{ user_id: person, role: "admin" }, { user_id: person, role: "owner" }, { user_id: person, role_id: "00000000-0000-4000-8000-0000000000aa" }]) {
+      expect((await call("full", "change_role", args)).error, JSON.stringify(args)).toBe(ADMIN_FROM_TEAM_PAGE);
+    }
+    expect((await call("full", "save_role", { name: "Everything", base_role: "admin", permissions: ["team"] })).error).toBe(ADMIN_FROM_TEAM_PAGE);
+    expect(sent.filter((r) => r.method !== "GET" && r.table !== "assistant_calls")).toEqual([]);
+    // A role that's admin-level already can still be renamed.
+    expect(await call("full", "save_role", { role_id: "00000000-0000-4000-8000-0000000000aa", name: "Manager", base_role: "admin", permissions: ["team"] })).toEqual({ role_id: "00000000-0000-4000-8000-0000000000aa", saved: true });
   });
 });
 

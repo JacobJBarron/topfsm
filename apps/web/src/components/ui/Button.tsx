@@ -11,6 +11,11 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   icon?: IconName;
   block?: boolean;
   /**
+   * A label that can run long, such as one naming the card ("Use American Express ending 1005"):
+   * it goes onto a second line rather than past the edge of a phone's card (.btn-wrap).
+   */
+  wrap?: boolean;
+  /**
    * Shows a check and doneLabel in place of the icon and label for a moment, right where the save
    * happened (see useJustDone). The button keeps its width either way.
    */
@@ -26,7 +31,7 @@ const SLOW = 10_000;
 export const cx = (...parts: Array<string | false | null | undefined>) => parts.filter(Boolean).join(" ");
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { variant = "secondary", size = "md", loading = false, icon, block, done, doneLabel = "Saved", slowHint = "Still working. Check your signal.", className, disabled, type = "button", children, ...rest },
+  { variant = "secondary", size = "md", loading = false, icon, block, wrap, done, doneLabel = "Saved", slowHint = "Still working. Check your signal.", className, disabled, type = "button", children, ...rest },
   ref,
 ) {
   const iconSize = size === "sm" ? 14 : size === "lg" ? 20 : 16;
@@ -37,7 +42,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     <button
       ref={ref}
       type={type}
-      className={cx("btn", variant !== "secondary" && `btn-${variant}`, size !== "md" && `btn-${size}`, block && "btn-block", !children && "btn-icon", loading && "is-loading", done && "is-done", className)}
+      className={cx("btn", variant !== "secondary" && `btn-${variant}`, size !== "md" && `btn-${size}`, block && "btn-block", wrap && "btn-wrap", !children && "btn-icon", loading && "is-loading", done && "is-done", className)}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       {...rest}

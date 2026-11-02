@@ -8,7 +8,7 @@ export type SubjectKind = "client" | "request" | "quote" | "job" | "visit" | "in
 export interface TriggerDef {
   verb: string;
   label: string;
-  group: "Clients" | "Requests" | "Quotes" | "Jobs" | "Visits" | "Invoices" | "Subcontractors";
+  group: "Clients" | "Requests" | "Quotes" | "Jobs" | "Visits" | "Invoices" | "Subcontractors" | "Autopay";
   subject: SubjectKind;
   /** Delays only make sense for some triggers (follow-ups). */
   delayable: boolean;
@@ -22,7 +22,7 @@ export interface TriggerDef {
   /** The record's tokens that would mislead here (a job's {{total}} is the client's price, not the sub's). */
   hides?: string[];
   /** The area someone needs to build a rule on it, see it or its runs (the database holds to it too). */
-  area?: "subs";
+  area?: "subs" | "invoices";
   /** Only these levels can be notified (no crew, nobody "on the visit"); the engine holds to it too. */
   notifyRoles?: string[];
 }
@@ -43,6 +43,19 @@ const SUB_VARIABLES = [
   { token: "sub.name", label: "Sub's name" },
   { token: "sub.price", label: "Their price", officeOnly: true },
 ];
+
+/**
+ * Autopay (supabase/migrations/20261031000100_autopay.sql): a client set it up, a charge failed, or
+ * a saved card runs out next month. Only someone with the invoices area builds these rules or sees
+ * them, and only the office with that area is told. No client note: crews who see the client read
+ * the notes. The card, the reason a charge failed and the client's own link go in the office's
+ * notices and the client's emails and texts, never in a task, which the crew sees on the schedule.
+ */
+const AUTOPAY: Pick<TriggerDef, "group" | "area" | "notifyRoles" | "actions"> = {
+  group: "Autopay", area: "invoices", notifyRoles: ["owner", "admin", "office"],
+  actions: ["notify", "send_email", "send_sms", "add_tag", "remove_tag", "create_task", "request_review", "update_status", "invite_autopay"],
+};
+const AUTOPAY_CARD = { token: "autopay.card", label: "Card", officeOnly: true };
 
 export const TRIGGERS: TriggerDef[] = [
   { verb: "client.created", label: "A client is added", group: "Clients", subject: "client", delayable: true },
@@ -69,7 +82,22 @@ export const TRIGGERS: TriggerDef[] = [
     variables: [...SUB_VARIABLES, { token: "sub.reason", label: "Their reason", officeOnly: true }],
   },
   { ...SUB_OFFER, verb: "sub_offer.expired", label: "A job offer to a sub runs out", delayable: false, variables: SUB_VARIABLES },
+  {
+    ...AUTOPAY, verb: "autopay.enabled", label: "Autopay is set up", subject: "client", delayable: true,
+    variables: [AUTOPAY_CARD, { token: "autopay.link", label: "Change card link", officeOnly: true }],
+  },
+  {
+    ...AUTOPAY, verb: "autopay.failed", label: "An autopay charge fails", subject: "invoice", delayable: false,
+    variables: [AUTOPAY_CARD, { token: "autopay.reason", label: "Why it failed", officeOnly: true }, { token: "autopay.link", label: "Update card link", officeOnly: true }],
+  },
+  {
+    ...AUTOPAY, verb: "payment_method.expiring", label: "A saved card expires next month", subject: "client", delayable: true,
+    variables: [AUTOPAY_CARD, { token: "autopay.expires", label: "Expires" }, { token: "autopay.link", label: "Update card link", officeOnly: true }],
+  },
 ];
+
+/** Whether a trigger is about autopay: its rules' emails and texts are kept from the crew, and it never adds a client note. */
+export const isAutopayTrigger = (verb: string | null | undefined) => Boolean(verb && (verb.startsWith("autopay.") || verb.startsWith("payment_method.")));
 
 export const triggerDef = (verb: string) => TRIGGERS.find((t) => t.verb === verb);
 
@@ -142,6 +170,11 @@ export const CONDITION_FIELDS: ConditionFieldDef[] = [
     field: "kind", label: "Type", kind: "choice", ops: ["equals", "not_equals"], subjects: ["job", "visit"],
     choices: [{ value: "one_off", label: "One-off job" }, { value: "recurring", label: "Recurring job" }, { value: "job", label: "Job visit" }, { value: "assessment", label: "Assessment" }, { value: "task", label: "Task" }],
   },
+  // The client has an agreement in force, the job is charged automatically, or the invoice has a charge (not called off).
+  {
+    field: "autopay", label: "On autopay", kind: "choice", ops: ["equals"], subjects: ["client", "job", "invoice"],
+    choices: [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }],
+  },
 ];
 
 export const OP_LABELS: Record<ConditionOp, string> = {
@@ -165,6 +198,8 @@ export interface Facts {
   kind?: string | null;
   line_items?: string[];
   client?: { tags?: string[]; status?: string | null; lead_source?: string | null } | null;
+  /** Whether the client, job or invoice is on autopay; null when it can't be told. */
+  autopay?: "yes" | "no" | null;
 }
 
 function factValue(facts: Facts, field: string): unknown {
@@ -239,7 +274,8 @@ export type Action =
   | { type: "add_note"; body: string }
   | { type: "create_task"; title: string; days_from_now: number }
   | { type: "request_review"; channel: "email" | "sms" }
-  | { type: "update_status"; status: string };
+  | { type: "update_status"; status: string }
+  | { type: "invite_autopay"; channel: "email" | "sms" };
 
 export type ActionType = Action["type"];
 
@@ -253,6 +289,7 @@ export const ACTIONS: Array<{ type: ActionType; label: string; description: stri
   { type: "create_task", label: "Create a task", description: "A task on the schedule for the office.", subjects: "all" },
   { type: "request_review", label: "Ask for a Google review", description: "Sends your review link (set it in Marketing).", subjects: "all" },
   { type: "update_status", label: "Change the status", description: "Archive a quote or request automatically.", subjects: ["quote", "request"] },
+  { type: "invite_autopay", label: "Invite to autopay", description: "Sends a link to save a card and agree to automatic charges.", subjects: "all" },
 ];
 
 export const STATUS_ACTION_CHOICES: Partial<Record<SubjectKind, Array<{ value: string; label: string }>>> = {
@@ -387,6 +424,7 @@ export function validateRule(rule: RuleShape): string[] {
     if (a.type === "create_task" && !a.title?.trim()) errors.push(`${n}: name the task.`);
     if (a.type === "create_task" && !(a.days_from_now >= 0 && a.days_from_now <= 365)) errors.push(`${n}: the task must be due within a year.`);
     if (a.type === "update_status" && trigger && !STATUS_ACTION_CHOICES[trigger.subject]?.some((s) => s.value === a.status)) errors.push(`${n}: choose a status.`);
+    if (a.type === "invite_autopay" && a.channel !== "email" && a.channel !== "sms") errors.push(`${n}: choose email or text.`);
     if (trigger && a.type !== "update_status" && !actionsForTrigger(trigger.verb).some((t) => t.type === a.type)) {
       errors.push(`${n}: “${ACTIONS.find((t) => t.type === a.type)?.label ?? a.type}” doesn't fit what starts this rule.`);
     }
@@ -394,7 +432,11 @@ export function validateRule(rule: RuleShape): string[] {
       errors.push(`${n}: only the office hears about this (${listWords(trigger.notifyRoles.map((r) => ROLE_GROUP_LABELS[r]?.toLowerCase() ?? r))}), never the crew.`);
     }
     if (trigger && a.type === "create_task" && usesToken(a.title, officeOnlyTokens(trigger.verb))) {
-      errors.push(`${n}: a task is on the schedule, where the crew sees it, so it can't show the sub's price or reason.`);
+      errors.push(
+        isAutopayTrigger(trigger.verb)
+          ? `${n}: a task is on the schedule, where the crew sees it, so it can't show card or autopay details.`
+          : `${n}: a task is on the schedule, where the crew sees it, so it can't show the sub's price or reason.`,
+      );
     }
   });
   return errors;
@@ -430,6 +472,8 @@ export function describeAction(action: Action): string {
       return `Ask for a review by ${action.channel === "sms" ? "text" : "email"}`;
     case "update_status":
       return action.status === "lost" ? "Mark it lost" : "Archive it";
+    case "invite_autopay":
+      return `Invite to autopay by ${action.channel === "sms" ? "text" : "email"}`;
   }
 }
 

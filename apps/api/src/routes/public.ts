@@ -3,6 +3,7 @@
  * Stripe webhooks. These use the admin client, so every query filters by the company in the link
  * or form, and responses include only client-facing fields (never costs or internal notes).
  */
+import { methodLabel, tipsAllowed } from "@crewtavo/core/autopay";
 import { contractValues, fillIn } from "@crewtavo/core/contracts";
 import { pickTemplate, templateSettings, type TemplateSettings } from "@crewtavo/core/documents";
 import { hidesExactPrice, inRangeMode, isSiteAdjustment, optionsRange, priceRange, rangeSettings } from "@crewtavo/core/estimates";
@@ -36,6 +37,17 @@ import {
   type FrozenOption,
   type OptionRow,
 } from "../services/contracts";
+import {
+  autopayOffered,
+  confirmAutopay,
+  finishAutopaySetup,
+  hubAutopay,
+  hubInvoiceAutopay,
+  onNewCard,
+  startAutopaySetup,
+  tipOnSavedCard,
+  turnOffAutopay,
+} from "../services/autopay";
 import { geocodeAddress } from "../services/external";
 import { LETTERHEAD_MAX_BYTES } from "../services/letterhead";
 import { isDrawnPng, isPng, LOGO_MAX_BYTES, logoImage, logoOf } from "../services/logo";
@@ -48,7 +60,7 @@ import { firstName } from "../lib/email";
 import { signToken, verifyToken } from "../lib/crypto";
 import { appUrl, asJson, dbError, HttpError, must, readJson, uuid } from "../lib/http";
 import { allow } from "../lib/limit";
-import { clientLink, readClientLink, type LinkKind } from "../lib/links";
+import { clientLink, readClientLink, type ClientLink, type LinkKind } from "../lib/links";
 import { adminClient } from "../lib/supabase";
 import { clientIp } from "../lib/visitor";
 import { buildCalendar } from "../lib/ics";
@@ -63,6 +75,56 @@ async function link(c: Parameters<typeof appUrl>[0], kinds: LinkKind[] = ["quote
   if (!payload || !kinds.includes(payload.t)) throw new HttpError(404, "This link has expired or isn't valid. Ask for a new one.");
   return payload;
 }
+
+/**
+ * Who a Hub link was made for (lib/links.ts), as an agreement records it (link_via): "office" for a
+ * copy the office made of the client's link, and every link minted from one; else the client's own.
+ * Links minted from a link keep it, and keep the client's own mark (own), so an office copy or an
+ * unmarked link can't become the client's own by opening an invoice from the client's home.
+ */
+const viaOf = (l: Pick<ClientLink, "via">): "client" | "office" => (l.via === "office" ? "office" : "client");
+const keepVia = (l: Pick<ClientLink, "via" | "own">) => (l.via === "office" ? { via: "office" as const } : l.own === 1 ? { own: 1 as const } : {});
+
+/**
+ * Who a Hub link counts as for the two things only the client may do: say yes to a card they didn't
+ * save through it, and tip on their saved card. "client" only for a link marked as the client's own
+ * (own: 1); "office" for the office's copies; "legacy" for a link minted before the mark (an old
+ * invoice email, a signed copy of a quote), so an office copy can't finish a setup the client
+ * started on one (services/autopay.ts confirmable).
+ */
+const trustOf = (l: Pick<ClientLink, "via" | "own">): "client" | "office" | "legacy" => (l.via === "office" ? "office" : l.own === 1 ? "client" : "legacy");
+
+/** The client a Hub link is for: a client link's own, else its quote's or invoice's. Not found when the client is gone. */
+async function linkClient(admin: ReturnType<typeof adminClient>, l: ClientLink): Promise<string> {
+  const clientId =
+    l.t === "client"
+      ? l.id
+      : must(await admin.from(l.t === "quote" ? "quotes" : "invoices").select("client_id").eq("company_id", l.c).eq("id", l.id).maybeSingle(), "This link isn't valid anymore.").client_id;
+  must(await admin.from("clients").select("id").eq("company_id", l.c).eq("id", clientId).maybeSingle(), "This link isn't valid anymore.");
+  return clientId;
+}
+
+/**
+ * Whether this invoice takes a tip, read fresh on every request (core tipsAllowed, the one rule):
+ * the business has tips on (Settings → Company), and the invoice wasn't made in Stripe. With what
+ * hubPayment says about paying it online.
+ */
+async function invoiceTips(c: Parameters<typeof appUrl>[0], admin: ReturnType<typeof adminClient>, companyId: string, invoiceId: string) {
+  const [company, online] = await Promise.all([admin.from("companies").select("settings->hub_tips").eq("id", companyId).maybeSingle(), hubPayment(c.env, admin, companyId, invoiceId)]);
+  return { tips: tipsAllowed((must(company) as { hub_tips?: unknown }).hub_tips, online.imported), online };
+}
+
+/**
+ * The autopay task is charging this invoice to the saved card right now (or between two tries). The
+ * Hub's routes run as the service role, which the database's own guard on invoices doesn't stop, so
+ * Pay and promo codes check this themselves.
+ */
+async function chargingNow(admin: ReturnType<typeof adminClient>, companyId: string, invoiceId: string): Promise<boolean> {
+  const { data, error } = await admin.from("autopay_charges").select("id").eq("company_id", companyId).eq("invoice_id", invoiceId).eq("status", "charging").limit(1).maybeSingle();
+  if (error) throw dbError(error);
+  return Boolean(data);
+}
+const CHARGING_NOW = "This invoice is being charged to your saved card right now.";
 
 /** Locate a new property in the background so routing and weather checks work for it. */
 export function geocodeLater(c: Parameters<typeof appUrl>[0], propertyId: string, address: { line1: string; city?: string; postal_code?: string }) {
@@ -127,13 +189,14 @@ export function signedTemplate(approval: unknown): TemplateSettings | null {
 
 /**
  * The estimate template a document prints with: a signed quote's own (pass its approval), else the
- * one it names, else the business's default (core documents.ts).
+ * one it names, else the business's default (core documents.ts). Terms never saved are the trade's
+ * starter (a lawn company's talk about visits and autopay), as the office's printout prints them.
  */
-async function hubTemplate(admin: ReturnType<typeof adminClient>, companyId: string, templateId: string | null, signedApproval?: unknown) {
+async function hubTemplate(admin: ReturnType<typeof adminClient>, companyId: string, templateId: string | null, trade: string | null | undefined, signedApproval?: unknown) {
   const kept = signedTemplate(signedApproval);
   if (kept) return kept;
   const { data } = await admin.from("document_templates").select("id, is_default, settings").eq("company_id", companyId);
-  return pickTemplate(data ?? [], templateId);
+  return pickTemplate(data ?? [], templateId, trade);
 }
 
 /** A drawn signature, only when it's one a signature pad makes (logo.ts isDrawnPng), else null. */
@@ -278,7 +341,7 @@ publicRoutes.get("/hub/:token", async (c) => {
   const l = await link(c);
   const admin = adminClient(c.env);
   const { company, roofing, trade } = await hubCompany(admin, l.c);
-  if (l.t === "client") return c.json(await clientHome(c, admin, l.c, l.id, company));
+  if (l.t === "client") return c.json(await clientHome(c, admin, l, company));
   if (l.t === "quote") {
     const quote = must(
       await admin
@@ -299,9 +362,9 @@ publicRoutes.get("/hub/:token", async (c) => {
       loadOptions(admin, l.c, quote.id),
       hubDrawings(admin, l.c, "quote_id", quote.id),
       // Signed, it prints with the template it was signed with.
-      hubTemplate(admin, l.c, quote.template_id, signed ? quote.approval : null),
+      hubTemplate(admin, l.c, quote.template_id, trade, signed ? quote.approval : null),
       quote.roof_package_id ? admin.from("roof_packages").select("name, warranty").eq("company_id", l.c).eq("id", quote.roof_package_id).maybeSingle() : null,
-      l.pv ? null : homeLink(c, l.c, quote.client_id),
+      l.pv ? null : homeLink(c, l.c, quote.client_id, l),
     ]);
     const lines = [...must(lineRows)].sort((a, b) => a.sort - b.sort);
     const shown = quote.option_id;
@@ -388,11 +451,17 @@ publicRoutes.get("/hub/:token", async (c) => {
             facts: contractFacts(facts),
           };
     }
+    // "Approve and set up autopay": work charged by the visit (a line priced per visit among what's
+    // chosen), on the client's own page, when the business takes autopay and the client isn't on it
+    // yet. Never on a price range (it isn't the price yet) or a change order (the job is set up).
+    const perVisit = lines.some((line) => line.selected && line.unit.trim().toLowerCase() === "visit");
+    const autopayOffer = !l.pv && perVisit && !inRangeMode(quote) && !quote.change_order_for && (await autopayOffered(c.env, admin, l.c, quote.client_id));
     return c.json({
       kind: "quote",
       company,
       template,
       contract,
+      autopay_offer: autopayOffer,
       quote: {
         id: quote.id, number: quote.number, status: quote.status, title: quote.title, message: quote.message,
         subtotal: exact ? quote.subtotal : null,
@@ -437,9 +506,22 @@ publicRoutes.get("/hub/:token", async (c) => {
   // The Hub lists what was paid and refunded against the total. A payment that was only a tip (or
   // the refund of one) doesn't change what's owed, so it isn't among them.
   invoice.payments = invoice.payments.filter((p) => Number(p.amount) !== 0);
-  const [online, template, drawings] = await Promise.all([hubPayment(c.env, admin, l.c, invoice.id), hubTemplate(admin, l.c, null), hubDrawings(admin, l.c, "invoice_id", invoice.id)]);
-  // Invoices made in Stripe are paid exactly as Stripe billed them, so no tip.
-  const tips = (company as { hub_tips?: unknown }).hub_tips === true && !online.imported;
+  const [online, template, drawings] = await Promise.all([hubPayment(c.env, admin, l.c, invoice.id), hubTemplate(admin, l.c, null, trade), hubDrawings(admin, l.c, "invoice_id", invoice.id)]);
+  // The one rule for tips (core tipsAllowed): the business has them on, and the invoice wasn't made
+  // in Stripe (those are paid exactly as Stripe billed them).
+  const tips = tipsAllowed((company as { hub_tips?: unknown }).hub_tips, online.imported);
+  const trust = trustOf(l);
+  const auto = await hubInvoiceAutopay(
+    c.env,
+    admin,
+    l.c,
+    { id: invoice.id, client_id: invoice.client_id, balance_due: Number(invoice.balance_due), status: invoice.status },
+    { tips, preview: Boolean(l.pv), imported: online.imported, trust },
+  );
+  // A tip after an automatic charge follows the same rule as the Pay screen's, and is added only from
+  // the client's own link (trustOf). Checked here again, whatever the autopay facts say: with tips
+  // off, the invoice page never offers one.
+  const tipAfter = tips && !l.pv && trust === "client" && auto.tip_after;
   // The template's terms and invoice sections, filled in with the invoice's facts (the customer's
   // billing address and the job's address only go into the words, never out on their own). Its
   // {Option} and {Warranty} are those of the estimate the job came from (contracts.ts invoiceFill).
@@ -450,10 +532,17 @@ publicRoutes.get("/hub/:token", async (c) => {
   return c.json({
     kind: "invoice", company, template, contract, invoice: { ...billed, client: client ? { display_name: client.display_name } : null }, preview: Boolean(l.pv), tips,
     drawings,
-    can_pay: !l.pv && online.enabled && !online.processing && Number(invoice.balance_due) > 0,
+    // Not while the saved card is being charged for it: paying by hand then could charge twice. Nor
+    // once it's written off: the office chose not to collect what's left.
+    can_pay: !l.pv && online.enabled && !online.processing && Number(invoice.balance_due) > 0 && invoice.status !== "written_off" && auto.autopay?.status !== "charging",
     processing: online.processing,
     from_stripe: online.imported,
-    home: l.pv ? null : await homeLink(c, l.c, invoice.client_id),
+    // "Paid automatically with Visa ending 4242", "Paid. Pay automatically next time?", and the tip after an automatic charge.
+    autopay: auto.autopay,
+    save_card: !l.pv && auto.save_card,
+    tip_after: tipAfter,
+    tip_method: tipAfter ? auto.tip_method : null,
+    home: l.pv ? null : await homeLink(c, l.c, invoice.client_id, l),
   });
 });
 
@@ -495,7 +584,7 @@ publicRoutes.post("/hub/:token/approve", async (c) => {
   const [lineRows, options, business] = await Promise.all([
     admin.from("quote_line_items").select("id, option_id, quantity, unit_price, taxable, optional, selected, option_group").eq("company_id", l.c).eq("quote_id", l.id),
     loadOptions(admin, l.c, l.id),
-    admin.from("companies").select("name, phone, timezone").eq("id", l.c).maybeSingle(),
+    admin.from("companies").select("name, phone, timezone, trade_preset").eq("id", l.c).maybeSingle(),
   ]);
   const lines = must(lineRows);
 
@@ -519,8 +608,8 @@ publicRoutes.post("/hub/:token/approve", async (c) => {
 
   // The contract for the option they picked, from the business's own library, filled in as the page
   // showed it to them (the fingerprint it sent says so); then those words are kept with the approval,
-  // with their initials.
-  const template = await hubTemplate(admin, l.c, quote.template_id);
+  // with their initials. The trade's starter terms, as the page showed them.
+  const template = await hubTemplate(admin, l.c, quote.template_id, business.data?.trade_preset);
   const contract = await resolveContract(admin, l.c, { template, option, quoteSectionIds: quote.section_ids });
   const money = { taxRate: quote.tax_rate, discountAmount: quote.discount_amount, promo: quote.promo };
   // {Total} says the price they agreed to: the total they saw, else what their choices come to.
@@ -615,14 +704,17 @@ publicRoutes.post("/hub/:token/accept-range", async (c) => {
 // Promo codes in the Client Hub: on a quote waiting for an answer, or an invoice not yet paid.
 // ---------------------------------------------------------------------------------------------
 
-
-
+/**
+ * The quote or invoice a promo code goes on (or comes off). Not an invoice the saved card is being
+ * charged for right now: the charge is for the amount as it was.
+ */
 async function hubDocument(c: Parameters<typeof appUrl>[0]) {
   const l = await link(c, ["quote", "invoice"]);
   if (l.pv) throw new HttpError(400, "Promo codes can't be added from a preview.");
   const admin = adminClient(c.env);
   const table = l.t === "quote" ? "quotes" : "invoices";
   must(await admin.from(table).select("id").eq("company_id", l.c).eq("id", l.id).maybeSingle(), "This link isn't valid anymore.");
+  if (l.t === "invoice" && (await chargingNow(admin, l.c, l.id))) throw new HttpError(409, CHARGING_NOW);
   return { l, admin, kind: l.t as "quote" | "invoice" };
 }
 
@@ -677,15 +769,126 @@ publicRoutes.post("/hub/:token/pay", async (c) => {
   }
   const body = await readJson(c, z.object({ tip: z.number().min(0).max(100_000).default(0) }).default({ tip: 0 }));
   const admin = adminClient(c.env);
-  const company = must(await admin.from("companies").select("settings->hub_tips").eq("id", l.c).maybeSingle());
-  const online = await hubPayment(c.env, admin, l.c, l.id);
-  const tipCents = (company as { hub_tips?: unknown }).hub_tips === true && !online.imported ? Math.round(body.tip * 100) : 0;
+  const { tips } = await invoiceTips(c, admin, l.c, l.id);
+  const tipCents = Math.round(body.tip * 100);
+  // Tips were turned off (or the invoice was made in Stripe) after the page loaded: the amount they
+  // saw had a tip in it, so they look again rather than pay an amount they didn't choose. Nothing
+  // reaches Stripe.
+  if (tipCents > 0 && !tips) throw new HttpError(409, "Tips aren't offered here anymore. Check the amount and pay again.");
+  if (await chargingNow(admin, l.c, l.id)) throw new HttpError(409, CHARGING_NOW);
   try {
     return c.json({ url: await stripeCheckout(c.env, admin, l.c, l.id, tipCents) });
   } catch (error) {
     if (!(error instanceof StripeError)) throw error;
     console.error("Stripe checkout failed", error);
     throw new HttpError(502, "Online payments aren't working right now. Try again in a few minutes, or contact us to pay.");
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Autopay from the Client Hub (?view=autopay on the client's link): save a card on Stripe's page,
+// agree to be charged after each visit, or turn it off. Any of the client's links works, so a quote
+// or an invoice can lead into it. services/autopay.ts does the work.
+// ---------------------------------------------------------------------------------------------
+
+const TOO_MANY = "Too many tries. Wait a few minutes and try again.";
+const CARDS_DOWN = "Saving cards isn't working right now. Try again in a few minutes.";
+
+/** An autopay request: the link (never a preview), its client, and a count against the visitor's limit. */
+async function autopayRequest(c: Context<AppEnv>, max: number) {
+  const l = await link(c);
+  if (l.pv) throw new HttpError(400, "Autopay can't be set up from a preview.");
+  if (!(await allow(c.env, `autopay:ip:${clientIp(c)}`, max, 10 * 60))) throw new HttpError(429, TOO_MANY);
+  const admin = adminClient(c.env);
+  return { l, admin, clientId: await linkClient(admin, l) };
+}
+
+/** Stripe didn't answer (or answered with an error): the client tries again later. */
+function stripeDown(error: unknown, message: string): never {
+  if (!(error instanceof StripeError)) throw error;
+  console.error("Stripe failed for autopay", error);
+  throw new HttpError(502, message);
+}
+
+/**
+ * Stripe's page to save a card or bank account, which comes back to the client's autopay view. The
+ * card is saved with who the link counts as (trustOf), so the office's copy, or a link from before
+ * the client's own were marked, can say yes only to a card saved through one like it.
+ */
+publicRoutes.post("/hub/:token/autopay/setup", async (c) => {
+  const { l, admin, clientId } = await autopayRequest(c, 10);
+  await readJson(c, z.object({}).default({}));
+  // Each one makes a Stripe page, so a few for a client at a time.
+  if (!(await allow(c.env, `autopay:client:${clientId}`, 5, 10 * 60))) throw new HttpError(429, TOO_MANY);
+  const home = await homeLink(c, l.c, clientId, l);
+  try {
+    return c.json(await startAutopaySetup(c.env, admin, { companyId: l.c, clientId, home, trust: trustOf(l) }));
+  } catch (error) {
+    stripeDown(error, CARDS_DOWN);
+  }
+});
+
+/** Back from Stripe's page: the card is checked and saved, and waits for the client to agree. */
+publicRoutes.post("/hub/:token/autopay/finish", async (c) => {
+  const { l, admin, clientId } = await autopayRequest(c, 20);
+  const body = await readJson(c, z.object({ session_id: z.string().regex(/^cs_\w+$/) }));
+  try {
+    return c.json(await finishAutopaySetup(c.env, admin, { companyId: l.c, clientId, sessionId: body.session_id }));
+  } catch (error) {
+    stripeDown(error, CARDS_DOWN);
+  }
+});
+
+/** The client ticks "I agree to these terms": the agreement is kept with the words, the IP and the browser. */
+publicRoutes.post("/hub/:token/autopay/confirm", async (c) => {
+  const { l, admin, clientId } = await autopayRequest(c, 20);
+  const body = await readJson(c, z.object({ payment_method_id: z.uuid(), terms_version: z.string().min(1).max(40), agreed: z.literal(true) }));
+  const result = await confirmAutopay(c.env, admin, {
+    companyId: l.c,
+    clientId,
+    paymentMethodId: body.payment_method_id,
+    termsVersion: body.terms_version,
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent") ?? null,
+    linkKind: l.t as "client" | "quote" | "invoice",
+    via: viaOf(l),
+    trust: trustOf(l),
+  });
+  // "Autopay is set up" rules run now.
+  kickAutomations(c, l.c);
+  return c.json(result);
+});
+
+/**
+ * Turn autopay off. The card stays saved, and turning it back on takes Stripe's page again. From any
+ * of the client's links, it's the client turning it off (the office hears about it).
+ */
+publicRoutes.post("/hub/:token/autopay/off", async (c) => {
+  const { l, admin, clientId } = await autopayRequest(c, 20);
+  await readJson(c, z.object({}).default({}));
+  await turnOffAutopay(admin, { companyId: l.c, clientId, via: "client", userId: null });
+  return c.json({ ok: true });
+});
+
+/**
+ * A tip for the crew after an automatic charge, charged to the card that paid the invoice. Only
+ * while the business has tips on: off, it's refused before anything reaches Stripe. Only from the
+ * client's own link (trustOf), never a copy the office made or a link from before the mark.
+ */
+publicRoutes.post("/hub/:token/tip", async (c) => {
+  const l = await link(c);
+  if (l.t !== "invoice") throw new HttpError(400, "A tip goes on an invoice.");
+  if (l.pv) throw new HttpError(400, "Tips can't be added from a preview.");
+  if (trustOf(l) !== "client") throw new HttpError(403, "Tips are added from the client's own link.");
+  if (!(await allow(c.env, `tip:ip:${clientIp(c)}`, 10, 10 * 60)) || !(await allow(c.env, `tip:invoice:${l.id}`, 3, 60 * 60))) throw new HttpError(429, TOO_MANY);
+  const body = await readJson(c, z.object({ tip: z.number().positive().max(10_000) }));
+  const admin = adminClient(c.env);
+  const { tips } = await invoiceTips(c, admin, l.c, l.id);
+  if (!tips) throw new HttpError(409, "Tips are turned off.");
+  try {
+    return c.json(await tipOnSavedCard(c.env, admin, { companyId: l.c, invoiceId: l.id, tip: body.tip, ip: clientIp(c), userAgent: c.req.header("user-agent") ?? null }));
+  } catch (error) {
+    stripeDown(error, "Tips aren't working right now. Try again in a few minutes.");
   }
 });
 
@@ -878,20 +1081,67 @@ publicRoutes.post("/webhooks/stripe/:company", async (c) => {
 // Client Hub home: a client's open quotes, invoices and upcoming visits, and "request work"
 // ---------------------------------------------------------------------------------------------
 
-const homeLink = (c: Parameters<typeof appUrl>[0], companyId: string, clientId: string) => clientLink(c.env, appUrl(c), { c: companyId, t: "client", id: clientId });
+/** The client's Hub home. Minted from an office copy of a link (`from`), it stays one; from the client's own (own), so does it. */
+const homeLink = (c: Parameters<typeof appUrl>[0], companyId: string, clientId: string, from: Pick<ClientLink, "via" | "own">) =>
+  clientLink(c.env, appUrl(c), { c: companyId, t: "client", id: clientId, ...keepVia(from) });
 const firstNames = (rows: Array<{ user_id: string }>, names: Map<string, string>) => rows.map((r) => names.get(r.user_id)).filter(Boolean) as string[];
 
-async function clientHome(c: Parameters<typeof appUrl>[0], admin: ReturnType<typeof adminClient>, companyId: string, clientId: string, company: unknown) {
+/** An autopay charge's state as the client sees it on an invoice; the ones still waiting on the office aren't shown. */
+const CLIENT_AUTOPAY = ["charging", "processing", "paid", "failed", "needs_client"] as const;
+type ClientAutopay = (typeof CLIENT_AUTOPAY)[number];
+
+/**
+ * The autopay charge on each of these invoices that the client can see, with the card it was charged
+ * to ("Visa ending 4242"). An invoice is charged by one row at a time (autopay_charges_invoice_idx).
+ */
+async function invoiceCharges(admin: ReturnType<typeof adminClient>, companyId: string, clientId: string, invoiceIds: string[]) {
+  const byInvoice = new Map<string, { status: ClientAutopay; card: string | null }>();
+  if (!invoiceIds.length) return byInvoice;
+  const { data, error } = await admin
+    .from("autopay_charges")
+    .select("invoice_id, status, failures, method:client_payment_methods!autopay_charges_method_fkey(type, brand, last4, bank_name, wallet)")
+    .eq("company_id", companyId)
+    .eq("client_id", clientId)
+    .in("invoice_id", invoiceIds)
+    .in("status", [...CLIENT_AUTOPAY]);
+  if (error) throw dbError(error);
+  // A charge that didn't go through, then the client paid by bank on Stripe's page: the invoice waits
+  // on that payment, not on them, and autopay doesn't try again meanwhile (claim_autopay_charges).
+  const failed = (data ?? []).filter((row) => row.status === "failed" || row.status === "needs_client").map((row) => row.invoice_id!);
+  const clearing = failed.length
+    ? await admin.from("stripe_invoices").select("invoice_id").eq("company_id", companyId).in("invoice_id", failed).eq("purpose", "invoice").eq("status", "processing").is("detached_at", null)
+    : { data: [], error: null };
+  if (clearing.error) throw dbError(clearing.error);
+  const onItsWay = new Set((clearing.data ?? []).map((row) => row.invoice_id));
+  for (const row of data ?? []) {
+    // Being tried on the card they agreed to since: shown as one waiting (not at all).
+    if (onNewCard(row)) continue;
+    const method = row.method as unknown as { type: string; brand: string | null; last4: string | null; bank_name: string | null; wallet: string | null } | null;
+    const status = (onItsWay.has(row.invoice_id) ? "processing" : row.status) as ClientAutopay;
+    if (row.invoice_id) byInvoice.set(row.invoice_id, { status, card: method ? methodLabel(method) : null });
+  }
+  return byInvoice;
+}
+
+async function clientHome(c: Parameters<typeof appUrl>[0], admin: ReturnType<typeof adminClient>, l: ClientLink, company: unknown) {
+  const companyId = l.c;
+  const clientId = l.id;
   const client = must(await admin.from("clients").select("id, display_name, properties(id, line1, city)").eq("company_id", companyId).eq("id", clientId).maybeSingle(), "This link isn't valid anymore.");
   const settings = must(await admin.from("companies").select("timezone, settings").eq("id", companyId).maybeSingle());
   const today = new Date().toLocaleDateString("en-CA", { timeZone: settings.timezone || "UTC" });
-  const [quotes, invoices, jobs, payments, requests, services] = await Promise.all([
+  const [quotes, invoices, jobs, payments, requests, services, autopay] = await Promise.all([
     admin.from("quotes").select("id, number, title, status, total, tax_rate, discount_amount, valid_until, sent_at, approved_at, range_low, range_high, range_accepted_at, priced_on_site_at, exact_sent_at, promo:promo_codes(kind, value)").eq("company_id", companyId).eq("client_id", clientId).in("status", ["sent", "changes_requested", "approved", "converted"]).order("created_at", { ascending: false }).limit(20),
     admin.from("invoices").select("id, number, subject, status, total, balance_due, due_on, issued_on").eq("company_id", companyId).eq("client_id", clientId).in("status", ["sent", "partially_paid", "overdue", "paid"]).order("issued_on", { ascending: false }).limit(20),
     admin.from("jobs").select("id").eq("company_id", companyId).eq("client_id", clientId),
-    admin.from("payments").select("amount, tip_amount, method, received_at, invoice:invoices(number)").eq("company_id", companyId).eq("client_id", clientId).gt("amount", 0).order("received_at", { ascending: false }).limit(5),
+    admin.from("payments").select("amount, tip_amount, method, received_at, invoice_id, processor, invoice:invoices(number)").eq("company_id", companyId).eq("client_id", clientId).gt("amount", 0).order("received_at", { ascending: false }).limit(5),
     admin.from("requests").select("number, title, status, created_at").eq("company_id", companyId).eq("client_id", clientId).in("status", ["new", "assessment_scheduled", "assessment_complete"]).order("created_at", { ascending: false }).limit(5),
     admin.from("services").select("category").eq("company_id", companyId).eq("active", true).not("category", "is", null).limit(200),
+    // The "Pay automatically" card and view: null when the business doesn't take autopay.
+    hubAutopay(c.env, admin, companyId, clientId, { trust: trustOf(l) }),
+  ]);
+  // What autopay is doing on the invoices listed and the ones the recent payments are on.
+  const charges = await invoiceCharges(admin, companyId, clientId, [
+    ...new Set([...(invoices.data ?? []).map((i) => i.id), ...(payments.data ?? []).flatMap((p) => (p.invoice_id ? [p.invoice_id] : []))]),
   ]);
   // The options and lines of the quotes still waiting for an answer that show a price: one that offers
   // options says how many and the lowest (services/sales.ts optionsFrom), not the option shown.
@@ -942,12 +1192,15 @@ async function clientHome(c: Parameters<typeof appUrl>[0], admin: ReturnType<typ
   });
 
   const base = appUrl(c);
-  const sign = (t: "quote" | "invoice", id: string) => clientLink(c.env, base, { c: companyId, t, id });
+  // The links on the page are minted from this one, so an office copy's stay office copies.
+  const sign = (t: "quote" | "invoice", id: string) => clientLink(c.env, base, { c: companyId, t, id, ...keepVia(l) });
   const companySettings = (settings.settings ?? {}) as { referral_offer?: string; referral_reward?: { amount?: number } };
   const referralOn = Boolean(companySettings.referral_offer || Number(companySettings.referral_reward?.amount ?? 0) > 0);
   return {
     kind: "client",
     company,
+    preview: Boolean(l.pv),
+    autopay,
     client: { name: client.display_name, first_name: firstName(client.display_name), properties: client.properties },
     // A quote out as a price range shows the range, never its exact total. One that offers options
     // shows how many and the lowest price (`options`) until the client chooses, never as a total.
@@ -964,13 +1217,23 @@ async function clientHome(c: Parameters<typeof appUrl>[0], admin: ReturnType<typ
         };
       }),
     ),
-    invoices: await Promise.all((invoices.data ?? []).map(async (i) => ({ ...i, link: await sign("invoice", i.id) }))),
+    // An invoice being charged automatically waits on the card, not on the client; a failed one
+    // still has Pay, with a way to update the card.
+    invoices: await Promise.all((invoices.data ?? []).map(async (i) => ({ ...i, autopay: charges.get(i.id)?.status ?? null, link: await sign("invoice", i.id) }))),
     visits: (upcoming.data ?? []).map(visit),
     past_visits: (done.data ?? []).map(visit),
-    payments: (payments.data ?? []).map((p) => ({ amount: p.amount, tip_amount: p.tip_amount, method: p.method, received_at: p.received_at, invoice: (p.invoice as unknown as { number: number } | null)?.number ?? null })),
+    // "Charged automatically to Visa ending 4242": a Stripe payment on an invoice its autopay charge paid.
+    payments: (payments.data ?? []).map((p) => {
+      const charge = p.invoice_id ? charges.get(p.invoice_id) : undefined;
+      const auto = p.processor === "stripe" && charge?.status === "paid";
+      return {
+        amount: p.amount, tip_amount: p.tip_amount, method: p.method, received_at: p.received_at, invoice: (p.invoice as unknown as { number: number } | null)?.number ?? null,
+        auto, card: auto ? (charge?.card ?? null) : null,
+      };
+    }),
     requests: requests.data ?? [],
     services: [...new Set((services.data ?? []).map((s) => s.category as string))].slice(0, 8),
-    refer: referralOn ? { link: await clientLink(c.env, base, { c: companyId, t: "refer", id: clientId }), offer: companySettings.referral_offer ?? null } : null,
+    refer: referralOn ? { link: await clientLink(c.env, base, { c: companyId, t: "refer", id: clientId, ...keepVia(l) }), offer: companySettings.referral_offer ?? null } : null,
   };
 }
 
@@ -981,11 +1244,7 @@ publicRoutes.post("/hub/:token/message", async (c) => {
   if (l.pv) throw new HttpError(400, "Messages can't be sent from a preview.");
   const body = await readJson(c, z.object({ message: z.string().trim().min(2, "Write a message first.").max(4000), visit_id: z.uuid().optional() }));
   const admin = adminClient(c.env);
-  const clientId =
-    l.t === "client"
-      ? l.id
-      : must(await admin.from(l.t === "quote" ? "quotes" : "invoices").select("client_id").eq("company_id", l.c).eq("id", l.id).maybeSingle(), "This link isn't valid anymore.").client_id;
-  must(await admin.from("clients").select("id").eq("company_id", l.c).eq("id", clientId).maybeSingle(), "This link isn't valid anymore.");
+  const clientId = await linkClient(admin, l);
   let subject = "Message from the client portal";
   let related: { related_type: string; related_id: string } | Record<string, never> = l.t === "client" ? {} : { related_type: l.t, related_id: l.id };
   if (body.visit_id) {

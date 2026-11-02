@@ -148,6 +148,25 @@ describe("stripe api", () => {
     expect(init.body).toBe("customer=cus_x");
   });
 
+  it("keeps why a card was declined and how far its payment got", async () => {
+    const declined = {
+      error: {
+        type: "card_error", code: "card_declined", decline_code: "insufficient_funds", message: "Your card has insufficient funds.",
+        payment_intent: { id: "pi_1", status: "requires_payment_method" },
+      },
+    };
+    const fetch = vi.fn(async () => new Response(JSON.stringify(declined), { status: 402 }));
+    vi.stubGlobal("fetch", fetch);
+    const error = await stripeApi("sk_test_1", "POST", "/v1/invoices/in_1/pay", { off_session: true }, { idempotencyKey: "k1" }).catch((e) => e);
+    expect(error).toBeInstanceOf(StripeError);
+    expect(error).toMatchObject({
+      status: 402, code: "card_declined", declineCode: "insufficient_funds", type: "card_error", paymentIntent: "pi_1", paymentIntentStatus: "requires_payment_method",
+      message: "Your card has insufficient funds.",
+    });
+    // A decline is Stripe's answer, not a failure to answer: it isn't sent again.
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("gives up on a call Stripe doesn't answer, and tries again only when that's safe", async () => {
     // Hangs until the call's own time limit (shortened here) runs out.
     const fetch = vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_, reject) => init.signal!.addEventListener("abort", () => reject(init.signal!.reason))));

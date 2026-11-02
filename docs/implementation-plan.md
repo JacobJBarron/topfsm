@@ -379,8 +379,9 @@ key** restricted to the Solar API.
 | --- | --- | --- |
 | `automations` | Every minute (and right after any change in the app) | Claims due `automation_runs`, re-checks conditions against fresh data, performs the actions |
 | `campaigns` | Every minute | Sends scheduled and in-progress campaigns in batches |
-| `outbox` | Every 5 minutes | Pushes queued accounting changes; exponential backoff, gives up after 8 tries |
-| `followups` | Hourly | Marks invoices overdue (by each company's local date) and emits visit reminders for automations |
+| `outbox` | Every 5 minutes | Pushes queued accounting changes, keeps Stripe invoices in step, and sends autopay's receipts, notices and copies of agreements; exponential backoff, gives up after 8 tries |
+| `autopay` | Every 5 minutes | Charges the autopay charges that are due to the client's saved card (`apps/api/src/services/autopay.ts`), each held with a claim token so two runs never charge one twice; stops taking new ones after 4 minutes |
+| `followups` | Hourly | Marks invoices overdue (by each company's local date), emits visit reminders and "A saved card expires next month" events for automations, and reads back from Stripe autopay bank payments on their way for over a day |
 | `weather` | Every 6 hours | Flags visits whose weather rules fail tomorrow |
 | `recurrence` | Daily | Generates visits for recurring jobs 60 days ahead |
 

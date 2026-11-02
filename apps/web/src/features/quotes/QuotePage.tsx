@@ -297,9 +297,18 @@ async function loadContract(companyId: string, input: QuoteContractInput): Promi
   return quoteContract(input, unwrap(company), library ? unwrap(library) : []);
 }
 
-/** Marked approved in the office (officeApproval), with the template, the option and the contract read fresh. */
-async function approvalFor(q: QuoteRow, options: readonly QuoteOptionRow[], optionId: string | null, by: { companyId: string; name: string; templates: readonly TemplateRow[] }) {
-  const template = quoteTemplate(by.templates, q);
+/**
+ * Marked approved in the office (officeApproval), with the template, the option and the contract read
+ * fresh. `trade` picks the starter terms when the business never saved its own, as the printout and
+ * the Client Hub show them.
+ */
+async function approvalFor(
+  q: QuoteRow,
+  options: readonly QuoteOptionRow[],
+  optionId: string | null,
+  by: { companyId: string; name: string; templates: readonly TemplateRow[]; trade: string | null | undefined },
+) {
+  const template = quoteTemplate(by.templates, q, by.trade);
   const option = options.find((o) => o.id === optionId) ?? null;
   const total = option ? optionTotals(q.lines, option.id, q.option_id, moneyOf(q)).total : q.total;
   const tier = option ? (optionTiers(options, q.lines, moneyOf(q)).get(option.id) ?? null) : null;
@@ -312,14 +321,16 @@ async function approvalFor(q: QuoteRow, options: readonly QuoteOptionRow[], opti
  * quote and the templates as they are now. Null when it offers options by now: only its page approves
  * those, as it asks which option they chose.
  */
-export async function boardApproval(queryClient: QueryClient, quoteId: string, by: { companyId: string; name: string }) {
-  const [q, options, templates] = await Promise.all([
+export async function boardApproval(queryClient: QueryClient, quoteId: string, by: { companyId: string; name: string; trade?: string | null }) {
+  const [q, options, templates, company] = await Promise.all([
     loadQuote(quoteId),
     supabase().from("quote_options").select("id").eq("quote_id", quoteId).limit(1),
     queryClient.fetchQuery({ ...templatesQuery(by.companyId), staleTime: 0 }),
+    // The trade's starter terms, for a business that never saved its own (read here when the board doesn't say).
+    by.trade === undefined ? supabase().from("companies").select("trade_preset").eq("id", by.companyId).single() : null,
   ]);
   if (offersOptions(unwrap(options), q.lines)) return null;
-  return approvalFor(q, [], null, { ...by, templates });
+  return approvalFor(q, [], null, { ...by, templates, trade: company ? unwrap(company).trade_preset : by.trade });
 }
 
 /**
@@ -420,7 +431,7 @@ export function QuotePage() {
       if (!steps) throw new ApiError("This quote isn't open to approve any more. Look it over again.", 409);
       if (steps.includes("approve")) {
         const templates = await queryClient.fetchQuery({ ...templatesQuery(session.company.id), staleTime: 0 });
-        const approval = await approvalFor(current, options, optionId, { companyId: session.company.id, name: session.profile.full_name || "Office", templates });
+        const approval = await approvalFor(current, options, optionId, { companyId: session.company.id, name: session.profile.full_name || "Office", templates, trade: session.company.trade_preset });
         if (steps.includes("show")) await showOption(id, optionId!);
         // Only while it's still open: a client who signed meanwhile keeps their own approval.
         const saved = unwrap(

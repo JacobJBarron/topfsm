@@ -117,7 +117,7 @@ export function PipelinePage() {
       if (card.kind === "quote" && to === "won") {
         // The quote page's own approval, loaded only once a quote is dropped here.
         const { boardApproval } = await import("../quotes/QuotePage");
-        const approval = await boardApproval(queryClient, card.id, { companyId: company.id, name: profile.full_name || "Office" });
+        const approval = await boardApproval(queryClient, card.id, { companyId: company.id, name: profile.full_name || "Office", trade: company.trade_preset });
         if (!approval) return { message: PICK_ON_QUOTE, refused: true, open: `/quotes/${card.id}` };
         // Only while it's still waiting: a client who signed meanwhile keeps their own approval.
         const saved = unwrap(

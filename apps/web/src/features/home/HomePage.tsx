@@ -30,7 +30,19 @@ function greeting(timeZone: string) {
   return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
 }
 
-const ATTENTION_ICON: Record<string, IconName> = { quote: "quote", visit: "cloud", invoice: "invoice", equipment: "truck" };
+const ATTENTION_ICON: Record<string, IconName> = { quote: "quote", visit: "cloud", invoice: "invoice", equipment: "truck", autopay_failed: "card", autopay_approval: "card" };
+
+/**
+ * Each kind's tint in Needs attention: money that didn't come in (a late invoice, an automatic charge
+ * that failed) in red; things to see to soon (machines coming due, a charge waiting for your OK) in amber.
+ */
+const ATTENTION_TINT: Record<string, { background: string; color: string }> = {
+  invoice: { background: "var(--danger-tint)", color: "var(--danger)" },
+  autopay_failed: { background: "var(--danger-tint)", color: "var(--danger)" },
+  equipment: { background: "var(--warning-tint)", color: "var(--warning)" },
+  autopay_approval: { background: "var(--warning-tint)", color: "var(--warning)" },
+};
+const ATTENTION_PLAIN = { background: "var(--fill-2)", color: "var(--text-2)" };
 
 /** Weeks of bars under the collected figure; fewer weeks of money than this and it's the figure alone. */
 const WEEKS = 6;
@@ -183,7 +195,7 @@ export function HomePage() {
                 ) : (
                   attention.map((item, i) => (
                     <Link key={`${item.link}-${i}`} to={item.link} className="card-row">
-                      <span className="n-icon" style={{ width: 32, height: 32, borderRadius: "var(--radius-control)", display: "grid", placeItems: "center", background: item.kind === "invoice" ? "var(--danger-tint)" : item.kind === "equipment" ? "var(--warning-tint)" : "var(--fill-2)", color: item.kind === "invoice" ? "var(--danger)" : item.kind === "equipment" ? "var(--warning)" : "var(--text-2)", flex: "none" }}>
+                      <span className="n-icon" style={{ width: 32, height: 32, borderRadius: "var(--radius-control)", display: "grid", placeItems: "center", ...(ATTENTION_TINT[item.kind] ?? ATTENTION_PLAIN), flex: "none" }}>
                         <Icon name={ATTENTION_ICON[item.kind] ?? "alert"} size={16} />
                       </span>
                       <span className="grow">

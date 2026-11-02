@@ -209,7 +209,7 @@ export const api = {
   post: <T>(path: string, body: unknown = {}, options?: RequestOptions) => request<T>("POST", path, body, options),
   patch: <T>(path: string, body: unknown, options?: RequestOptions) => request<T>("PATCH", path, body, options),
   put: <T>(path: string, body: unknown, options?: RequestOptions) => request<T>("PUT", path, body, options),
-  delete: <T>(path: string, options?: RequestOptions) => request<T>("DELETE", path, undefined, options),
+  delete: <T>(path: string, options?: RequestOptions, body?: unknown) => request<T>("DELETE", path, body, options),
 };
 
 type DbResult = { data: unknown; error: { message: string; code?: string; details?: string | null; hint?: string | null } | null; status?: number };

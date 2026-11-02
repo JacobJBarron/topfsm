@@ -6,12 +6,13 @@ import { addDays, jobWeatherRules, localDate, occurrenceDates, weatherRisks, zon
 import type { Env } from "./env";
 import { runAccountingJob, SentButUnrecorded } from "./integrations/accounting";
 import { runCalendarJob, syncDueCalendars } from "./integrations/calendars";
-import { syncStripeInvoice } from "./integrations/stripe";
+import { reconcileAutopayProcessing, syncStripeInvoice } from "./integrations/stripe";
 import { reportError } from "./lib/monitoring";
 import { emailConfigured, smsConfigured } from "./lib/notify";
 import { adminClient, type Db } from "./lib/supabase";
 import { runAddressTask } from "./services/address";
 import { rollUpVisits } from "./services/analytics";
+import { chargeDueAutopay, runAutopayJob } from "./services/autopay";
 import { checkHosting } from "./services/hosting";
 import { purgeTrash, tidyApplicantFiles, tidyPlanFiles, tidySubFiles, tidyUnrecordedFiles } from "./services/planFiles";
 import { keepRailwayAlive } from "./services/railway";
@@ -23,14 +24,15 @@ import { remindSubs } from "./services/subs";
 import { dailyOutlook } from "./services/external";
 import { autoRoutes } from "./services/routes";
 
-export const TASKS = ["automations", "campaigns", "notify", "outbox", "calendars", "recurrence", "followups", "weather", "address", "railway", "hosting", "plans", "trash", "storage", "routes", "website"] as const;
+export const TASKS = ["automations", "campaigns", "notify", "outbox", "autopay", "calendars", "recurrence", "followups", "weather", "address", "railway", "hosting", "plans", "trash", "storage", "routes", "website"] as const;
 export type TaskName = (typeof TASKS)[number];
 
 /** Cron expressions -> tasks, run by server.ts's scheduler. */
 export const CRON_TASKS: Record<string, TaskName[]> = {
   "* * * * *": ["automations", "campaigns", "notify"],
   "*/2 * * * *": ["address"],
-  "*/5 * * * *": ["outbox"],
+  // Autopay charges what's due (services/autopay.ts); its receipts and notices go out through the outbox.
+  "*/5 * * * *": ["outbox", "autopay"],
   "*/15 * * * *": ["calendars"],
   "0 * * * *": ["followups"],
   "0 */6 * * *": ["weather"],
@@ -56,6 +58,8 @@ export async function runTask(name: TaskName, env: Env): Promise<Record<string, 
       return deliverNotifications(env);
     case "outbox":
       return drainOutbox(env);
+    case "autopay":
+      return chargeDueAutopay(env);
     case "calendars":
       return syncDueCalendars(env, adminClient(env));
     case "recurrence":
@@ -92,8 +96,9 @@ export async function runTask(name: TaskName, env: Env): Promise<Record<string, 
 }
 
 /**
- * Push queued accounting changes and visit changes for Google Calendar, and keep Stripe invoices
- * in step; failures retry with exponential backoff, up to 8 attempts.
+ * Push queued accounting changes and visit changes for Google Calendar, keep Stripe invoices in
+ * step, and send autopay's receipts, notices and copies of agreements (services/autopay.ts);
+ * failures retry with exponential backoff, up to 8 attempts.
  */
 async function drainOutbox(env: Env) {
   const admin = adminClient(env);
@@ -105,9 +110,11 @@ async function drainOutbox(env: Env) {
   for (const row of rows ?? []) {
     const calendar = row.topic.startsWith("calendar.");
     const stripe = row.topic.startsWith("stripe.");
+    const autopay = row.topic.startsWith("autopay.");
     try {
       const job = { ...row, payload: row.payload as Record<string, string> };
       if (stripe) await syncStripeInvoice(env, admin, row.company_id, job.payload.invoice_id!);
+      else if (autopay) await runAutopayJob(env, admin, { company_id: row.company_id, topic: row.topic, payload: job.payload });
       else await (calendar ? runCalendarJob(env, admin, job) : runAccountingJob(env, admin, job));
       await admin.from("outbox").update({ done_at: new Date().toISOString(), locked_until: null, last_error: null }).eq("id", row.id);
       done++;
@@ -128,7 +135,7 @@ async function drainOutbox(env: Env) {
       // One record that never goes through shows on the Apps page, but the app stays connected so
       // everything else keeps syncing (a refused sign-in marks it in integrations/tokens.ts).
       if (giveUp) {
-        const providers = calendar ? ["google_calendar"] : stripe ? ["stripe"] : ["quickbooks", "zoho_books"];
+        const providers = calendar ? ["google_calendar"] : stripe || autopay ? ["stripe"] : ["quickbooks", "zoho_books"];
         await admin.from("integrations").update({ last_error: message.slice(0, 500) }).eq("company_id", row.company_id).in("provider", providers).eq("status", "connected");
       }
     }
@@ -256,8 +263,9 @@ async function materializeRecurringVisits(env: Env) {
 /**
  * Hourly upkeep: invoices past their due date flip to overdue (which fires "invoice past due"
  * automations), day-before visit reminder events are emitted for companies that use them, job offers
- * to subs past their time to answer by run out, subs' certificates running out are flagged,
- * forgotten clocks get a reminder or are stopped, and old sign-in codes are cleared.
+ * to subs past their time to answer by run out, subs' certificates running out are flagged, saved
+ * cards expiring next month are flagged and autopay's bank payments on their way are read back from
+ * Stripe, forgotten clocks get a reminder or are stopped, and old sign-in codes are cleared.
  */
 async function hourlyUpkeep(env: Env) {
   const admin = adminClient(env);
@@ -295,12 +303,29 @@ async function hourlyUpkeep(env: Env) {
     problems.push(`remind_subs: ${message}`);
     reportError(err, { task: "followups", step: "remind_subs" });
   }
+  // Autopay cards expiring next month: one payment_method.expiring event each, once per expiry, from
+  // 8 in the morning where the company is (for the "A saved card expires next month" automations).
+  const cards = await step("emit_card_expiry_alerts", admin.rpc("emit_card_expiry_alerts"));
+  // Autopay bank payments on their way for over a day: what Stripe says now is applied (paid, or a
+  // bounce the webhook never brought). Stripe is asked, so it's caught like the steps above.
+  let autopayProcessing = 0;
+  try {
+    autopayProcessing = await reconcileAutopayProcessing(env, admin);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    problems.push(`reconcile_autopay_processing: ${message}`);
+    console.error("Upkeep step reconcile_autopay_processing failed", message);
+    reportError(err, { task: "followups", step: "reconcile_autopay_processing" });
+  }
   // Clocks left running: remind after 10 hours, stop after 16 (per-company limits in settings.clock).
   const clocks = await step("clock_upkeep", admin.rpc("clock_upkeep"));
   // Sign-in codes texted to subs over a day ago (services/signInCodes.ts): long run out, kept until now
   // for looking into a run of requests.
   const codes = await step("tidy_sign_in_codes", admin.rpc("tidy_sign_in_codes"));
-  return { overdue: overdue ?? 0, reminders: reminders ?? 0, equipment: equipment ?? 0, offers: offers ?? 0, subs: { alerts: subAlerts?.length ?? 0, reminded }, clocks, codes: codes ?? 0, problems };
+  return {
+    overdue: overdue ?? 0, reminders: reminders ?? 0, equipment: equipment ?? 0, offers: offers ?? 0, subs: { alerts: subAlerts?.length ?? 0, reminded },
+    cards: cards ?? 0, autopay_processing: autopayProcessing, clocks, codes: codes ?? 0, problems,
+  };
 }
 
 const WEATHER_FIELDS =

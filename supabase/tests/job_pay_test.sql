@@ -115,10 +115,13 @@ select t1080.as_user(:'oz');
 select public.create_company('Oscar Roofing', 'general', 'America/New_York') as co \gset
 insert into public.company_roles (company_id, name, base_role, permissions) values (:'co', 'Payroll clerk', 'office', '{job_costs,timesheets}') returning id as clerk_role \gset
 insert into public.company_roles (company_id, name, base_role, permissions) values (:'co', 'Sub coordinator', 'office', '{subs,schedule}') returning id as subs_role \gset
+-- Admin access is given through the server (the admin_grants migration).
+reset role;
 insert into public.memberships (company_id, user_id, role, role_id) values
   (:'co', :'opal', 'office', null), (:'co', :'olly', 'office', :'clerk_role'), (:'co', :'ona', 'office', :'subs_role'),
   (:'co', :'lou', 'crew_lead', null), (:'co', :'cy', 'field_crew', null), (:'co', :'dee', 'field_crew', null),
   (:'co', :'ed', 'estimator', null), (:'co', :'ada', 'admin', null);
+set local role authenticated;
 insert into public.subcontractors (id, company_id, name, contact_name, email, address, tax_classification) values
   (:'apex', :'co', 'Apex Roofing', 'Al Apex', 'al@apex.test', '{"line1": "5 Pine Rd", "city": "Dover", "region": "DE", "postal_code": "19901"}', 'individual'),
   (:'birch', :'co', 'Birch Gutters Inc', 'Bo Birch', null, '{}', 's_corp'),

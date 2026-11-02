@@ -4,6 +4,7 @@ import { optionTotals, quoteTotals } from "@crewtavo/core/money";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env";
 import { encryptJson } from "../src/lib/crypto";
+import { readClientLink } from "../src/lib/links";
 import { packageLines, type PackageService } from "../src/services/roofPackages";
 
 // Stand-ins for the signed-in person's Supabase client and the service-role client: tables of rows
@@ -740,6 +741,71 @@ describe("sending a roof estimate the usual way", () => {
       const mail = await emailed();
       expect(mail.Subject).toBe("Quote #1042 from Peak Roofing");
       expect(mail.Text).toContain("Here's your quote ($19,768.32).");
+    }
+  });
+});
+
+describe("the link a send hands back", () => {
+  const lines = [{ id: "l1", service_id: ROOF, name: "Architectural shingle roof", quantity: 30, unit: "square", unit_price: 560, sort: 0, selected: true }];
+  const payload = (url: string) => readClientLink(env, url.split("/hub/")[1]!);
+  const hubLink = (text: unknown) => String(text).match(/https:\/\/ops\.example\.com\/hub\/\S+/)![0];
+
+  it("is the office's copy for an estimator's Copy link, so it can't say yes to autopay or tip as the client", async () => {
+    roofer({ role: "estimator", lines, status: "sent" });
+    for (const path of [`/quotes/${QUOTE}/send`, `/roofing/${QUOTE}/send-range`]) {
+      const res = await send(path, { channel: "link" });
+      expect(res.status, path).toBe(200);
+      expect(await payload((await res.json()).link), path).toMatchObject({ c: ROOFER, t: "quote", id: QUOTE, via: "office" });
+    }
+    expect(rows("messages")).toEqual([]);
+  });
+
+  it("is the client's own only in the email that goes out; the timeline keeps the office's copy", async () => {
+    roofer({ lines, status: "sent" });
+    env.MAILPIT_URL = "http://mailpit.local";
+    let body: { sent: boolean; link: string };
+    try {
+      body = await (await send(`/quotes/${QUOTE}/send`, { channel: "email" })).json();
+    } finally {
+      delete env.MAILPIT_URL;
+    }
+    expect(body.sent).toBe(true);
+    const mail = JSON.parse(String(fetcher.mock.calls.find(([url]) => String(url).includes("mailpit"))![1]!.body));
+    const own = await payload(hubLink(mail.Text));
+    expect(own).toMatchObject({ c: ROOFER, t: "quote", id: QUOTE });
+    expect(own!.via).toBeUndefined();
+    expect(await payload(body.link)).toMatchObject({ t: "quote", id: QUOTE, via: "office" });
+    expect(await payload(hubLink(rows("messages")[0]!.body))).toMatchObject({ t: "quote", id: QUOTE, via: "office" });
+  });
+
+  /** The link in what went out, by email or text, for a send with this body. */
+  const sentLink = async (body: Record<string, unknown>) => {
+    fetcher.mockClear();
+    env.MAILPIT_URL = "http://mailpit.local";
+    try {
+      const res = await send(`/quotes/${QUOTE}/send`, body);
+      expect(res.status, JSON.stringify(body)).toBe(200);
+    } finally {
+      delete env.MAILPIT_URL;
+    }
+    const mail = JSON.parse(String(fetcher.mock.calls.find(([url]) => String(url).includes("mailpit"))![1]!.body));
+    return payload(hubLink(mail.Text));
+  };
+
+  it("is the client's own only when it goes to their own email or phone on file; typed to anyone else, it's the office's copy", async () => {
+    roofer({ role: "estimator", lines, status: "sent" });
+    rows("clients")[0]!.phone = "(540) 555-0142";
+    // To the client: no address typed, or theirs typed in another case or format.
+    for (const body of [{ channel: "email" }, { channel: "email", to: " DANA@example.com" }, { channel: "sms" }, { channel: "sms", to: "+1 540 555 0142" }]) {
+      const own = await sentLink(body);
+      expect(own, JSON.stringify(body)).toMatchObject({ t: "quote", id: QUOTE, own: 1 });
+      expect(own, JSON.stringify(body)).not.toHaveProperty("via");
+    }
+    // To an address the estimator typed (their own, say): the office's copy, which can't say yes to autopay or tip.
+    for (const body of [{ channel: "email", to: "estimator@peak.example" }, { channel: "sms", to: "540-555-0199" }]) {
+      const copy = await sentLink(body);
+      expect(copy, JSON.stringify(body)).toMatchObject({ t: "quote", id: QUOTE, via: "office" });
+      expect(copy, JSON.stringify(body)).not.toHaveProperty("own");
     }
   });
 });

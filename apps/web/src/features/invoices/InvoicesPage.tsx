@@ -1,3 +1,4 @@
+import { autopaySettings } from "@crewtavo/core/autopay";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDeferredValue, useState, type FormEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -16,7 +17,7 @@ import { addDaysIso, formatDate, formatMoney, todayIn } from "@/lib/format";
 import { useStatusCounts } from "@/lib/listing";
 import { can, hasRole, useSession } from "@/lib/session";
 import { ClientPicker, type PickedClient } from "../clients/ClientForm";
-import { InvoiceSummary, ReadyToInvoice, RemindAllButton } from "./InvoiceTools";
+import { AutopayAttention, ChargeCardsDialog, InvoiceSummary, ReadyToInvoice, RemindAllButton } from "./InvoiceTools";
 
 // Each filter is named for its status ("open" is everything still owed, under the sent status's name).
 const FILTERS = [
@@ -35,7 +36,13 @@ export function InvoicesPage() {
 }
 
 function InvoicesPageScreen() {
-  const { company } = useSession();
+  const session = useSession();
+  const { company } = session;
+  // Autopay's charges carry what clients owe: for the people who look after money.
+  const seesMoney = hasRole(session, "admin", "office") && can(session, "invoices");
+  // Charge cards: only while the company charges clients' saved cards (Settings → Payments).
+  const chargesCards = seesMoney && autopaySettings(company.settings, company.trade_preset).enabled;
+  const [charging, setCharging] = useState(false);
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [filter, setFilter] = useState<FilterKey>(() => (FILTERS.find((x) => x.key === params.get("status"))?.key as FilterKey | undefined) ?? "open");
@@ -98,6 +105,8 @@ function InvoicesPageScreen() {
               items={[
                 { label: "Stripe deposits", icon: "dollar", onSelect: () => navigate("/payouts") },
                 { label: "Download as spreadsheet", icon: "download", onSelect: exportCsv, disabled: !rows.length },
+                { separator: true, hidden: !chargesCards },
+                { label: "Charge cards", icon: "card", onSelect: () => setCharging(true), hidden: !chargesCards },
               ]}
             />
             <Button variant="primary" icon="plus" onClick={() => setParams({ new: "1" }, { replace: true })}>New invoice</Button>
@@ -106,6 +115,7 @@ function InvoicesPageScreen() {
       />
       <InvoiceSummary onPick={setFilter} />
       <ReadyToInvoice />
+      {seesMoney && <AutopayAttention />}
       <div className="toolbar">
         <div className="input-group">
           <span className="addon"><Icon name="search" size={16} /></span>
@@ -168,6 +178,7 @@ function InvoicesPageScreen() {
           </div>
         </div>
       )}
+      {charging && <ChargeCardsDialog onClose={() => setCharging(false)} />}
       <NewInvoiceDialog open={params.get("new") === "1"} onClose={() => setParams({}, { replace: true })} onCreated={(id) => navigate(`/invoices/${id}`)} />
     </>
   );

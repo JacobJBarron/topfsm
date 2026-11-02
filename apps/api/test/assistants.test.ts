@@ -225,6 +225,29 @@ describe("MCP tools", () => {
     expect(patch.name).toBeUndefined();
   });
 
+  it("turn clients' tips for the crew on and off by a name that says so, the switch Settings → Company has", async () => {
+    let calls = supabase({ settings: { hub_tips: true } });
+    expect((await call(full, "get_company_settings", {})).structuredContent.result).toMatchObject({ client_tips: true });
+    expect((await call(full, "update_company_settings", { client_tips: false })).isError).toBeUndefined();
+    const patch = calls.find((c) => c.method === "PATCH" && c.path === "/rest/v1/companies")!.body;
+    // The setting keeps its name in the database, and the rest of the settings stay as they were.
+    expect(patch.settings).toMatchObject({ hub_tips: false, default_tax_rate: 0.05, assistants: { enabled: true, read_only: false } });
+
+    calls = supabase({ settings: { hub_tips: false } });
+    const read = (await call(full, "get_company_settings", {})).structuredContent.result;
+    expect(read.client_tips).toBe(false);
+    expect(read).not.toHaveProperty("show_hub_tips");
+
+    // What the assistant reads about it is about the Client Hub, not hints for the team.
+    const tools = (await (await rpc(full, "tools/list")).json()).result.tools as Array<{ name: string; description: string; inputSchema: { properties: Record<string, { description?: string }> } }>;
+    const get = tools.find((t) => t.name === "get_company_settings")!;
+    const update = tools.find((t) => t.name === "update_company_settings")!;
+    expect(get.description).toContain("client_tips: whether clients can add a tip for the crew when they pay an invoice online in the Client Hub, or from an autopay receipt.");
+    expect(Object.keys(update.inputSchema.properties)).toContain("client_tips");
+    expect(Object.keys(update.inputSchema.properties)).not.toContain("show_hub_tips");
+    expect(update.inputSchema.properties.client_tips!.description).toMatch(/^Let clients add a tip for the crew .* This is not about tips or hints shown to the team\.$/);
+  });
+
   it("save booking forms the way the booking screen does, and give their link", async () => {
     const calls = supabase();
     const res = await call(full, "save_booking_form", { name: "Spring cleanup", service_area_zips: ["24141"], questions: [{ label: "Yard size", type: "choice", options: ["Small", "Large"] }] });

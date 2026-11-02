@@ -62,7 +62,10 @@ const BLANK: Draft = {
 
 // Who a rule can notify: the team's levels (automations never notify subs).
 const ROLE_OPTIONS: Array<[string, string]> = STAFF.map((r) => [r, ROLE_GROUP_LABELS[r] ?? r]);
-const ACTION_ICON: Record<ActionType, IconName> = { notify: "bell", send_email: "mail", send_sms: "messages", add_tag: "tag", remove_tag: "tag", add_note: "note", create_task: "calendarCheck", request_review: "star", update_status: "archive" };
+const ACTION_ICON: Record<ActionType, IconName> = {
+  notify: "bell", send_email: "mail", send_sms: "messages", add_tag: "tag", remove_tag: "tag", add_note: "note", create_task: "calendarCheck", request_review: "star", update_status: "archive",
+  invite_autopay: "card",
+};
 const STEP_COLORS = { when: "#3474d4", wait: "#8b5cf6", if: "#c9852a", then: "#3b7d23" };
 
 function blankAction(type: ActionType, subject: SubjectKind): Action {
@@ -75,6 +78,7 @@ function blankAction(type: ActionType, subject: SubjectKind): Action {
     case "create_task": return { type, title: "", days_from_now: 1 };
     case "request_review": return { type, channel: "email" };
     case "update_status": return { type, status: STATUS_ACTION_CHOICES[subject]?.[0]?.value ?? "archived" };
+    case "invite_autopay": return { type, channel: "email" };
   }
 }
 
@@ -130,7 +134,8 @@ function RulePageScreen() {
 
   const trigger = triggerDef(draft.trigger);
   const subject: SubjectKind = trigger?.subject ?? "quote";
-  // Rules about subs' offers (their prices) are for people with the Subcontractors area.
+  // Rules about subs' offers (their prices) are for people with the Subcontractors area, and rules
+  // about autopay (clients' cards) for people with the invoices area.
   const triggers = TRIGGERS.filter((t) => t.verb === draft.trigger || triggerAllowed(t.verb, (area) => can(session, area)));
   const errors = useMemo(() => validateRule(draft), [draft]);
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
@@ -221,7 +226,7 @@ function RulePageScreen() {
             <Step color={STEP_COLORS.when} icon="bolt" title="When">
               <select className="select" value={draft.trigger} onChange={(e) => {
                 const next = triggerDef(e.target.value);
-                // Who can be told about it may be fewer (a sub's offer: the office only).
+                // Who can be told about it may be fewer (a sub's offer or autopay: the office only).
                 const actions = draft.actions.map((a) => (a.type === "notify" && next?.notifyRoles ? { ...a, roles: (a.roles ?? []).filter((r) => next.notifyRoles!.includes(r)) } : a));
                 set({ trigger: e.target.value, conditions: next?.subject === subject ? draft.conditions : [], delay_minutes: next?.delayable ? draft.delay_minutes : 0, actions });
               }} aria-label="Trigger">
@@ -404,7 +409,7 @@ function ConditionRow({ subject, value, invalid, onChange, onRemove }: { subject
 
 /**
  * Who a notice can go to: the team's levels, and the people on the visit (or the job's next visits).
- * About a sub's offer, only the office: never the crew, who don't see subs' prices.
+ * About a sub's offer or autopay, only the office: never the crew, who don't see subs' prices or clients' cards.
  */
 function whoToTell(verb: string, subject: SubjectKind): Array<[string, string]> {
   const only = triggerDef(verb)?.notifyRoles;
@@ -536,6 +541,18 @@ function ActionEditor({ index, count, subject, verb, value, onChange, onRemove, 
             </select>
           </Field>
           <p className="muted small" style={{ margin: 0 }}>Uses your <Link to="/marketing?tab=reviews">review settings</Link>.</p>
+        </>
+      )}
+
+      {value.type === "invite_autopay" && (
+        <>
+          <Field label="Send by">
+            <select className="select" value={value.channel} onChange={(e) => onChange({ ...value, channel: e.target.value as "email" | "sms" })}>
+              <option value="email">Email</option>
+              <option value="sms">Text message</option>
+            </select>
+          </Field>
+          <p className="muted small" style={{ margin: 0 }}>Skipped for clients already on autopay or invited in the last week. Uses your <Link to="/settings?tab=payments">autopay settings</Link>.</p>
         </>
       )}
 

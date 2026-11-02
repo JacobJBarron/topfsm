@@ -149,6 +149,8 @@ export function CompanySettings() {
           <input type="checkbox" className="switch" checked={f.hub_tips === "1"} onChange={(e) => setF({ ...f, hub_tips: e.target.checked ? "1" : "" })} />
           Let clients add a tip when they pay online
         </label>
+        {/* The one switch for tips (settings.hub_tips): the Client Hub, the receipt and the server all follow it. */}
+        <span className="muted small">Also offered on the receipt after an automatic charge. Off: no tip choice anywhere, and no tip is charged.</span>
       </div>
       <div className="card card-pad stack">
         <strong>Time clock</strong>

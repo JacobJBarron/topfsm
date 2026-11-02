@@ -1,15 +1,17 @@
 /** Apps page: catalog with status, OAuth connect/callback/disconnect, API keys, and AI helpers. */
 import { ADMINS } from "@crewtavo/core";
 import { websiteOf } from "@crewtavo/core/website";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
 import type { AppEnv } from "../env";
-import { requireCompany, requireUser } from "../lib/auth";
+import { confirmPassword, requireCompany, requireUser } from "../lib/auth";
 import { runInBackground } from "../lib/background";
 import { randomId, signToken, verifyToken } from "../lib/crypto";
+import { renderEmail } from "../lib/email";
 import { appUrl, dbError, HttpError, isoDate, must, readJson } from "../lib/http";
-import { adminClient } from "../lib/supabase";
+import { emailReady, sendEmail } from "../lib/notify";
+import { adminClient, type Db } from "../lib/supabase";
 import { companyAnthropicKey, complete } from "../services/ai";
 import { analyticsSettings } from "../services/analytics";
 import { AbcProblem, chooseAbcAccount, connectAbc, settingsOf as abcSettingsOf } from "../integrations/abcSupply";
@@ -17,7 +19,18 @@ import { describeAccount } from "../integrations/accounting";
 import { deleteVisitsCalendar, describeGoogleAccount, pushUpcomingVisits } from "../integrations/calendars";
 import { checkFalKey } from "../integrations/fal";
 import { CATALOG, catalogEntry, isCalendarApp, OAUTH, UntrustedServerError, zohoAccountsServer, type Provider } from "../integrations/registry";
-import { beginStripeImport, canImportStripe, connectStripe, disconnectStripe, IMPORT_STALE_MS, importFromStripe, SHARED_STRIPE_IMPORT, stripeAccess, type ImportState } from "../integrations/stripe";
+import {
+  beginStripeImport,
+  canImportStripe,
+  connectStripe,
+  disconnectStripe,
+  IMPORT_STALE_MS,
+  importFromStripe,
+  SHARED_STRIPE_IMPORT,
+  stripeAccess,
+  stripeCapabilities,
+  type ImportState,
+} from "../integrations/stripe";
 import { appKeysOf, exchangeCode, loadSecret, oauthClient, revoke, saveSecret, SignInRefused } from "../integrations/tokens";
 import { checkSite, saveWebsite, WebsiteError } from "../integrations/website";
 
@@ -27,10 +40,15 @@ const STATE_COOKIE = "crewtavo_oauth_nonce";
 const callbackUrl = (base: string, provider: string) => `${base}/api/apps/${provider}/callback`;
 
 apps.get("/apps", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
-  const [rows, calendars, stripeKey, company] = await Promise.all([
+  const stripeKey = await adminClient(c.env).from("integration_secrets").select("provider", { count: "exact", head: true }).match({ company_id: c.var.companyId, provider: "stripe" });
+  const ownKey = Boolean(stripeKey.count);
+  // Whether the company's own key can save and charge cards (autopay) and make refunds. Asking
+  // also brings an older webhook up to date and notes which kind of key it is, before the settings
+  // are read below. The server's key does neither.
+  const can = ownKey ? await stripeCapabilities(c.env, adminClient(c.env), c.var.companyId).catch(() => null) : null;
+  const [rows, calendars, company] = await Promise.all([
     c.var.db.from("integrations").select("provider, status, account_label, connected_at, last_sync_at, last_error, settings").eq("company_id", c.var.companyId),
     c.var.db.from("calendar_sources").select("app, last_error").eq("company_id", c.var.companyId),
-    adminClient(c.env).from("integration_secrets").select("provider", { count: "exact", head: true }).match({ company_id: c.var.companyId, provider: "stripe" }),
     c.var.db.from("companies").select("settings").eq("id", c.var.companyId).maybeSingle(),
   ]);
   // Apps the company can sign in to with its own app at the provider: which keys it saved, if any.
@@ -50,8 +68,7 @@ apps.get("/apps", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
   builtinOn.careers = (company.data?.settings as { careers?: { enabled?: boolean } } | null)?.careers?.enabled === true;
   builtinOn.drive = (company.data?.settings as { drive?: { enabled?: boolean } } | null)?.drive?.enabled === true;
   const calendarRows = must(calendars);
-  const ownKey = Boolean(stripeKey.count);
-  const stripeSettings = (integrations.find((r) => r.provider === "stripe")?.settings ?? {}) as { webhook?: boolean; livemode?: boolean; import?: ImportState };
+  const stripeSettings = (integrations.find((r) => r.provider === "stripe")?.settings ?? {}) as { webhook?: boolean; livemode?: boolean; key_kind?: string; import?: ImportState };
   // ABC Supply: the account and branch prices come from, and the others there are to pick.
   const abc = abcSettingsOf(integrations.find((r) => r.provider === "abc_supply" && r.status !== "disconnected")?.settings);
   // The deployment's own Stripe account, for companies that haven't added theirs.
@@ -63,8 +80,14 @@ apps.get("/apps", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
         webhook: ownKey ? stripeSettings.webhook !== false : true,
         livemode: ownKey ? stripeSettings.livemode !== false : !c.env.STRIPE_SECRET_KEY?.includes("_test_"),
         import: stripeSettings.import ?? null,
+        autopay: can?.autopay ?? false,
+        refunds: can?.refunds ?? false,
+        // The company's full live secret key, which can also make payouts: the page asks for a restricted one.
+        full_key: ownKey && stripeSettings.key_kind === "secret" && stripeSettings.livemode !== false,
       }
     : null;
+  // Without the company's email or the server's, the owners hear about Stripe changes on the bell only.
+  const ownersEmailed = await emailReady(c.env, c.var.companyId);
   return c.json({
     mcp_url: `${appUrl(c)}/mcp`,
     apps: CATALOG.map(({ available, appKeys: takesKeys, ...entry }) => {
@@ -81,7 +104,7 @@ apps.get("/apps", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
         ...(row ?? { status: (entry.auth === "link" && own.length) || builtinOn[entry.id] || (entry.auth === "site" && website) ? "connected" : "disconnected" }),
         ...linked,
         ...(entry.auth === "site" ? { website } : {}),
-        ...(entry.id === "stripe" && stripe ? { stripe } : {}),
+        ...(entry.id === "stripe" ? { ...(stripe ? { stripe } : {}), owners_emailed: ownersEmailed } : {}),
         ...(entry.id === "abc_supply" && abc ? { supplier: abc } : {}),
         ...(takesKeys ? { takes_app_keys: true, app_keys: ownKeys } : {}),
       };
@@ -194,7 +217,12 @@ apps.get("/apps/:provider/callback", async (c) => {
 
 apps.post("/apps/:provider/disconnect", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
   const provider = c.req.param("provider") as Provider;
+  // Apps on this page only: the company's email is Settings → Email's, which asks for the password.
+  if (!catalogEntry(provider)) throw new HttpError(400, "That app isn't available yet.");
   const admin = adminClient(c.env);
+  // Stripe decides where clients' payments go: taking it away needs the person's password.
+  const who = provider === "stripe" ? await confirmPassword(c, (await readJson(c, PASSWORD)).password, "stripe-key", 10) : null;
+  const was = who ? await stripeAccount(admin, c.var.companyId) : null;
   if (provider === "google_calendar") {
     // Take the visits calendar out of the Google account while we still can, and stop showing
     // its calendars on the schedule. Calendars added by link stay.
@@ -217,6 +245,7 @@ apps.post("/apps/:provider/disconnect", requireUser, requireCompany(ADMINS, "app
     .update({ status: "disconnected", account_label: null, last_error: null, ...(provider === "google_calendar" ? { settings: {} } : {}) })
     .match({ company_id: c.var.companyId, provider });
   if (error) throw dbError(error);
+  if (who && was) runInBackground(c, noteStripeChange(c, who, { before: was.label, after: null, from: was.id, to: null, moved: null }));
   return c.json({ provider, status: "disconnected" });
 });
 
@@ -302,6 +331,89 @@ apps.put("/apps/abc_supply/account", requireUser, requireCompany(ADMINS, "apps")
   }
 });
 
+const PASSWORD = z.object({ password: z.string().min(1).max(200) });
+
+/** The Stripe account the company's own key reaches now (its name as Crewtavo shows it, and its acct_ id), or null without one. */
+async function stripeAccount(admin: Db, companyId: string): Promise<{ label: string; id: string | null } | null> {
+  const { data } = await admin.from("integrations").select("status, account_label, external_account_id").match({ company_id: companyId, provider: "stripe" }).maybeSingle();
+  return data && data.status !== "disconnected" ? { label: data.account_label ?? "Stripe account", id: data.external_account_id ?? null } : null;
+}
+
+const IF_NOT_YOU = "If this wasn't you, sign in, disconnect Stripe on the Apps page, change your password, and delete the Crewtavo key in your Stripe dashboard.";
+
+/**
+ * A security change on record in the activity, and on the bell of every active owner, the person
+ * who made it included, since someone else may be signed in as them. What fails is logged. The
+ * owners come back, for anything more.
+ */
+export async function tellOwners(c: Context<AppEnv>, note: { verb: string; summary: string; title: string; body: string; link: string }): Promise<string[]> {
+  const { companyId, userId } = c.var;
+  const admin = adminClient(c.env);
+  const recorded = await admin.from("activity").insert({ company_id: companyId, actor_id: userId, verb: note.verb, subject_type: "app", summary: note.summary });
+  if (recorded.error) console.error("Couldn't record a change", note.verb, companyId, recorded.error.message);
+  const { data: owners } = await admin.from("memberships").select("user_id").eq("company_id", companyId).eq("role", "owner").eq("active", true);
+  const ownerIds = (owners ?? []).map((m) => m.user_id);
+  if (!ownerIds.length) return [];
+  const told = await admin.from("notifications").insert(ownerIds.map((user_id) => ({ company_id: companyId, user_id, kind: "security", title: note.title, body: note.body, link: note.link })));
+  if (told.error) console.error("Couldn't notify the owners", note.verb, companyId, told.error.message);
+  return ownerIds;
+}
+
+/** An account by its name and acct_ id: the name is the Stripe account's own, so anyone can choose it. */
+const named = (label: string | null, id: string | null) => `${label ?? "Stripe account"} (${id ?? "ID unknown"})`;
+
+/**
+ * Stripe connected, switched or disconnected: `before` and `after` are the accounts' names, `from`
+ * and `to` their acct_ ids, and `moved` whether payments now go to another account (null when that
+ * can't be told). The wording rests on the ids, never the names. On record and on every owner's
+ * bell (tellOwners), and by email. Runs after the response, so it never holds up the change; what
+ * fails is logged. Never the key or any part of it.
+ */
+async function noteStripeChange(
+  c: Context<AppEnv>,
+  who: { email: string; full_name: string | null },
+  change: { before: string | null; after: string | null; from: string | null; to: string | null; moved: boolean | null },
+) {
+  const name = who.full_name || who.email;
+  const was = named(change.before, change.from);
+  const now = named(change.after, change.to);
+  const [verb, summary, title, account] = !change.after
+    ? ["stripe.disconnected", `${name} disconnected Stripe (${was})`, "Stripe was disconnected", was]
+    : !change.before
+      ? ["stripe.connected", `${name} connected Stripe (${now})`, "Stripe was connected", now]
+      : change.moved === false
+        ? ["stripe.switched", `${name} replaced the Stripe key (${now})`, "The Stripe key was replaced", now]
+        : change.moved
+          ? ["stripe.switched", `${name} switched Stripe from ${was} to ${now}`, "Stripe was switched to another account", `${now} (was ${was})`]
+          : ["stripe.switched", `${name} replaced the Stripe key with one that may be for a different Stripe account (${now}, was ${was})`, "The Stripe key was replaced, maybe with a different account", `${now} (was ${was}), which may be a different Stripe account`];
+  const ownerIds = await tellOwners(c, { verb, summary, title, body: `${summary}. ${IF_NOT_YOU}`, link: "/apps/stripe" });
+  await emailOwners(c, ownerIds, { title, who, details: `Stripe account: ${account}`, ifNotYou: IF_NOT_YOU, link: "/apps/stripe" });
+}
+
+/**
+ * The owners (from tellOwners) told by email about a security change: what, who made it, when and
+ * what to do if it wasn't them. One at a time; what fails is logged.
+ */
+export async function emailOwners(
+  c: Context<AppEnv>,
+  ownerIds: string[],
+  note: { title: string; who: { email: string; full_name: string | null }; details: string; ifNotYou: string; link: string },
+) {
+  if (!ownerIds.length) return;
+  const { companyId } = c.var;
+  const admin = adminClient(c.env);
+  const { data: company } = await admin.from("companies").select("name, timezone").eq("id", companyId).maybeSingle();
+  const companyName = company?.name ?? "your company";
+  const when = new Date().toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short", timeZone: company?.timezone || "UTC" });
+  const text = `${note.title} in Crewtavo for ${companyName}.\n\nWho: ${note.who.full_name || note.who.email} (${note.who.email})\nWhen: ${when}\n${note.details}\n\n${note.ifNotYou}\n\n${appUrl(c)}${note.link}`;
+  const { data: people } = await admin.from("profiles").select("email").in("user_id", ownerIds);
+  for (const person of people ?? []) {
+    if (!person.email) continue;
+    const sent = await sendEmail(c.env, { to: person.email, subject: `${note.title} for ${companyName}`, ...renderEmail({ companyName, text }), fromName: companyName }, companyId).catch((error: unknown) => ({ sent: false, reason: String(error) }));
+    if (!sent.sent) console.warn("Couldn't email an owner about a security change", note.title, companyId, sent.reason);
+  }
+}
+
 /** API-key apps (a company's own Anthropic key, for example). The key is encrypted and never returned. */
 apps.put("/apps/:provider/key", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
   const provider = c.req.param("provider") as Provider;
@@ -311,8 +423,12 @@ apps.put("/apps/:provider/key", requireUser, requireCompany(ADMINS, "apps"), asy
   const body = await readJson(c, z.object({ api_key: z.string().trim().min(10).max(500) }));
   const admin = adminClient(c.env);
   if (provider === "stripe") {
-    const { settled, ...connected } = await connectStripe(c.env, admin, { companyId: c.var.companyId, userId: c.var.userId, key: body.api_key, baseUrl: appUrl(c) });
+    // Stripe decides where clients' payments go: changing the key needs the person's password.
+    const who = await confirmPassword(c, (await readJson(c, PASSWORD)).password, "stripe-key", 10);
+    const was = await stripeAccount(admin, c.var.companyId);
+    const { settled, change, ...connected } = await connectStripe(c.env, admin, { companyId: c.var.companyId, userId: c.var.userId, key: body.api_key, baseUrl: appUrl(c) });
     runInBackground(c, settled);
+    runInBackground(c, noteStripeChange(c, who, { before: was?.label ?? null, after: connected.account_label, ...change }));
     return c.json({ provider, status: "connected", ...connected });
   }
   // fal.ai: checked against its free price list first, so a key pasted wrong says so now.

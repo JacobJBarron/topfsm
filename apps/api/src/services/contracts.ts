@@ -356,7 +356,7 @@ export interface ManualApproval {
 export async function manualApproval(db: Db, companyId: string, quoteId: string, input: { name: string; optionId: string | null }): Promise<ManualApproval> {
   const [quoteResult, companyResult, templates, options] = await Promise.all([
     db.from("quotes").select(MANUAL_FIELDS).eq("id", quoteId).eq("company_id", companyId).maybeSingle(),
-    db.from("companies").select("name, phone, timezone").eq("id", companyId).maybeSingle(),
+    db.from("companies").select("name, phone, timezone, trade_preset").eq("id", companyId).maybeSingle(),
     db.from("document_templates").select("id, is_default, settings").eq("company_id", companyId),
     loadOptions(db, companyId, quoteId),
   ]);
@@ -365,7 +365,8 @@ export async function manualApproval(db: Db, companyId: string, quoteId: string,
   if (templates.error) throw dbError(templates.error);
   const option = input.optionId ? (options.find((o) => o.id === input.optionId) ?? null) : null;
   if (input.optionId && !option) throw new HttpError(409, "That option isn't on this quote any more.");
-  const template = pickTemplate(templates.data ?? [], quote.template_id);
+  // The trade's starter terms when the business never saved its own, as the Hub and the printout show them.
+  const template = pickTemplate(templates.data ?? [], quote.template_id, company.trade_preset);
   const lines = quote.lines ?? [];
   const money = { taxRate: quote.tax_rate, discountAmount: quote.discount_amount, promo: quote.promo };
   const total = option ? optionTotals(lines, option.id, quote.option_id, money).total : quote.total;

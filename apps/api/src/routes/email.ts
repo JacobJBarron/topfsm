@@ -2,14 +2,17 @@
  * Settings → Email: connect the company's Resend key (recommended) or its own mailbox (Gmail, Google
  * Workspace, Zoho, Microsoft 365, Yahoo, iCloud or any SMTP server, with an app password). Saving signs in and
  * sends a test email first, so a connected mailbox is one that works. The password or key is
- * encrypted with ENCRYPTION_KEY and never sent back to the browser.
+ * encrypted with ENCRYPTION_KEY and never sent back to the browser. Connecting, changing or
+ * disconnecting it asks for the person's own password and tells every owner: the owners hear about
+ * Stripe changes by this email, so it mustn't be swapped out quietly first.
  */
 import { ADMINS, MAIL_PRESETS, mailPreset } from "@crewtavo/core";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import { z } from "zod";
 import type { AppEnv } from "../env";
-import { requireCompany, requireUser } from "../lib/auth";
+import { confirmPassword, requireCompany, requireUser } from "../lib/auth";
+import { runInBackground } from "../lib/background";
 import { encryptJson } from "../lib/crypto";
 import { renderEmail } from "../lib/email";
 import { appUrl, dbError, HttpError, must, readJson } from "../lib/http";
@@ -17,6 +20,7 @@ import { emailConfigured, forgetMailbox, loadMailbox, sendEmail, sendWithMailbox
 import { smtpSend, SmtpError } from "../lib/smtp";
 import { adminClient } from "../lib/supabase";
 import { logoImage } from "../services/logo";
+import { tellOwners } from "./apps";
 
 export const email = new Hono<AppEnv>();
 
@@ -30,6 +34,17 @@ const emailAdmin = createMiddleware<AppEnv>(async (c, next) => {
 const requireEmailAdmin = [requireUser, requireCompany(ADMINS), emailAdmin] as const;
 
 const PRESET_IDS = MAIL_PRESETS.map((p) => p.id) as [string, ...string[]];
+
+/** The person's own Crewtavo password (`password` is the mailbox's). */
+const currentPassword = z.string().min(1).max(200);
+
+const IF_NOT_YOU = "If this wasn't you, sign in, check Settings → Email, and change your password.";
+
+/** The company's email connected, changed or disconnected, on record and on every owner's bell. */
+function noteMailboxChange(c: Context<AppEnv>, who: { email: string; full_name: string | null }, verb: string, summary: string, title: string) {
+  const name = who.full_name || who.email;
+  runInBackground(c, tellOwners(c, { verb, summary: `${name} ${summary}`, title, body: `${name} ${summary}. ${IF_NOT_YOU}`, link: "/settings?tab=email" }));
+}
 
 email.get("/email", ...requireEmailAdmin, async (c) => {
   const { data: row, error } = await adminClient(c.env)
@@ -62,10 +77,12 @@ const connectSchema = z.object({
   api_key: z.string().trim().max(500).optional(),
   from_email: z.email(),
   from_name: z.string().trim().max(120).nullable().optional(),
+  current_password: currentPassword,
 });
 
 email.put("/email", ...requireEmailAdmin, async (c) => {
   const body = await readJson(c, connectSchema);
+  const who = await confirmPassword(c, body.current_password, "mailbox", 10);
   const preset = mailPreset(body.preset)!;
   const saved = await loadMailbox(c.env, c.var.companyId).catch(() => null);
   const company = must(await c.var.db.from("companies").select("name, email, settings").eq("id", c.var.companyId).maybeSingle());
@@ -129,6 +146,9 @@ email.put("/email", ...requireEmailAdmin, async (c) => {
     .upsert({ company_id: c.var.companyId, provider: "email", ciphertext: await encryptJson(c.env, secret), updated_at: new Date().toISOString() });
   if (secretError) throw dbError(secretError);
   forgetMailbox(c.var.companyId);
+  const was = saved?.settings.from_email;
+  if (!was) noteMailboxChange(c, who, "email.connected", `connected the company's email (${settings.from_email})`, "The company's email was connected");
+  else noteMailboxChange(c, who, "email.changed", `changed the company's email (${was === settings.from_email ? was : `${settings.from_email}, was ${was}`})`, "The company's email was changed");
   return c.json({ connected: true, test_sent_to: to ?? null });
 });
 
@@ -149,8 +169,10 @@ email.post("/email/test", ...requireEmailAdmin, async (c) => {
 });
 
 email.delete("/email", ...requireEmailAdmin, async (c) => {
-  const { error } = await adminClient(c.env).from("integrations").delete().eq("company_id", c.var.companyId).eq("provider", "email");
+  const who = await confirmPassword(c, (await readJson(c, z.object({ current_password: currentPassword }))).current_password, "mailbox", 10);
+  const { data: removed, error } = await adminClient(c.env).from("integrations").delete().eq("company_id", c.var.companyId).eq("provider", "email").select("account_label");
   if (error) throw dbError(error);
   forgetMailbox(c.var.companyId);
+  if (removed?.length) noteMailboxChange(c, who, "email.disconnected", `disconnected the company's email (${removed[0]!.account_label ?? "a mailbox"})`, "The company's email was disconnected");
   return c.json({ connected: false, fallback: emailConfigured(c.env) });
 });

@@ -150,7 +150,8 @@ select test.check((select count(*) from public.profiles) = 1, 'B sees only its o
 select test.expect_error(format('insert into public.clients (company_id, display_name) values (%L, %L)', :'company_a', 'Intruder'), 'B cannot write into A');
 with changed as (update public.clients set display_name = 'Hacked' where id = :'client_a' returning 1)
 select test.check((select count(*) from changed) = 0, 'B cannot update A rows');
-select test.expect_error(format('insert into public.memberships (company_id, user_id, role) values (%L, %L, %L)', :'company_a', 'b0000000-0000-0000-0000-000000000001', 'owner'), 'B cannot join A');
+-- (As field crew: joining as an owner or admin is refused before that, by admin_grants.)
+select test.expect_error(format('insert into public.memberships (company_id, user_id, role) values (%L, %L, %L)', :'company_a', 'b0000000-0000-0000-0000-000000000001', 'field_crew'), 'B cannot join A');
 
 -- Composite keys: B can't attach its own row to A's client even with a known id.
 insert into public.clients (company_id, display_name) values (:'company_b', 'Beta client') returning id as client_b \gset

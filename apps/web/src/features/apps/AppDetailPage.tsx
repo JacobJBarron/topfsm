@@ -10,6 +10,8 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/Button";
 import { confirm } from "@/components/ui/Confirm";
+import { Dialog } from "@/components/ui/Dialog";
+import { Field, FormError } from "@/components/ui/Field";
 import { Icon } from "@/components/ui/Icon";
 import { BackLink, useDocumentTitle } from "@/components/ui/PageHeader";
 import { Loading, Skeleton } from "@/components/ui/Skeleton";
@@ -28,7 +30,7 @@ import { AppKeysCard } from "./AppKeysCard";
 import { AssistantAccess, ConnectedAssistants, useAssistantConnections } from "./AssistantAccess";
 import { assistantAppFor, CONNECTOR_STEPS, disconnect as disconnectAssistant } from "./assistantConnections";
 import { CalendarRow, GoogleCalendarPanel, LinkCalendarsPanel, AddCalendarForm, useCalendars, type CalendarSource } from "./CalendarPanels";
-import { categoryName, infoFor, LINK_ACCESS, MORE_LABELS, useApps, type AppInfo, type AppRow } from "./catalog";
+import { categoryName, infoFor, isFullSecretKey, LINK_ACCESS, MORE_LABELS, PASSWORD_HINT, STRIPE_NEW_KEY, useApps, type AppInfo, type AppRow } from "./catalog";
 import { DrivePanel } from "./DrivePanel";
 import { InstallRing, type InstallPhase } from "./InstallRing";
 import { useIsInstalled } from "./installed";
@@ -44,15 +46,6 @@ const FAL_KEYS = "https://fal.ai/dashboard/keys";
 const FAL_BILLING = "https://fal.ai/dashboard/billing";
 const GOOGLE_SIGNIN_GUIDE = "https://crewtavo.com/docs/connections/google-calendar/#instant-updates-with-google-sign-in";
 
-/**
- * What Crewtavo's Stripe key may do: add its webhook, customers and invoices (with their items),
- * and read payments, fees, deposits and the account's name. Stripe's create-key form sets these
- * from its link (each name is a row there; balance transactions come under Balance). Stripe doesn't
- * document that, so if it stops, people still land on the form.
- */
-const STRIPE_KEY_PERMISSIONS = ["webhook_write", "customer_write", "invoice_write", "charge_read", "balance_read", "balance_transaction_source_read", "payout_read", "connected_account_read"];
-const STRIPE_NEW_KEY = `https://dashboard.stripe.com/apikeys/create?name=Crewtavo&${STRIPE_KEY_PERMISSIONS.map((p) => `permissions%5B%5D=rak_${p}`).join("&")}`;
-
 /** Google Calendar on a server without Google sign-in: it works by secret address, like the link apps. */
 const byLinkOnly = (app: AppRow) => app.id === "google_calendar" && !app.available;
 
@@ -63,6 +56,7 @@ const byLinkOnly = (app: AppRow) => app.id === "google_calendar" && !app.availab
 const keysFirst = (app: AppRow) => Boolean(app.takes_app_keys && (!app.available || app.app_keys));
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
 
 function statusOf(app: AppRow, installed: boolean): { label: string; tone: Tone } {
   if (app.status === "error" || app.calendar_errors) return { label: "Needs attention", tone: "danger" };
@@ -144,16 +138,21 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
   // Uninstall takes this app's own assistants and calendars with it.
   const assistants = connections.filter((c) => assistantAppFor(c.name) === app.id);
   const sources = (calendars.data?.calendars ?? []).filter((s) => s.app === app.id);
+  // Stripe decides where clients' payments go: uninstalling it asks for the person's password.
+  const [askPassword, setAskPassword] = useState(false);
   const uninstall = useMutation({
-    meta: { success: `${app.name} uninstalled` },
-    mutationFn: async () => {
+    meta: { success: `${app.name} uninstalled`, inline: askPassword },
+    mutationFn: async (password?: string) => {
       for (const c of assistants) await disconnectAssistant(supabase(), c.clientId);
       // Google's own calendars go with its sign-in; the ones added by address are removed here.
-      if (hasAccount(app)) await api.post(`/apps/${app.id}/disconnect`);
+      if (hasAccount(app)) await api.post(`/apps/${app.id}/disconnect`, password ? { password } : {});
       if (app.auth === "site") await api.delete(`/apps/${app.id}/site`);
       await Promise.all(sources.filter((s) => s.kind !== "google").map((s) => api.delete(`/calendars/${s.id}`)));
     },
-    onSuccess: () => setPhase(null),
+    onSuccess: () => {
+      setPhase(null);
+      setAskPassword(false);
+    },
     onSettled: () => {
       refresh();
       queryClient.invalidateQueries({ queryKey: ["assistant-connections"] });
@@ -164,8 +163,9 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
 
   const askUninstall = async () => {
     if (app.auth === "builtin") return builtinSwitch.turnOff();
+    if (app.id === "stripe" && hasAccount(app)) return setAskPassword(true);
     const body = uninstallBody(app, { assistants: assistants.length, calendars: sources.length });
-    if (await confirm({ title: `Uninstall ${app.name}?`, body, confirmLabel: "Uninstall", danger: true })) uninstall.mutate();
+    if (await confirm({ title: `Uninstall ${app.name}?`, body, confirmLabel: "Uninstall", danger: true })) uninstall.mutate(undefined);
   };
 
   const install = () => {
@@ -264,6 +264,18 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
   return (
     <>
       <BackLink to="/apps">Apps</BackLink>
+      {askPassword && (
+        <UninstallWithPassword
+          app={app}
+          busy={uninstall.isPending}
+          error={uninstall.error}
+          onUninstall={(password) => uninstall.mutate(password)}
+          onClose={() => {
+            setAskPassword(false);
+            uninstall.reset();
+          }}
+        />
+      )}
 
       <header className="app-hero">
         <AppIcon id={app.id} name={app.name} size="lg" />
@@ -430,6 +442,33 @@ function uninstallBody(app: AppRow, counts: { assistants: number; calendars: num
   return `Crewtavo stops using it right away. Nothing already here is deleted. ${again}`;
 }
 
+/** Uninstall's question for Stripe, with the person's password; it's cleared once sent, and a wrong one says so here. */
+function UninstallWithPassword({ app, busy, error, onUninstall, onClose }: { app: AppRow; busy: boolean; error: unknown; onUninstall: (password: string) => void; onClose: () => void }) {
+  const [password, setPassword] = useState("");
+  return (
+    <Dialog open onClose={onClose} title={`Uninstall ${app.name}?`} size="sm">
+      <form
+        className="stack-sm"
+        onSubmit={(e: FormEvent) => {
+          e.preventDefault();
+          onUninstall(password);
+          setPassword("");
+        }}
+      >
+        <div className="muted" style={{ marginTop: -6 }}>{uninstallBody(app, { assistants: 0, calendars: 0 })}</div>
+        <Field label="Your Crewtavo password" hint={PASSWORD_HINT}>
+          <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" maxLength={200} required autoFocus />
+        </Field>
+        <FormError error={error} />
+        <div className="form-actions">
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="danger-solid" loading={busy}>Uninstall</Button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
 /**
  * Google Calendar with nothing to set up: its secret address brings a calendar onto the schedule,
  * and the subscribe link puts visits on Google Calendar. Google sign-in (instant, but a Google
@@ -539,22 +578,27 @@ function ConnectorCard({ app, mcpUrl, setup = false }: { app: AppRow; mcpUrl: st
 }
 
 /** Apps that use a key (a company's own Anthropic key, for example). The key is never shown again. */
-function KeyCard({ app, onSaved }: { app: AppRow; onSaved: () => void }) {
+export function KeyCard({ app, onSaved }: { app: AppRow; onSaved: () => void }) {
   const [key, setKey] = useState("");
   const [show, setShow] = useState(false);
   const stripe = app.id === "stripe";
+  // Stripe decides where clients' payments go: changing its key asks for the person's password too.
+  const [password, setPassword] = useState("");
   const save = useMutation({
     meta: { inline: true, success: stripe ? "Stripe connected" : `${app.name} key saved` },
-    mutationFn: () => api.put(`/apps/${app.id}/key`, { api_key: key.trim() }),
+    mutationFn: () => api.put(`/apps/${app.id}/key`, stripe ? { api_key: key.trim(), password } : { api_key: key.trim() }),
     onSuccess: () => {
       setKey("");
       onSaved();
     },
+    onSettled: () => setPassword(""),
   });
+  const ready = key.trim().length >= 10 && (!stripe || password.length > 0);
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (key.trim().length >= 10) save.mutate();
+    if (ready) save.mutate();
   };
+  const saveButton = <Button type="submit" loading={save.isPending} disabled={!ready} style={stripe ? { justifySelf: "start" } : undefined}>{stripe ? "Connect" : "Save"}</Button>;
   // Until the company's own Stripe key is in: how to get one from the form Stripe fills in.
   const stripeSteps = stripe && !app.stripe?.own;
   const fal = app.id === "fal";
@@ -599,12 +643,29 @@ function KeyCard({ app, onSaved }: { app: AppRow; onSaved: () => void }) {
         {app.status === "connected" && app.account_label && (!stripe || app.stripe?.own) ? `Saved: ${app.account_label}.` : "It's stored encrypted and never shown again."}
         {stripe && app.stripe?.own ? <> To switch keys, <a href={STRIPE_NEW_KEY} target="_blank" rel="noreferrer">get a new one from Stripe</a>.</> : null}
       </span>
-      <form className="row" style={{ gap: 8 }} onSubmit={submit}>
-        <div className="input-group grow">
-          <input className="input" type={show ? "text" : "password"} autoComplete="off" spellCheck={false} placeholder={(stripe ? app.stripe?.own : app.status === "connected") ? "Paste a new key to replace it" : stripe ? "Paste the key from Stripe" : "Paste your key"} value={key} onChange={(e) => { setKey(e.target.value); save.reset(); }} aria-label={stripe ? "Key from Stripe" : `${app.name} API key`} style={{ paddingLeft: 12, paddingRight: 36 }} />
-          <button type="button" className="icon-btn addon-right" style={{ position: "absolute", right: 2, pointerEvents: "auto" }} aria-label={show ? "Hide key" : "Show key"} onClick={() => setShow(!show)}><Icon name={show ? "eye" : "lock"} size={14} /></button>
+      <form className="stack-sm" onSubmit={submit}>
+        <div className="row" style={{ gap: 8 }}>
+          <div className="input-group grow">
+            <input className="input" type={show ? "text" : "password"} autoComplete="off" spellCheck={false} placeholder={(stripe ? app.stripe?.own : app.status === "connected") ? "Paste a new key to replace it" : stripe ? "Paste the key from Stripe" : "Paste your key"} value={key} onChange={(e) => { setKey(e.target.value); save.reset(); }} aria-label={stripe ? "Key from Stripe" : `${app.name} API key`} style={{ paddingLeft: 12, paddingRight: 36 }} />
+            <button type="button" className="icon-btn addon-right" style={{ position: "absolute", right: 2, pointerEvents: "auto" }} aria-label={show ? "Hide key" : "Show key"} onClick={() => setShow(!show)}><Icon name={show ? "eye" : "lock"} size={14} /></button>
+          </div>
+          {!stripe && saveButton}
         </div>
-        <Button type="submit" loading={save.isPending} disabled={key.trim().length < 10}>{stripe ? "Connect" : "Save"}</Button>
+        {stripe && isFullSecretKey(key) && (
+          <span className="muted small">That's your full secret key, which can do anything in your Stripe account, including payouts. A restricted key can't: <a href={STRIPE_NEW_KEY} target="_blank" rel="noreferrer">get one from Stripe</a>.</span>
+        )}
+        {stripe && (
+          <>
+            <Field label="Your Crewtavo password" hint={PASSWORD_HINT}>
+              <input className="input" type="password" value={password} onChange={(e) => { setPassword(e.target.value); save.reset(); }} autoComplete="current-password" maxLength={200} />
+            </Field>
+            {/* Owners hear about Stripe changes by email too, once the company's email or the server's is set up. */}
+            {app.owners_emailed === false && (
+              <span className="muted small">Owners won't be emailed about Stripe key changes until <Link to="/settings?tab=email">email is set up</Link>. They still see them on the bell.</span>
+            )}
+            {saveButton}
+          </>
+        )}
       </form>
       {save.error && <span className="field-error">{(save.error as Error).message}</span>}
     </section>

@@ -122,9 +122,12 @@ set local role authenticated;
 select t1090.as_user(:'rita');
 select public.create_company('Romeo Roofing', 'roofing', 'America/New_York') as co \gset
 insert into public.company_roles (company_id, name, base_role, permissions) values (:'co', 'Payroll clerk', 'office', '{job_costs,timesheets}') returning id as clerk_role \gset
+-- Admin access is given through the server (the admin_grants migration).
+reset role;
 insert into public.memberships (company_id, user_id, role, role_id) values
   (:'co', :'olga', 'office', null), (:'co', :'pam', 'office', :'clerk_role'), (:'co', :'ed', 'estimator', null),
   (:'co', :'lou', 'crew_lead', null), (:'co', :'cy', 'field_crew', null), (:'co', :'ada', 'admin', null);
+set local role authenticated;
 insert into public.subcontractors (id, company_id, name, contact_name, phone) values
   (:'apex', :'co', 'Apex Roofing', 'Al Apex', '+15405550107'),
   (:'birch', :'co', 'Birch Gutters', 'Bo Birch', '+15405550109'),

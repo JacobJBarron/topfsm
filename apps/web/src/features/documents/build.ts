@@ -263,10 +263,11 @@ export function signedTemplate(quote: TemplatedQuote): TemplateSettings | null {
 
 /**
  * The template a quote prints with: the one it was signed on, else the one it names, else the
- * business's default, else the built-in look.
+ * business's default, else the built-in look. `trade` (the company's trade_preset) picks the starter
+ * terms for a business that never saved its own.
  */
-export function quoteTemplate<T extends { id: string; is_default: boolean; settings: unknown }>(templates: readonly T[], quote: TemplatedQuote): TemplateSettings {
-  return signedTemplate(quote) ?? pickTemplate(templates, quote.template_id);
+export function quoteTemplate<T extends { id: string; is_default: boolean; settings: unknown }>(templates: readonly T[], quote: TemplatedQuote, trade?: string | null): TemplateSettings {
+  return signedTemplate(quote) ?? pickTemplate(templates, quote.template_id, trade);
 }
 
 /**

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isPlaceholderEmail } from "../src/email";
-import { canMakeResetLink, EVERYONE, isStaff, LEVEL_PERMISSIONS, LEVEL_SUMMARY, memberPermissions, ROLE_LABELS, ROLES, STAFF, WITH_SUBS } from "../src/roles";
+import { adminLevel, canMakeResetLink, EVERYONE, isStaff, LEVEL_PERMISSIONS, LEVEL_SUMMARY, memberPermissions, ROLE_LABELS, ROLES, STAFF, WITH_SUBS } from "../src/roles";
 import { isSubLogin, signInLinkMessages, smsLink, subAccessText, subLoginEmail, subLoginMark } from "../src/subs";
 
 describe("the Subcontractor level", () => {
@@ -27,6 +27,19 @@ describe("the Subcontractor level", () => {
       expect(canMakeResetLink(r, "subcontractor"), r).toBe(false);
       expect(canMakeResetLink("subcontractor", r), r).toBe(false);
     }
+  });
+});
+
+describe("admin-level access", () => {
+  it("is an owner, or an admin with the apps, settings or team area", () => {
+    expect(ROLES.filter((r) => adminLevel(r))).toEqual(["owner", "admin"]);
+    expect(adminLevel("admin", ["invoices", "team"])).toBe(true);
+    expect(adminLevel("admin", ["settings"])).toBe(true);
+    expect(adminLevel("admin", ["invoices", "reports"])).toBe(false);
+    expect(adminLevel("admin", [])).toBe(false);
+    // Office can have Settings, but never reaches the Stripe key, the email or the team.
+    expect(adminLevel("office", ["settings"])).toBe(false);
+    expect(adminLevel("nobody")).toBe(false);
   });
 });
 

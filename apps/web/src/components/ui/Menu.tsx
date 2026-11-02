@@ -6,7 +6,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Icon, type IconName } from "./Icon";
 
 export type MenuEntry =
-  | { label: string; icon?: IconName; onSelect: () => void; danger?: boolean; disabled?: boolean; hidden?: boolean }
+  | { label: string; icon?: IconName; onSelect: () => void; danger?: boolean; disabled?: boolean; hidden?: boolean; /** Shown on hover, e.g. why it's turned off. */ title?: string }
   | { separator: true; hidden?: boolean }
   | { heading: string; hidden?: boolean };
 
@@ -104,6 +104,7 @@ export function Menu({
               className="menu-item"
               data-danger={item.danger || undefined}
               disabled={item.disabled}
+              title={item.title}
               onClick={() => {
                 menu.current?.hidePopover();
                 button.current?.focus();

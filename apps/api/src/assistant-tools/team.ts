@@ -4,12 +4,14 @@
  * only owners make owners, there's always an owner, nobody gives more access than they have, and
  * nobody changes their own role. The owners hear about every change an assistant makes (the
  * assistant_more_areas migration). An invite's link is emailed, never handed to the assistant.
+ * Admin-level access (adminLevel) is never given here: it asks for the person's password, on the
+ * Settings → People page (the database refuses it from an assistant too).
  */
-import { ADMINS, OFFICE, PERMISSIONS, ROLE_LABELS, STAFF, type Role } from "@crewtavo/core";
+import { ADMINS, adminLevel, OFFICE, PERMISSIONS, ROLE_LABELS, STAFF, type Role } from "@crewtavo/core";
 import { z } from "zod";
 import { adminClient } from "../lib/supabase";
 import { currentRates } from "../services/payRates";
-import { invitePerson } from "../services/team";
+import { ADMIN_FROM_TEAM_PAGE, adminAccess, invitePerson } from "../services/team";
 import { changed, companyArg, friendly, one, requireRole, roleAllows, rows, tool, type ToolContext } from "./tool";
 
 const permissionKeys = PERMISSIONS.map((p) => p.key) as [string, ...string[]];
@@ -54,7 +56,7 @@ export const teamTools = {
   }),
   invite_person: tool({
     description:
-      "Invite someone to the team by email, with a role (a level, or a custom role_id from list_team). Crewtavo emails them a link to set up their account; someone who already has an account just gets access. Only an owner can invite an owner. Confirm the email and role with the person first.",
+      "Invite someone to the team by email, with a role (a level, or a custom role_id from list_team). Crewtavo emails them a link to set up their account; someone who already has an account just gets access. Not as an owner or admin (or a custom role with the apps, settings or team area): that's done in Crewtavo, which asks for the person's password. Confirm the email and role with the person first.",
     input: z.object({
       email: z.email(),
       full_name: z.string().trim().max(120).optional(),
@@ -73,11 +75,12 @@ export const teamTools = {
     },
   }),
   change_role: tool({
-    description: "Change someone's role: a level (owner, admin, office, estimator, crew_lead, field_crew) or a custom role (role_id). Nobody can be given more access than you have; only an owner makes owners; you can't change your own role.",
+    description: "Change someone's role: a level (office, estimator, crew_lead, field_crew) or a custom role (role_id). Nobody can be given more access than you have; you can't change your own role. Owner and admin access (or a custom role with the apps, settings or team area) is given in Crewtavo, which asks for the person's password.",
     input: z.object({ user_id: z.uuid(), role: z.enum(LEVELS).optional(), role_id: z.uuid().nullable().optional(), ...companyArg }),
     area: "team",
     run: async (ctx, a) => {
       if (!a.role && a.role_id === undefined) throw new Error("Give a role or a role_id.");
+      if (await adminAccess(ctx.db, ctx.companyId, a.role ?? "", a.role_id)) throw new Error(ADMIN_FROM_TEAM_PAGE);
       // A custom role decides the level itself (its base role).
       const patch = a.role_id ? { role_id: a.role_id } : { role: a.role!, role_id: null };
       const { data, error } = await ctx.db.from("memberships").update(patch).eq("company_id", ctx.companyId).eq("user_id", a.user_id).select("user_id, role");
@@ -110,7 +113,7 @@ export const teamTools = {
     },
   }),
   save_role: tool({
-    description: `Make a custom role (no role_id) or change one: a name, the level it's based on (not owner), and the areas it can use, from: ${PERMISSIONS.map((p) => `${p.key} (${p.label})`).join(", ")}. A role can only have areas its level allows, and you can't give areas you don't have.`,
+    description: `Make a custom role (no role_id) or change one: a name, the level it's based on (not owner), and the areas it can use, from: ${PERMISSIONS.map((p) => `${p.key} (${p.label})`).join(", ")}. A role can only have areas its level allows, and you can't give areas you don't have. A role based on admin that gets apps, settings or team is admin access, given in Crewtavo, which asks for the person's password.`,
     input: z.object({
       role_id: z.uuid().optional(),
       name: z.string().trim().min(1).max(60),
@@ -121,6 +124,8 @@ export const teamTools = {
     area: "team",
     run: async (ctx, a) => {
       const row = { name: a.name, base_role: a.base_role, permissions: a.permissions };
+      // Only a role that's admin-level already keeps it here (renamed, say).
+      if (adminLevel(a.base_role, a.permissions) && !(a.role_id && (await adminAccess(ctx.db, ctx.companyId, "", a.role_id)))) throw new Error(ADMIN_FROM_TEAM_PAGE);
       if (a.role_id) {
         await changed(ctx.db.from("company_roles").update(row).eq("id", a.role_id).eq("company_id", ctx.companyId).select("id"), "That role");
         return { role_id: a.role_id, saved: true };

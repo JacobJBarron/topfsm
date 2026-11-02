@@ -66,6 +66,28 @@ export const DEFAULT_TERMS =
   "Changes: anything not listed here is extra, and only with your OK.\n" +
   "Warranty: we stand behind our workmanship, plus the manufacturer's warranty on materials.";
 
+/**
+ * The starter terms printed above the signatures, by trade. DEFAULT_TERMS is paving's and roofing's
+ * (unchanged). A lawn company bills after each visit, often to the card on file, and has no
+ * deposits or materials warranty to speak of. The migration that brought these in
+ * (20261031000100_autopay.sql) moved lawn templates still on the old starter to the lawn one.
+ */
+export const TRADE_TERMS: Record<string, string> = {
+  lawn_exterior:
+    "Payment: due after each visit, or charged to your card on file if you're on autopay.\n" +
+    "Skipped visits: if we can't do a visit, we'll tell you, and you won't be charged for it.\n" +
+    "Our work: if something isn't right, tell us within two days and we'll come back or refund the visit.",
+  general:
+    "Payment: due when the work is done, unless we agreed otherwise.\n" +
+    "Changes: anything not listed here is extra, and only with your OK.\n" +
+    "Warranty: we stand behind our workmanship.",
+  paving: DEFAULT_TERMS,
+  roofing_exteriors: DEFAULT_TERMS,
+};
+
+/** The starter terms for a trade; DEFAULT_TERMS when the trade isn't known (or isn't given). */
+export const defaultTerms = (trade?: string | null) => (trade && TRADE_TERMS[trade]) || DEFAULT_TERMS;
+
 export const DEFAULT_TEMPLATE: TemplateSettings = {
   letterhead: "built_in",
   letterhead_header: null,
@@ -139,8 +161,11 @@ function ids(value: unknown): string[] {
   return [...seen];
 }
 
-/** A template's settings with the defaults filled in. Anything of the wrong type or too long is dropped or cut. */
-export function templateSettings(raw: unknown): TemplateSettings {
+/**
+ * A template's settings with the defaults filled in. Anything of the wrong type or too long is
+ * dropped or cut. Terms that were never saved are the trade's starter (defaultTerms); saved terms win.
+ */
+export function templateSettings(raw: unknown, trade?: string | null): TemplateSettings {
   const s = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   const d = DEFAULT_TEMPLATE;
   return {
@@ -155,7 +180,7 @@ export function templateSettings(raw: unknown): TemplateSettings {
     insurer: text(s.insurer, TEMPLATE_LIMITS.insurer, d.insurer),
     show_license: flag(s.show_license, d.show_license),
     show_insurer: flag(s.show_insurer, d.show_insurer),
-    terms: text(s.terms, TEMPLATE_LIMITS.terms, d.terms),
+    terms: text(s.terms, TEMPLATE_LIMITS.terms, defaultTerms(trade)),
     sections: ids(s.sections),
     invoice_sections: ids(s.invoice_sections),
     customer_signs: flag(s.customer_signs, d.customer_signs),
@@ -192,9 +217,15 @@ export const companySignatureLabel = (template: Pick<TemplateSettings, "company_
 
 /**
  * Which template a document uses: the one it names, else the business's default, else the built-in
- * defaults (a business that never opened the template builder still gets a clean document).
+ * defaults (a business that never opened the template builder still gets a clean document, with its
+ * trade's starter terms). The office's printout, the Client Hub and the signed copy all pass the
+ * company's trade, so they print the same terms.
  */
-export function pickTemplate<T extends { id: string; is_default: boolean; settings: unknown }>(templates: readonly T[], id?: string | null): TemplateSettings {
+export function pickTemplate<T extends { id: string; is_default: boolean; settings: unknown }>(
+  templates: readonly T[],
+  id?: string | null,
+  trade?: string | null,
+): TemplateSettings {
   const chosen = (id ? templates.find((t) => t.id === id) : undefined) ?? templates.find((t) => t.is_default) ?? templates[0];
-  return templateSettings(chosen?.settings);
+  return templateSettings(chosen?.settings, trade);
 }

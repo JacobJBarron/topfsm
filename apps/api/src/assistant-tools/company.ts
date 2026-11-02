@@ -18,7 +18,8 @@ const time = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use 24-hour HH:MM.")
 
 export const companyTools = {
   get_company_settings: tool({
-    description: "The company's details (name, contact, shop address, time zone) and its settings: payment terms, sales tax, how long quotes are valid, the workday and the brand color.",
+    description:
+      "The company's details (name, contact, shop address, time zone) and its settings: payment terms, sales tax, how long quotes are valid, the workday and the brand color. client_tips: whether clients can add a tip for the crew when they pay an invoice online in the Client Hub, or from an autopay receipt.",
     input: z.object({ ...companyArg }),
     run: async (ctx) => {
       const c = await current(ctx);
@@ -35,7 +36,7 @@ export const companyTools = {
         quote_valid_days: s.quote_valid_days ?? 30,
         working_hours: { start: s.working_hours?.start ?? "07:00", end: s.working_hours?.end ?? "18:00" },
         brand_color: s.branding?.color ?? "#0f2a35",
-        show_hub_tips: s.hub_tips === true,
+        client_tips: s.hub_tips === true,
       };
     },
   }),
@@ -54,7 +55,12 @@ export const companyTools = {
       quote_valid_days: z.number().int().min(1).max(365).optional(),
       working_hours: z.object({ start: time, end: time }).optional(),
       brand_color: z.string().regex(/^#[0-9a-f]{6}$/i, "Use a hex color like #3b7d23.").optional(),
-      show_hub_tips: z.boolean().optional().describe("Show getting-started tips on the home screen."),
+      client_tips: z
+        .boolean()
+        .optional()
+        .describe(
+          "Let clients add a tip for the crew when they pay an invoice online in the Client Hub, or from the receipt after an automatic charge. Off hides every tip choice and no tip is charged. This is not about tips or hints shown to the team.",
+        ),
       ...companyArg,
     }),
     area: "company",
@@ -80,7 +86,7 @@ export const companyTools = {
         ...(a.quote_valid_days !== undefined && { quote_valid_days: a.quote_valid_days }),
         ...(a.working_hours && { working_hours: a.working_hours }),
         ...(a.brand_color && { branding: { ...(previous.branding ?? {}), color: a.brand_color } }),
-        ...(a.show_hub_tips !== undefined && { hub_tips: a.show_hub_tips }),
+        ...(a.client_tips !== undefined && { hub_tips: a.client_tips }),
         depot,
       };
       const patch = {

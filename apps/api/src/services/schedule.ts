@@ -147,13 +147,34 @@ export const visitChangeInput = z.object({
   shift_series: z.boolean().optional(),
   /** A crew's tap: never moves the visit back a step (see below). */
   forward_only: z.boolean().optional(),
+  /**
+   * When a Complete was tapped, sent with status "completed" (a tap that waited for signal is dated
+   * when the work was done). One that can't be read is ignored, like one out of bounds (tapTime).
+   */
+  completed_at: z.iso.datetime({ offset: true }).optional().catch(undefined),
 });
+
+/** How far back a Complete tap's own time is believed: a phone that was offline for days, at most. */
+const TAP_DAYS = 3;
+
+/**
+ * The time a Complete was tapped, when it's believable: only with status "completed", not in the
+ * future and no more than TAP_DAYS back. Otherwise none, and the database dates it now
+ * (private.visit_defaults). Autopay goes by this date (a visit finished before autopay started
+ * waits for the office), so it can't be moved later than now or far back.
+ */
+export function tapTime(status: string | undefined, completedAt: string | undefined, now = Date.now()): string | null {
+  if (status !== "completed" || !completedAt) return null;
+  const at = Date.parse(completedAt);
+  if (!Number.isFinite(at) || at > now || at < now - TAP_DAYS * 86_400_000) return null;
+  return new Date(at).toISOString();
+}
 
 /** The steps a crew takes a visit through, in order. */
 const CREW_STEPS: Record<string, number> = { unscheduled: 0, scheduled: 0, en_route: 1, in_progress: 2, completed: 3 };
 
 /** What a sub changes on their own visit (the database holds them to it: private.visit_sub_guard). */
-const SUB_FIELDS = ["status", "notes", "forward_only"];
+const SUB_FIELDS = ["status", "notes", "forward_only", "completed_at"];
 const SUB_STATUSES = ["scheduled", "en_route", "in_progress", "completed"];
 
 export async function updateVisit(s: Scope, id: string, body: z.infer<typeof visitChangeInput>) {
@@ -161,16 +182,24 @@ export async function updateVisit(s: Scope, id: string, body: z.infer<typeof vis
     if (Object.keys(body).some((k) => !SUB_FIELDS.includes(k))) throw new HttpError(403, "You can change a visit's status and notes. Ask the office about anything else.");
     if (body.status && !SUB_STATUSES.includes(body.status)) throw new HttpError(403, "Ask the office to cancel or move this visit.");
   }
-  const { assignee_ids, equipment_ids, shift_series, forward_only, ...fields } = body;
+  const { assignee_ids, equipment_ids, shift_series, forward_only, completed_at, ...fields } = body;
+  const tapped = tapTime(fields.status, completed_at);
+  const current =
+    (forward_only && fields.status) || tapped
+      ? must(await s.db.from("visits").select("status, completed_at").eq("id", id).eq("company_id", s.companyId).maybeSingle(), "Visit not found.")
+      : null;
   // A crew only moves a visit forward. A tap sent again later (the phone closed the app before it
   // heard back, say) can arrive after the taps that followed it, so it's skipped, not applied
   // backwards: a finished visit isn't reopened, and a cancelled one stays cancelled.
-  if (forward_only && fields.status) {
-    const now = must(await s.db.from("visits").select("status").eq("id", id).eq("company_id", s.companyId).maybeSingle(), "Visit not found.");
-    if (now.status === "cancelled" || (CREW_STEPS[now.status] ?? 0) > (CREW_STEPS[fields.status] ?? 0)) {
+  if (forward_only && fields.status && current) {
+    if (current.status === "cancelled" || (CREW_STEPS[current.status] ?? 0) > (CREW_STEPS[fields.status] ?? 0)) {
       return { ...must(await s.db.from("visits").select(VISIT_FIELDS).eq("id", id).maybeSingle()), skipped: true };
     }
   }
+  // A Complete dated when it was tapped, with who tapped it, as the database would have dated it
+  // (private.visit_defaults). Only for a visit not finished before: a finished visit's date stays,
+  // so a Complete sent again can't move it.
+  const stamp = tapped && current && !current.completed_at ? { completed_at: tapped, ...(s.userId && { completed_by: s.userId }) } : {};
   const reschedules = assignee_ids !== undefined || equipment_ids !== undefined || ["starts_at", "ends_at", "scheduled_on", "crew_id", "time_fixed"].some((k) => k in fields);
   // Which visits and people: the database decides (every crew with the "schedule" area, a crew
   // lead's own crew without it). See private.schedules_crew().
@@ -191,7 +220,7 @@ export async function updateVisit(s: Scope, id: string, body: z.infer<typeof vis
   if (Object.keys(fields).length) {
     const { data, error } = await s.db
       .from("visits")
-      .update({ ...fields, ...routeFields })
+      .update({ ...fields, ...routeFields, ...stamp })
       .eq("id", id)
       .eq("company_id", s.companyId)
       .select("id, scheduled_on, starts_at, crew_id, status");

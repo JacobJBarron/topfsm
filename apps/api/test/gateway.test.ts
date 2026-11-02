@@ -11,7 +11,7 @@ import type { AddressInfo } from "node:net";
 import type { HttpBindings } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env";
-import { gateway, safeFile, storesFile, unsizedUpload } from "../src/lib/gateway";
+import { EMAIL_CHANGE_STALE, gateway, PASSWORD_LINK_STALE, safeFile, storesFile, unsizedUpload } from "../src/lib/gateway";
 import { forgetStorageUsage, type StorageSnapshot } from "../src/lib/storageLimits";
 import { STORAGE_PAUSED } from "../src/services/storageBucket";
 
@@ -538,5 +538,72 @@ describe("storage limits at the gateway", () => {
     pause.on = true;
     expect((await create(`${CO}/plans/a.pdf`, 4096)).status).toBe(503);
     expect(reads).toBe(0);
+  });
+});
+
+describe("a new password straight through Auth", () => {
+  const SECRET = "super-secret-jwt-token-with-at-least-32-characters-long";
+  const part = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const NOW = Math.floor(Date.now() / 1000);
+  /** A session's token as the instance's Auth signs it, signed in by `method` `ago` seconds back. */
+  const session = (method: string, ago = 0, secret = SECRET) => {
+    const unsigned = `${part({ alg: "HS256", typ: "JWT" })}.${part({ sub: "00000000-0000-4000-8000-0000000000aa", role: "authenticated", exp: NOW + 3600, amr: [{ method, timestamp: NOW - ago }] })}`;
+    return `${unsigned}.${createHmac("sha256", secret).update(unsigned).digest("base64url")}`;
+  };
+  const put = (token: string, body: string, path = "/auth/v1/user") =>
+    gateway(env, { auth: base, rest: base, storage: base }, { jwtSecret: SECRET }).request(path, { method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body }, from);
+  beforeEach(() => {
+    reached.length = 0;
+  });
+
+  it("goes ahead right after a reset, invitation or emailed sign-in link (the Choose a new password screen)", async () => {
+    for (const method of ["recovery", "invite", "magiclink", "otp"]) {
+      const res = await put(session(method, 60), JSON.stringify({ password: "a new one 123" }));
+      expect(res.status, method).toBe(200);
+      expect(JSON.parse((await res.json()).text)).toEqual({ password: "a new one 123" });
+    }
+    expect(reached).toEqual(Array(4).fill("PUT /user"));
+  });
+
+  it("is turned away from any other session, or 15 minutes after the link was opened", async () => {
+    for (const token of [session("password"), session("oauth"), session("token_refresh"), session("recovery", 16 * 60), session("recovery", 0, "someone-else's-secret-that-is-32-chars-long")]) {
+      const res = await put(token, JSON.stringify({ password: "a new one 123" }));
+      expect(res.status).toBe(403);
+      expect((await res.json()).msg).toBe(PASSWORD_LINK_STALE);
+    }
+    expect(reached).toEqual([]);
+  });
+
+  it("can't be slipped past under another spelling or address", async () => {
+    const stale = session("password");
+    expect((await put(stale, JSON.stringify({ PassWord: "x".repeat(10) }))).status).toBe(403);
+    expect((await put(stale, JSON.stringify({ data: {}, password: "y".repeat(10) }), "/auth/v1/user/")).status).toBe(403);
+    expect((await put(stale, JSON.stringify({ password: "y".repeat(10) }), "/auth/v1/%75ser")).status).toBe(403);
+    expect((await put(stale, "{\"password\":\"y\"} trailing")).status).toBe(400);
+    expect(reached).toEqual([]);
+    // Auth matches "pasſword" to password; it never gets there.
+    const res = await put(stale, JSON.stringify({ "pasſword": "z".repeat(10), data: { full_name: "Ana" } }));
+    expect(res.status).toBe(200);
+    expect(JSON.parse((await res.json()).text)).toEqual({ data: { full_name: "Ana" } });
+  });
+
+  it("keeps the email and phone to the same rule, so a session can't move them and get itself a link", async () => {
+    for (const body of [{ email: "someone@else.test" }, { EMAIL: "someone@else.test" }, { phone: "+15555550100" }]) {
+      const res = await put(session("password"), JSON.stringify(body));
+      expect(res.status).toBe(403);
+      expect((await res.json()).msg).toBe(EMAIL_CHANGE_STALE);
+    }
+    expect(reached).toEqual([]);
+    const res = await put(session("magiclink", 60), JSON.stringify({ email: "new@crew.test" }));
+    expect(res.status).toBe(200);
+    expect(JSON.parse((await res.json()).text)).toEqual({ email: "new@crew.test" });
+  });
+
+  it("leaves the rest of the account alone", async () => {
+    const stale = session("password", 3 * 86400);
+    expect((await put(stale, JSON.stringify({ data: { full_name: "Ana" } }))).status).toBe(200);
+    const read = await gateway(env, { auth: base, rest: base, storage: base }, { jwtSecret: SECRET }).request("/auth/v1/user", { headers: { Authorization: `Bearer ${stale}` } }, from);
+    expect(read.status).toBe(200);
+    expect(reached).toEqual(["PUT /user", "GET /user"]);
   });
 });

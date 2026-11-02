@@ -27,6 +27,7 @@
     "./routing": "./src/routing.ts",
     "./ical": "./src/ical.ts",
     "./automations": "./src/automations.ts",
+    "./autopay": "./src/autopay.ts",
     "./equipment": "./src/equipment.ts",
     "./privacy": "./src/privacy.ts",
     "./email": "./src/email.ts",

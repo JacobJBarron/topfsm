@@ -36,9 +36,12 @@ select public.create_company('Oscar Lawn', 'lawn_care') as co \gset
 select public.accept_terms(:'co', '2026-10-17') as agreed \gset
 select t15.check((select full_name = 'Olive Owner' and email = 'owner@oscar.test' and role = 'owner' and version = '2026-10-17'
   from public.terms_acceptances where id = :'agreed'), 'the record keeps who agreed, as what, and to which version');
+-- Admin access is given through the server (the admin_grants migration).
+reset role;
 insert into public.memberships (company_id, user_id, role) values
   (:'co', 'af000000-0000-0000-0000-000000000002', 'admin'),
   (:'co', 'af000000-0000-0000-0000-000000000003', 'office');
+set local role authenticated;
 select t15.expect_error(format('update public.terms_acceptances set version = %L where id = %L', 'old', :'agreed'), 'not even the owner can change an agreement');
 select t15.expect_error(format('delete from public.terms_acceptances where id = %L', :'agreed'), 'or remove one');
 select t15.expect_error(format('insert into public.terms_acceptances (company_id, full_name, role, version) values (%L, %L, %L, %L)', :'co', 'Someone', 'owner', 'x'),

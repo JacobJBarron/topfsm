@@ -1,3 +1,4 @@
+import { autopaySettings } from "@crewtavo/core/autopay";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -21,6 +22,7 @@ import { PlansCard } from "../plans/PlansCard";
 import { NewQuoteDialog } from "../quotes/NewQuoteDialog";
 import { listPrice, withOptionLines } from "../quotes/options";
 import { NewRequestDialog } from "../requests/NewRequestDialog";
+import { AutopayCard, useAutopayInvite } from "./AutopayCard";
 import { EditClientDialog } from "./ClientForm";
 import { AddContact, ContactsCard, useClientContacts } from "./ContactsCard";
 import { PropertyDialog, type AccessRow, type PropertyRow } from "./PropertyDialog";
@@ -41,7 +43,11 @@ export function ClientPage() {
   const [property, setProperty] = useState<{ row?: PropertyRow; access?: AccessRow | null } | null>(null);
   const isOffice = hasRole(session, "admin", "office");
   const canSell = hasRole(session, "admin", "office", "estimator") && can(session, "sales");
+  // Autopay is for the people who look after money, and only once the company has it on.
+  const seesMoney = isOffice && can(session, "invoices");
+  const autopayOn = autopaySettings(session.company.settings, session.company.trade_preset).enabled;
   const contacts = useClientContacts(id);
+  const autopayInvite = useAutopayInvite(id);
 
   const client = useQuery({
     queryKey: ["client", id],
@@ -202,6 +208,8 @@ export function ClientPage() {
                 items={[
                   { label: "Edit client", icon: "edit", onSelect: () => setDialog("edit") },
                   { label: "Copy Client Hub link", icon: "link", onSelect: () => hubLink.mutate() },
+                  { label: "Send autopay invite by email", icon: "card", onSelect: () => autopayInvite.mutate("email"), disabled: !c.email, hidden: !seesMoney || !autopayOn || !session.config.features.email },
+                  { label: "Send autopay invite by text", icon: "card", onSelect: () => autopayInvite.mutate("sms"), disabled: !c.phone, hidden: !seesMoney || !autopayOn || !session.config.features.sms },
                   { separator: true },
                   { label: "Ask for a review by email", icon: "star", onSelect: () => review.mutate("email"), disabled: !c.email },
                   { label: "Ask for a review by text", icon: "star", onSelect: () => review.mutate("sms"), disabled: !c.phone },
@@ -376,6 +384,7 @@ export function ClientPage() {
             {c.notes && <p className="muted small pre-wrap" style={{ margin: 0 }}>{c.notes}</p>}
             {canSell && contacts.data?.length === 0 && <AddContact clientId={c.id} />}
           </div>
+          {seesMoney && autopayOn && <AutopayCard client={c} />}
           <ContactsCard clientId={c.id} canEdit={canSell} />
         </aside>
       </div>

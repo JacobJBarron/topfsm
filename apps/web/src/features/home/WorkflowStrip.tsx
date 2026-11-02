@@ -51,6 +51,9 @@ export function WorkflowStrip({ workflow, showInvoices = true }: { workflow: Das
       rows: [
         { label: `${statusText("invoice", "draft")} (${invoices.draft})`, value: "" },
         { label: `${statusText("invoice", "overdue")} (${invoices.past_due})`, value: formatMoneyCompact(invoices.past_due_value), danger: invoices.past_due > 0 },
+        // Autopay's, only when there's one: charges that failed, and ones waiting for the office's OK.
+        ...(invoices.autopay_failed ? [{ label: `Autopay failed (${invoices.autopay_failed})`, value: formatMoneyCompact(invoices.autopay_failed_value ?? 0), danger: true }] : []),
+        ...(invoices.autopay_approval ? [{ label: `Needs your OK (${invoices.autopay_approval})`, value: "" }] : []),
       ],
     },
   ];

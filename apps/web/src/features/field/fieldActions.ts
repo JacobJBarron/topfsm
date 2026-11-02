@@ -13,7 +13,7 @@ export interface VisitStatusChange {
   visitId: string;
   jobId: string | null;
   status: string;
-  /** When it was tapped. */
+  /** When it was tapped. For Complete, also when the visit was finished (visitStatusBody). */
   at: string;
   /** Where the phone was, when the tap starts or stops the clock (useStatusTap). */
   place?: ClockPlace;
@@ -61,10 +61,17 @@ export function showVisitStatus(queryClient: QueryClient, change: VisitStatusCha
   queryClient.setQueryData<{ status: string } | null>(["field-visit", change.visitId], (old) => old && { ...old, status: change.status });
 }
 
+/**
+ * What a status tap sends. A Complete says when it was tapped, so one that waited for signal is
+ * dated when the work was done, not when it went out: autopay goes by that date. The server keeps
+ * it only with Complete, and not from the future or more than a few days back.
+ */
+const visitStatusBody = (v: Pick<VisitStatusChange, "status" | "at">) => ({ status: v.status, forward_only: true, ...(v.status === "completed" && { completed_at: v.at }) });
+
 export async function setVisitStatus(v: VisitStatusChange) {
   // As the company it was tapped in, even if the app has switched company since. Forward only: a
   // tap sent again after later ones went out (the app closed before it heard back) is skipped.
-  const result = await api.patch<{ skipped?: boolean; status?: string }>(`/visits/${v.visitId}`, { status: v.status, forward_only: true }, { companyId: v.companyId });
+  const result = await api.patch<{ skipped?: boolean; status?: string }>(`/visits/${v.visitId}`, visitStatusBody(v), { companyId: v.companyId });
   // The visit's status is shared, but each person's clock is their own: when the visit has moved on
   // (a crewmate finished it first), this person still clocks in and out as they tapped. Only a
   // cancelled visit doesn't start a clock, and someone without a clock (a sub, mostly) has none.

@@ -189,7 +189,7 @@ lists them all).
 | `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`, `ZOHO_ACCOUNTS_URL` | Not needed for most businesses: each one makes its own Zoho app and pastes its keys under **Apps → Zoho Books** (which wins over these when both are there). These set up one Zoho app on the server instead: create a server-based client at api-console.zoho.com. |
 | `GOOGLE_PICKER_API_KEY` | Import from Google Drive in **Drive**, with `GOOGLE_CLIENT_ID` (no secret needed). A browser API key restricted to the Google Picker API, your domain and `https://docs.google.com/*`; see [Importing from Google Drive](#importing-from-google-drive). |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Calendar: show a company's Google calendars on the schedule and put visits on a Google calendar Crewtavo makes. In Google Cloud, turn on the Google Calendar API, set up the OAuth consent screen with the scopes `calendar.calendarlist.readonly`, `calendar.events.readonly` and `calendar.app.created`, and create a Web application client whose redirect URI is the one shown on the Google Calendar app page (`https://your-domain/api/apps/google_calendar/callback`). Then, under **Audience**, publish the app (or choose **Internal** on Google Workspace): while it's in **Testing**, Google ends sign-ins after 7 days and Google Calendar disconnects. Optional: without these, Google Calendar works by secret address both ways (the Apps page walks people through it), and calendar files can be uploaded under **Settings → Calendars**. |
-| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Not needed for most businesses: connect Stripe on the **Apps** page instead (see [Connecting Stripe](#connecting-stripe)). These share one Stripe account with every company on the server that hasn't connected its own (so **Bring in your Stripe history** works with it only on a one-company server). Point a webhook at `/api/webhooks/stripe` with API version `2024-06-20` and the events in `STRIPE_EVENTS` (`apps/api/src/integrations/stripe.ts`): `invoice.*` (finalized, paid, payment_failed, voided, marked_uncollectible), `payment_intent.processing`, `charge.refunded`, `charge.dispute.created`, `charge.dispute.closed`, `payout.*` (created, updated, paid, failed, canceled) and `checkout.session.*` (completed, async_payment_succeeded, async_payment_failed). |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Not needed for most businesses: connect Stripe on the **Apps** page instead (see [Connecting Stripe](#connecting-stripe)). These share one Stripe account with every company on the server that hasn't connected its own (so **Bring in your Stripe history** works with it only on a one-company server). Point a webhook at `/api/webhooks/stripe` with API version `2024-06-20` and the events in `STRIPE_EVENTS` (`apps/api/src/integrations/stripe.ts`): `invoice.*` (finalized, paid, payment_failed, payment_action_required, voided, marked_uncollectible), `payment_intent.processing`, `charge.refunded`, `charge.dispute.created`, `charge.dispute.closed`, `payout.*` (created, updated, paid, failed, canceled), `checkout.session.*` (completed, async_payment_succeeded, async_payment_failed), `setup_intent.*` (succeeded, setup_failed), `payment_method.*` (detached, automatically_updated) and `mandate.updated`. The setup_intent, payment_method and mandate events are for autopay, which needs the company's own key, so the server's account never acts on them. |
 | `RESEND_API_KEY`, `EMAIL_FROM` | Optional default sender through [Resend](https://resend.com), used until the business connects its own email under **Settings → Email**. That screen recommends Resend (the business's own free account, which works on every Railway plan); a mailbox over SMTP only works on Railway Pro or when self-hosting, since Railway's trial and Hobby plans block outgoing mail servers. Subs on a new phone can also sign in with a 6-digit code emailed this way (the business's own mailbox first): it's how they get back in when texting isn't set up, and when it is, for a sub with no phone on file. |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` | Text messages. For two-way texting, set the number's **Messaging > A message comes in** webhook to `https://your-domain/api/webhooks/twilio` (HTTP POST). Replies appear in Messages and notify the office. `APP_URL` must match that address exactly, because Twilio signs the full URL. Subs on a new phone can also sign in with a 6-digit code texted from this number, so list one-time passcodes as a use in the number's A2P 10DLC registration. |
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | Bot protection on public booking and referral forms. |
@@ -295,9 +295,20 @@ restricted key named Crewtavo with the permissions it needs already set (most ro
 scroll to the bottom, click **Create key**, enter the code Stripe sends you, copy the key and paste
 it into Crewtavo. Crewtavo checks it and adds the webhook it needs to your Stripe account, so
 there's nothing else to set up. A sandbox key (`rk_test_` or `sk_test_`) works the same way, with
-no real money, and so does a secret key (`sk_live_`). A restricted key made by hand needs write
+no real money. A full secret key (`sk_live_`) works too, but a restricted key is strongly preferred:
+the secret key can do anything in your Stripe account, including payouts, so if it ever leaked it
+would give away far more than Crewtavo needs, while the restricted key only has what Crewtavo uses
+and can't make payouts. Crewtavo warns while you paste a secret key, and the Stripe card keeps
+asking you to swap it for a restricted one (then delete the secret key in Stripe).
+Connecting, replacing or removing the key asks for your Crewtavo password, is recorded in the
+activity, and every owner gets a notice about it (and an email, once email is set up). A
+restricted key made by hand needs write
 access to webhook endpoints, customers and invoices, and read access to balance, balance
-transaction sources, charges, payouts and the account.
+transaction sources, charges, payouts and the account. Autopay and refunds from Crewtavo also need
+write access to Checkout Sessions, SetupIntents, PaymentMethods, PaymentIntents and refunds; a key
+from before autopay shows **Update your key to turn on autopay** on the Stripe card. When the
+webhook Crewtavo added listens for fewer events than it now needs, opening the Apps page (or
+Settings → Payments) brings it up to date with the key you have.
 
 Then:
 
@@ -329,7 +340,15 @@ Then:
   payments, and deposits, from a date you choose. History comes in quietly: no automations,
   reminders or notifications. Running it again only updates what's already there. On the
   server's own Stripe account (`STRIPE_SECRET_KEY`) it only runs when the server has one company,
-  since that account is shared.
+  since that account is shared. With a key that can use them, it also brings in the card each
+  customer saved in Stripe, for clients matched by the link Crewtavo keeps or by an email only
+  they have. Nothing is charged until the client confirms autopay or the owner records that they
+  agreed.
+- **Autopay** (Settings → Payments, with your own key): a client saves a card or bank account on
+  Stripe's page, agrees to the terms, and each finished visit is charged to it as a Stripe invoice
+  that Stripe charges at once. Turn off Stripe's own emails about failed payments and receipts, so
+  clients don't get two. **Refund** on an invoice's Stripe payment refunds it in Stripe and records
+  it at once.
 
 **Replacing the key** (**Replace key** on Stripe's page in **Apps**) only takes over once Crewtavo has added
 the webhook with the new key; if it can't, Stripe stays connected as it was. When the new key is
@@ -337,7 +356,8 @@ for another Stripe account, or it's your live key after a test one, Crewtavo sto
 account: its open invoices are voided there (any paid meanwhile are recorded), and clients get a
 new Stripe invoice in the new account when they pay. **Disconnecting** does the same. A bank
 payment still clearing in the old account is left alone, so the client isn't asked to pay twice;
-a note on the client reminds you to record it once it clears there.
+a note on the client reminds you to record it once it clears there. Cards saved for autopay stay in
+the old account, so autopay ends for those clients and you're told which need to set it up again.
 
 Stripe only sends webhooks to a public `https` address, so on a local copy the key is saved
 without one. Run `stripe listen --forward-to localhost:8787/api/webhooks/stripe` and use the

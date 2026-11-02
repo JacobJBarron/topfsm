@@ -146,6 +146,82 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"autopay_authorizations": {
+                  Row: {
+                    "accepted_at": string,"client_id": string,"company_id": string,"created_at": string,"id": string,"ip": string | null,"link_kind": string | null,"link_via": string | null,"paused_at": string | null,"paused_by": string | null,"payment_method_id": string | null,"recorded_by": string | null,"recorded_by_email": string | null,"recorded_by_name": string,"resumed_at": string | null,"revoked_at": string | null,"revoked_by": string | null,"revoked_via": string | null,"source": string,"terms": string,"terms_version": string,"updated_at": string,"user_agent": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "accepted_at"?: string,"client_id": string,"company_id": string,"created_at"?: string,"id"?: string,"ip"?: string | null,"link_kind"?: string | null,"link_via"?: string | null,"paused_at"?: string | null,"paused_by"?: string | null,"payment_method_id"?: string | null,"recorded_by"?: string | null,"recorded_by_email"?: string | null,"recorded_by_name"?: string,"resumed_at"?: string | null,"revoked_at"?: string | null,"revoked_by"?: string | null,"revoked_via"?: string | null,"source": string,"terms": string,"terms_version": string,"updated_at"?: string,"user_agent"?: string | null
+                  }
+                  Update: {
+                    "accepted_at"?: string,"client_id"?: string,"company_id"?: string,"created_at"?: string,"id"?: string,"ip"?: string | null,"link_kind"?: string | null,"link_via"?: string | null,"paused_at"?: string | null,"paused_by"?: string | null,"payment_method_id"?: string | null,"recorded_by"?: string | null,"recorded_by_email"?: string | null,"recorded_by_name"?: string,"resumed_at"?: string | null,"revoked_at"?: string | null,"revoked_by"?: string | null,"revoked_via"?: string | null,"source"?: string,"terms"?: string,"terms_version"?: string,"updated_at"?: string,"user_agent"?: string | null
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "autopay_authorizations_client_fkey"
+      columns: ["company_id","client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["company_id","id"]
+    },{
+      foreignKeyName: "autopay_authorizations_company_id_fkey"
+      columns: ["company_id"]
+isOneToOne: false
+      referencedRelation: "companies"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "autopay_authorizations_method_fkey"
+      columns: ["company_id","payment_method_id"]
+isOneToOne: false
+      referencedRelation: "client_payment_methods"
+      referencedColumns: ["company_id","id"]
+    }
+                  ]
+                },"autopay_charges": {
+                  Row: {
+                    "approved_amount": number | null,"approved_at": string | null,"approved_by": string | null,"attempts": number,"bill": string | null,"busy_since": string | null,"charged_amount": number | null,"charged_at": string | null,"claim_token": string | null,"client_id": string,"company_id": string,"created_at": string,"decline_code": string | null,"due_at": string,"failures": number,"id": string,"invoice_id": string | null,"job_id": string | null,"last_error": string | null,"locked_until": string | null,"payment_method_id": string | null,"requested_by": string | null,"source": string,"status": string,"updated_at": string,"visit_ids": (string)[]
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "approved_amount"?: number | null,"approved_at"?: string | null,"approved_by"?: string | null,"attempts"?: number,"bill"?: string | null,"busy_since"?: string | null,"charged_amount"?: number | null,"charged_at"?: string | null,"claim_token"?: string | null,"client_id": string,"company_id": string,"created_at"?: string,"decline_code"?: string | null,"due_at": string,"failures"?: number,"id"?: string,"invoice_id"?: string | null,"job_id"?: string | null,"last_error"?: string | null,"locked_until"?: string | null,"payment_method_id"?: string | null,"requested_by"?: string | null,"source"?: string,"status"?: string,"updated_at"?: string,"visit_ids"?: (string)[]
+                  }
+                  Update: {
+                    "approved_amount"?: number | null,"approved_at"?: string | null,"approved_by"?: string | null,"attempts"?: number,"bill"?: string | null,"busy_since"?: string | null,"charged_amount"?: number | null,"charged_at"?: string | null,"claim_token"?: string | null,"client_id"?: string,"company_id"?: string,"created_at"?: string,"decline_code"?: string | null,"due_at"?: string,"failures"?: number,"id"?: string,"invoice_id"?: string | null,"job_id"?: string | null,"last_error"?: string | null,"locked_until"?: string | null,"payment_method_id"?: string | null,"requested_by"?: string | null,"source"?: string,"status"?: string,"updated_at"?: string,"visit_ids"?: (string)[]
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "autopay_charges_client_fkey"
+      columns: ["company_id","client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["company_id","id"]
+    },{
+      foreignKeyName: "autopay_charges_company_id_fkey"
+      columns: ["company_id"]
+isOneToOne: false
+      referencedRelation: "companies"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "autopay_charges_invoice_fkey"
+      columns: ["company_id","invoice_id"]
+isOneToOne: false
+      referencedRelation: "invoices"
+      referencedColumns: ["company_id","id"]
+    },{
+      foreignKeyName: "autopay_charges_job_fkey"
+      columns: ["company_id","job_id"]
+isOneToOne: false
+      referencedRelation: "jobs"
+      referencedColumns: ["company_id","id"]
+    },{
+      foreignKeyName: "autopay_charges_method_fkey"
+      columns: ["company_id","payment_method_id"]
+isOneToOne: false
+      referencedRelation: "client_payment_methods"
+      referencedColumns: ["company_id","id"]
+    }
+                  ]
                 },"calendar_events": {
                   Row: {
                     "all_day": boolean,"busy": boolean,"company_id": string,"description": string | null,"ends_at": string | null,"ends_on": string,"id": string,"key": string,"location": string | null,"source_id": string,"starts_at": string | null,"starts_on": string,"synced_at": string,"title": string,"url": string | null
@@ -478,6 +554,32 @@ isOneToOne: false
 isOneToOne: false
       referencedRelation: "clients"
       referencedColumns: ["company_id","id"]
+    }
+                  ]
+                },"client_payment_methods": {
+                  Row: {
+                    "bank_name": string | null,"brand": string | null,"client_id": string,"company_id": string,"created_at": string,"exp_month": number | null,"exp_year": number | null,"expiry_alerted_for": string | null,"id": string,"is_default": boolean,"last4": string | null,"livemode": boolean,"removed_at": string | null,"removed_reason": string | null,"saved_via": string,"source": string,"status": string,"stripe_account": string | null,"stripe_customer_id": string,"stripe_payment_method_id": string,"type": string,"updated_at": string,"wallet": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "bank_name"?: string | null,"brand"?: string | null,"client_id": string,"company_id": string,"created_at"?: string,"exp_month"?: number | null,"exp_year"?: number | null,"expiry_alerted_for"?: string | null,"id"?: string,"is_default"?: boolean,"last4"?: string | null,"livemode": boolean,"removed_at"?: string | null,"removed_reason"?: string | null,"saved_via"?: string,"source"?: string,"status"?: string,"stripe_account"?: string | null,"stripe_customer_id": string,"stripe_payment_method_id": string,"type": string,"updated_at"?: string,"wallet"?: string | null
+                  }
+                  Update: {
+                    "bank_name"?: string | null,"brand"?: string | null,"client_id"?: string,"company_id"?: string,"created_at"?: string,"exp_month"?: number | null,"exp_year"?: number | null,"expiry_alerted_for"?: string | null,"id"?: string,"is_default"?: boolean,"last4"?: string | null,"livemode"?: boolean,"removed_at"?: string | null,"removed_reason"?: string | null,"saved_via"?: string,"source"?: string,"status"?: string,"stripe_account"?: string | null,"stripe_customer_id"?: string,"stripe_payment_method_id"?: string,"type"?: string,"updated_at"?: string,"wallet"?: string | null
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "client_payment_methods_client_fkey"
+      columns: ["company_id","client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["company_id","id"]
+    },{
+      foreignKeyName: "client_payment_methods_company_id_fkey"
+      columns: ["company_id"]
+isOneToOne: false
+      referencedRelation: "companies"
+      referencedColumns: ["id"]
     }
                   ]
                 },"clients": {
@@ -1120,14 +1222,14 @@ isOneToOne: false
                   ]
                 },"jobs": {
                   Row: {
-                    "active_months": (number)[] | null,"billing_mode": string,"client_id": string,"company_id": string,"created_at": string,"created_by": string | null,"default_crew_id": string | null,"ends_on": string | null,"id": string,"instructions": string | null,"kind": string,"number": number | null,"permit_number": string | null,"po_number": string | null,"property_id": string | null,"quote_id": string | null,"recurrence_rule": string | null,"retainage_pct": number,"starts_on": string | null,"status": string,"title": string,"updated_at": string,"visit_duration_min": number,"visit_start_time": string | null,"visit_time_fixed": boolean,"warranty_until": string | null,"weather_rules": NonNullable<Json>
+                    "active_months": (number)[] | null,"autopay": boolean,"autopay_since": string | null,"billing_mode": string,"client_id": string,"company_id": string,"created_at": string,"created_by": string | null,"default_crew_id": string | null,"ends_on": string | null,"id": string,"instructions": string | null,"kind": string,"number": number | null,"permit_number": string | null,"po_number": string | null,"property_id": string | null,"quote_id": string | null,"recurrence_rule": string | null,"retainage_pct": number,"starts_on": string | null,"status": string,"title": string,"updated_at": string,"visit_duration_min": number,"visit_start_time": string | null,"visit_time_fixed": boolean,"warranty_until": string | null,"weather_rules": NonNullable<Json>
                   }
                   ComputedFields: never
                   Insert: {
-                    "active_months"?: (number)[] | null,"billing_mode"?: string,"client_id": string,"company_id": string,"created_at"?: string,"created_by"?: string | null,"default_crew_id"?: string | null,"ends_on"?: string | null,"id"?: string,"instructions"?: string | null,"kind"?: string,"number"?: number | null,"permit_number"?: string | null,"po_number"?: string | null,"property_id"?: string | null,"quote_id"?: string | null,"recurrence_rule"?: string | null,"retainage_pct"?: number,"starts_on"?: string | null,"status"?: string,"title": string,"updated_at"?: string,"visit_duration_min"?: number,"visit_start_time"?: string | null,"visit_time_fixed"?: boolean,"warranty_until"?: string | null,"weather_rules"?: NonNullable<Json>
+                    "active_months"?: (number)[] | null,"autopay"?: boolean,"autopay_since"?: string | null,"billing_mode"?: string,"client_id": string,"company_id": string,"created_at"?: string,"created_by"?: string | null,"default_crew_id"?: string | null,"ends_on"?: string | null,"id"?: string,"instructions"?: string | null,"kind"?: string,"number"?: number | null,"permit_number"?: string | null,"po_number"?: string | null,"property_id"?: string | null,"quote_id"?: string | null,"recurrence_rule"?: string | null,"retainage_pct"?: number,"starts_on"?: string | null,"status"?: string,"title": string,"updated_at"?: string,"visit_duration_min"?: number,"visit_start_time"?: string | null,"visit_time_fixed"?: boolean,"warranty_until"?: string | null,"weather_rules"?: NonNullable<Json>
                   }
                   Update: {
-                    "active_months"?: (number)[] | null,"billing_mode"?: string,"client_id"?: string,"company_id"?: string,"created_at"?: string,"created_by"?: string | null,"default_crew_id"?: string | null,"ends_on"?: string | null,"id"?: string,"instructions"?: string | null,"kind"?: string,"number"?: number | null,"permit_number"?: string | null,"po_number"?: string | null,"property_id"?: string | null,"quote_id"?: string | null,"recurrence_rule"?: string | null,"retainage_pct"?: number,"starts_on"?: string | null,"status"?: string,"title"?: string,"updated_at"?: string,"visit_duration_min"?: number,"visit_start_time"?: string | null,"visit_time_fixed"?: boolean,"warranty_until"?: string | null,"weather_rules"?: NonNullable<Json>
+                    "active_months"?: (number)[] | null,"autopay"?: boolean,"autopay_since"?: string | null,"billing_mode"?: string,"client_id"?: string,"company_id"?: string,"created_at"?: string,"created_by"?: string | null,"default_crew_id"?: string | null,"ends_on"?: string | null,"id"?: string,"instructions"?: string | null,"kind"?: string,"number"?: number | null,"permit_number"?: string | null,"po_number"?: string | null,"property_id"?: string | null,"quote_id"?: string | null,"recurrence_rule"?: string | null,"retainage_pct"?: number,"starts_on"?: string | null,"status"?: string,"title"?: string,"updated_at"?: string,"visit_duration_min"?: number,"visit_start_time"?: string | null,"visit_time_fixed"?: boolean,"warranty_until"?: string | null,"weather_rules"?: NonNullable<Json>
                   }
                   Relationships: [
                     {
@@ -2128,14 +2230,14 @@ isOneToOne: true
                   ]
                 },"stripe_invoices": {
                   Row: {
-                    "amount_due": number,"company_id": string,"created_at": string,"detached_at": string | null,"hosted_url": string | null,"id": string,"invoice_id": string | null,"livemode": boolean,"number": string | null,"origin": string,"processing_at": string | null,"status": string,"stripe_account": string | null,"stripe_id": string | null,"tip_amount": number,"updated_at": string
+                    "amount_due": number,"collection": string,"company_id": string,"created_at": string,"detached_at": string | null,"hosted_url": string | null,"id": string,"invoice_id": string | null,"livemode": boolean,"number": string | null,"origin": string,"processing_at": string | null,"purpose": string,"status": string,"stripe_account": string | null,"stripe_id": string | null,"tip_amount": number,"updated_at": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "amount_due"?: number,"company_id": string,"created_at"?: string,"detached_at"?: string | null,"hosted_url"?: string | null,"id"?: string,"invoice_id"?: string | null,"livemode"?: boolean,"number"?: string | null,"origin": string,"processing_at"?: string | null,"status"?: string,"stripe_account"?: string | null,"stripe_id"?: string | null,"tip_amount"?: number,"updated_at"?: string
+                    "amount_due"?: number,"collection"?: string,"company_id": string,"created_at"?: string,"detached_at"?: string | null,"hosted_url"?: string | null,"id"?: string,"invoice_id"?: string | null,"livemode"?: boolean,"number"?: string | null,"origin": string,"processing_at"?: string | null,"purpose"?: string,"status"?: string,"stripe_account"?: string | null,"stripe_id"?: string | null,"tip_amount"?: number,"updated_at"?: string
                   }
                   Update: {
-                    "amount_due"?: number,"company_id"?: string,"created_at"?: string,"detached_at"?: string | null,"hosted_url"?: string | null,"id"?: string,"invoice_id"?: string | null,"livemode"?: boolean,"number"?: string | null,"origin"?: string,"processing_at"?: string | null,"status"?: string,"stripe_account"?: string | null,"stripe_id"?: string | null,"tip_amount"?: number,"updated_at"?: string
+                    "amount_due"?: number,"collection"?: string,"company_id"?: string,"created_at"?: string,"detached_at"?: string | null,"hosted_url"?: string | null,"id"?: string,"invoice_id"?: string | null,"livemode"?: boolean,"number"?: string | null,"origin"?: string,"processing_at"?: string | null,"purpose"?: string,"status"?: string,"stripe_account"?: string | null,"stripe_id"?: string | null,"tip_amount"?: number,"updated_at"?: string
                   }
                   Relationships: [
                     {
@@ -2514,6 +2616,9 @@ isOneToOne: false
 "accept_terms":
 { Args: { "p_company": string,"p_version": string }; Returns: string
                            },
+"admin_grant_allow":
+{ Args: { "p_company": string,"p_target": string,"p_user": string }; Returns: undefined
+                           },
 "answer_sub_offer":
 { Args: { "p_accept": boolean,"p_company"?: string,"p_pay": string,"p_reason"?: string,"p_round"?: number }; Returns: boolean
                            },
@@ -2523,8 +2628,41 @@ isOneToOne: false
 "apply_quote_options":
 { Args: { "p_current"?: Json,"p_mode": string,"p_options": Json,"p_quote": string,"p_shared"?: (string)[] }; Returns: Json
                            },
+"approve_autopay_charge":
+{ Args: { "p_charge": string }; Returns: undefined
+                           },
 "approve_hub_quote":
 { Args: { "p_approval": Json,"p_company": string,"p_expected_total"?: number,"p_option"?: string,"p_quote": string,"p_selected": (string)[] }; Returns: boolean
+                           },
+"autopay_account_left":
+{ Args: { "p_account"?: string,"p_company": string,"p_livemode": boolean }; Returns: number
+                           },
+"autopay_bill":
+{ Args: { "p_charge": string,"p_token": string }; Returns: Json
+                           },
+"autopay_mark_sent":
+{ Args: { "p_amount_cents": number,"p_charge": string,"p_token": string }; Returns: boolean
+                           },
+"autopay_pause":
+{ Args: { "p_client": string,"p_paused": boolean }; Returns: undefined
+                           },
+"autopay_record_authorization":
+{ Args: { "p_client": string,"p_company": string,"p_ip"?: string,"p_link_kind"?: string,"p_link_via"?: string,"p_payment_method": string,"p_source": string,"p_terms_version": string,"p_user_agent"?: string }; Returns: string
+                           },
+"autopay_revoke":
+{ Args: { "p_by"?: string,"p_client": string,"p_company": string,"p_via": string }; Returns: number
+                           },
+"autopay_save_payment_method":
+{ Args: { "p_client": string,"p_company": string,"p_method": Json }; Returns: string
+                           },
+"autopay_set_settings":
+{ Args: { "p_company": string,"p_settings": Json }; Returns: Json
+                           },
+"autopay_vouch":
+{ Args: { "p_clients": (string)[],"p_company": string,"p_terms_version": string }; Returns: number
+                           },
+"call_off_autopay_charge":
+{ Args: { "p_charge": string }; Returns: undefined
                            },
 "campaign_audience":
 { Args: { "p_audience": Json,"p_company_id": string }; Returns: {
@@ -2571,6 +2709,11 @@ isOneToOne: false
         isOneToOne: true
         isSetofReturn: false
       } },
+"chargeable_invoices":
+{ Args: { "p_company": string,"p_invoice"?: string }; Returns: {
+              "balance_due": number,"card": string,"client_id": string,"client_name": string,"due_on": string,"id": string,"in_progress": boolean,"live_detail": string,"live_status": string,"number": number,"status": string
+            }[]
+                           },
 "chat_audience":
 { Args: { "p_channel": string }; Returns: string[]
                            },
@@ -2620,6 +2763,41 @@ isOneToOne: false
                           SetofOptions: {
         from: "*"
         to: "automation_runs"
+        isOneToOne: false
+        isSetofReturn: true
+      } },
+"claim_autopay_charges":
+{ Args: { "p_company"?: string,"p_limit"?: number }; Returns: {
+              "approved_amount": number | null,
+"approved_at": string | null,
+"approved_by": string | null,
+"attempts": number,
+"bill": string | null,
+"busy_since": string | null,
+"charged_amount": number | null,
+"charged_at": string | null,
+"claim_token": string | null,
+"client_id": string,
+"company_id": string,
+"created_at": string,
+"decline_code": string | null,
+"due_at": string,
+"failures": number,
+"id": string,
+"invoice_id": string | null,
+"job_id": string | null,
+"last_error": string | null,
+"locked_until": string | null,
+"payment_method_id": string | null,
+"requested_by": string | null,
+"source": string,
+"status": string,
+"updated_at": string,
+"visit_ids": (string)[]
+            }[]
+                          SetofOptions: {
+        from: "*"
+        to: "autopay_charges"
         isOneToOne: false
         isSetofReturn: true
       } },
@@ -2744,6 +2922,9 @@ isOneToOne: false
 "duplicate_quote":
 { Args: { "p_quote": string }; Returns: string
                            },
+"emit_card_expiry_alerts":
+{ Args: Record<PropertyKey, never>; Returns: number
+                           },
 "emit_equipment_alerts":
 { Args: Record<PropertyKey, never>; Returns: number
                            },
@@ -2768,6 +2949,9 @@ isOneToOne: false
                            },
 "finish_automation_run":
 { Args: { "p_error"?: string,"p_id": number,"p_result": Json,"p_status": string,"p_token": string }; Returns: boolean
+                           },
+"finish_autopay_charge":
+{ Args: { "p_amount"?: number,"p_company"?: string,"p_decline"?: string,"p_error"?: string,"p_id": string,"p_outcome": string,"p_token"?: string }; Returns: boolean
                            },
 "finish_campaign_recipients":
 { Args: { "p_error"?: string,"p_ids": (number)[],"p_status": string,"p_token": string }; Returns: number
@@ -3031,6 +3215,9 @@ isOneToOne: false
 "release_automation_runs":
 { Args: { "p_ids": (number)[],"p_token": string }; Returns: number
                            },
+"release_autopay_charges":
+{ Args: { "p_ids": (string)[],"p_token": string }; Returns: number
+                           },
 "release_campaign_recipients":
 { Args: { "p_ids": (number)[],"p_token": string }; Returns: number
                            },
@@ -3045,6 +3232,11 @@ isOneToOne: false
                            },
 "renew_campaign_recipient":
 { Args: { "p_id": number,"p_token": string }; Returns: boolean
+                           },
+"request_manual_charges":
+{ Args: { "p_amounts": (number)[],"p_company": string,"p_invoices": (string)[] }; Returns: {
+              "invoice_id": string,"outcome": string,"reason": string
+            }[]
                            },
 "search_sops":
 { Args: { "p_any"?: boolean,"p_company": string,"p_limit"?: number,"p_query": string }; Returns: {
@@ -3196,6 +3388,9 @@ isOneToOne: false
                            },
 "user_id_for_email":
 { Args: { "p_email": string }; Returns: string
+                           },
+"visit_autopay":
+{ Args: { "p_visit": string }; Returns: boolean
                            },
 "visit_contact":
 { Args: { "p_visit": string }; Returns: {

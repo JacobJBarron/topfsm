@@ -16,6 +16,17 @@ export interface ClientLink {
   id: string; // record id (client id for client/unsub/refer, review request id for review, subcontractor id for sub)
   exp: number; // seconds since epoch
   pv?: 1; // office preview: may show drafts
+  // "office": a copy of the client's Hub link the office made (Copy Client Hub link), every link a
+  // signed-in person is handed (a send's Copy link, the copy kept on the client's timeline, a send
+  // typed to an address that isn't the client's; clientLinks), and every link minted from one. It
+  // works as the client's own link, except that it can't say yes to a card it didn't save itself or
+  // add a tip to a saved card. Missing means the client's own link (and see `own`).
+  via?: "office";
+  // 1: the client's own link, sent to their own email or phone (clientLinks' `own`, the autopay
+  // invite, receipts and notices, an automation's email or text to them), and every link minted from
+  // one. Only a link with it can say yes to a card it didn't save or tip on a saved card: one
+  // without it (every link minted before it was added) can do all else the client's own can.
+  own?: 1;
 }
 
 const PATHS: Record<LinkKind, string> = {
@@ -35,6 +46,38 @@ export async function clientLink(env: Env, baseUrl: string, link: Omit<ClientLin
   const lifetime = days ?? LIFETIME_DAYS[link.t];
   const token = await signToken(env, { ...link, exp: Math.floor(Date.now() / 1000) + lifetime * 86_400 });
   return `${baseUrl.replace(/\/$/, "")}${PATHS[link.t]}${token}`;
+}
+
+/**
+ * One client link minted twice: `own`, the client's own (own: 1), only for the email or text that
+ * goes out to their own email or phone (sentToClient); and `office`, the office's copy (via
+ * "office"), for anything a signed-in person gets: what a send hands back to copy, the copy kept on
+ * the client's timeline, and a send to any other address. So no one on the team holds a link that
+ * can say yes to autopay or tip on the client's saved card for them.
+ */
+export async function clientLinks(env: Env, baseUrl: string, link: Omit<ClientLink, "exp" | "via" | "own">, days?: number): Promise<{ own: string; office: string }> {
+  const [own, office] = await Promise.all([clientLink(env, baseUrl, { ...link, own: 1 }, days), clientLink(env, baseUrl, { ...link, via: "office" }, days)]);
+  return { own, office };
+}
+
+/** An email's address for comparing: trimmed, in lower case. */
+const emailKey = (value: string | null | undefined) => (value ?? "").trim().toLowerCase();
+
+/** A phone number's digits for comparing, without the leading country code 1 of a US or Canadian number. */
+const phoneKey = (value: string | null | undefined) => {
+  const digits = (value ?? "").replace(/\D/g, "");
+  return digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+};
+
+/**
+ * Whether a send goes to the client's own contact on file, so it can carry their own link: an email
+ * to their email (any case, spaces aside), or a text to their phone (the same digits, with or
+ * without the leading 1). A send typed to any other address gets the office's copy.
+ */
+export function sentToClient(channel: "email" | "sms", to: string | null | undefined, client: { email: string | null; phone: string | null } | null | undefined): boolean {
+  if (!client) return false;
+  const [sent, onFile] = channel === "email" ? [emailKey(to), emailKey(client.email)] : [phoneKey(to), phoneKey(client.phone)];
+  return Boolean(onFile) && sent === onFile;
 }
 
 export const readClientLink = (env: Env, token: string) => verifyToken<ClientLink>(env, token);

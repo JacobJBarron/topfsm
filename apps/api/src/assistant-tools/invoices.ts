@@ -60,7 +60,8 @@ export const invoiceTools = {
     },
   }),
   invoice_jobs: tool({
-    description: "Invoice many finished jobs at once (up to 50): one invoice each (completed visits for recurring and per-visit jobs), and email each one if send is true. Each job succeeds or fails on its own.",
+    description:
+      "Invoice many finished jobs at once (up to 50): one invoice each (completed visits for recurring and per-visit jobs), and email each one if send is true. Each job succeeds or fails on its own. Jobs charged automatically (autopay) are skipped while their charge waits.",
     input: z.object({ job_ids: z.array(z.uuid()).min(1).max(50), send: z.boolean().default(false), ...companyArg }),
     area: "invoices",
     run: (ctx, a) => invoiceJobs(salesScope(ctx), a.job_ids, a.send),
@@ -78,7 +79,7 @@ export const invoiceTools = {
     run: (ctx, a) => remindInvoices(salesScope(ctx), a.invoice_ids),
   }),
   record_payment: tool({
-    description: "Record a payment the client made outside Crewtavo's online pay page: cash, check, ACH or other, up to the balance due, with an optional tip and a note (a check number). A draft invoice becomes sent. Card payments come in through Stripe; refunds are made in Crewtavo.",
+    description: "Record a payment the client made outside Crewtavo's online pay page: cash, check, ACH or other, up to the balance due, with an optional tip and a note (a check number). A draft invoice becomes sent. Card payments come in through Stripe. Card refunds are made from the invoice page (Refund) or in Stripe.",
     input: z.object({
       invoice_id: z.uuid(),
       amount: z.number().positive().max(1e8),

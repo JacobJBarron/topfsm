@@ -2,15 +2,17 @@
  * Automations: rules are edited straight from the browser (row-level security limits that to the
  * office). These routes run the engine, preview a rule against a real record, and retry or cancel runs.
  */
-import { evaluateConditions, OFFICE, renderTemplate, triggerAllowed, triggerDef, validateRule, type Action, type Condition, type RuleShape } from "@crewtavo/core";
+import { evaluateConditions, OFFICE, renderTemplate, taskVars, triggerAllowed, triggerDef, validateRule, type Action, type Condition, type RuleShape } from "@crewtavo/core";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../env";
 import { requireCompany, requireUser } from "../lib/auth";
+import { firstName } from "../lib/email";
 import { appUrl, dbError, HttpError, must, readJson } from "../lib/http";
 import { emailReady, smsConfigured } from "../lib/notify";
 import { adminClient } from "../lib/supabase";
-import { buildContext, processAutomations } from "../services/automations";
+import { buildContext, officeVars, processAutomations, withAutopayLink, withEvent } from "../services/automations";
+import { autopayAvailable, autopayInviteText } from "../services/autopay";
 
 export const automations = new Hono<AppEnv>();
 
@@ -35,15 +37,23 @@ const ruleSchema = z.object({
 /** Preview what a rule would do on the most recent matching record, without doing it. */
 automations.post("/automations/preview", requireUser, requireCompany(OFFICE, "automations"), async (c) => {
   const rule = (await readJson(c, ruleSchema)) as unknown as RuleShape;
-  // Rules about subs' job offers (their prices) are for the office with the Subcontractors area.
-  if (!triggerAllowed(rule.trigger, (area) => c.var.permissions.includes(area))) throw new HttpError(403, "Rules about subs' job offers need the Subcontractors area. Ask an owner or admin.");
+  // Rules about subs' job offers (their prices) are for the office with the Subcontractors area, and
+  // rules about autopay (clients' cards) for the office with the invoices area.
+  if (!triggerAllowed(rule.trigger, (area) => c.var.permissions.includes(area))) {
+    throw new HttpError(
+      403,
+      triggerDef(rule.trigger)?.area === "invoices"
+        ? "Rules about autopay need the Invoices and payments area. Ask an owner or admin."
+        : "Rules about subs' job offers need the Subcontractors area. Ask an owner or admin.",
+    );
+  }
   const problems = validateRule(rule);
   if (problems.length) throw new HttpError(400, problems[0]);
   const trigger = triggerDef(rule.trigger)!;
   const { db, companyId } = c.var;
 
   // The latest event of this kind, or else the latest record of the subject's type.
-  const event = must(await db.from("activity").select("subject_type, subject_id").eq("company_id", companyId).eq("verb", rule.trigger).not("subject_id", "is", null).order("created_at", { ascending: false }).limit(1));
+  const event = must(await db.from("activity").select("id, subject_type, subject_id").eq("company_id", companyId).eq("verb", rule.trigger).not("subject_id", "is", null).order("created_at", { ascending: false }).limit(1));
   let subjectId = event[0]?.subject_id ?? null;
   if (!subjectId) {
     const table = ({ client: "clients", request: "requests", quote: "quotes", job: "jobs", visit: "visits", invoice: "invoices" } as const)[trigger.subject];
@@ -52,12 +62,18 @@ automations.post("/automations/preview", requireUser, requireCompany(OFFICE, "au
   }
   if (!subjectId) return c.json({ record: null, pass: false, failed: null, previews: [] });
 
-  const ctx = await buildContext(c.env, adminClient(c.env), companyId, trigger.subject, subjectId, appUrl(c));
-  if (!ctx) return c.json({ record: null, pass: false, failed: null, previews: [] });
+  const admin = adminClient(c.env);
+  const loaded = await buildContext(c.env, admin, companyId, trigger.subject, subjectId, appUrl(c));
+  if (!loaded) return c.json({ record: null, pass: false, failed: null, previews: [] });
+  // What the event said (a sub's name and price, the card a charge failed on), as a run would have it.
+  // The person previewing sees the office's copies of any client links, as the rule's notices carry them.
+  const ctx = await withAutopayLink(c.env, await withEvent(admin, loaded, rule.trigger, event[0]?.id ?? null), rule.trigger, appUrl(c));
+  const vars = await officeVars(c.env, ctx, appUrl(c));
   const check = evaluateConditions(rule.conditions as Condition[], ctx.facts, ctx.subject);
-  const r = (t?: string) => renderTemplate(t ?? "", ctx.vars).trim();
+  const r = (t?: string) => renderTemplate(t ?? "", vars).trim();
   const warnings: string[] = [];
   const canEmail = await emailReady(c.env, companyId);
+  const takesAutopay = (rule.actions as Action[]).some((a) => a.type === "invite_autopay") ? await autopayAvailable(c.env, admin, companyId) : true;
   const previews = (rule.actions as Action[]).map((a) => {
     switch (a.type) {
       case "notify":
@@ -72,10 +88,20 @@ automations.post("/automations/preview", requireUser, requireCompany(OFFICE, "au
       case "add_note":
         return { type: a.type, body: r(a.body) };
       case "create_task":
-        return { type: a.type, title: r(a.title), body: `Due in ${a.days_from_now} days` };
+        // As the crew would see it on the schedule: without the event's office-only values.
+        return { type: a.type, title: renderTemplate(a.title ?? "", taskVars(rule.trigger, vars)).trim(), body: `Due in ${a.days_from_now} days` };
       case "add_tag":
       case "remove_tag":
         return { type: a.type, title: a.tag };
+      case "invite_autopay": {
+        if (!takesAutopay) warnings.push("Autopay isn't on (Settings → Payments, and a Stripe key that can save cards), so invites won't go out until it is.");
+        const to = a.channel === "sms" ? (ctx.client?.phone ?? null) : (ctx.client?.email ?? null);
+        if (a.channel === "sms" && !smsConfigured(c.env)) warnings.push("Text messaging isn't set up on this server, so text actions will fail until it is.");
+        if (a.channel !== "sms" && !canEmail) warnings.push("Email isn't connected yet (Settings → Email), so email actions will fail until it is.");
+        if (!to) warnings.push(`${ctx.client?.display_name ?? "This client"} has no ${a.channel === "sms" ? "mobile number" : "email address"}.`);
+        // The set-up invite as it goes (a client with a card from Stripe is asked to confirm it instead).
+        return { type: a.type, to, body: autopayInviteText(ctx.company, firstName(ctx.client?.display_name), "[autopay link]")[a.channel === "sms" ? "sms" : "email"] };
+      }
       default:
         return { type: a.type };
     }

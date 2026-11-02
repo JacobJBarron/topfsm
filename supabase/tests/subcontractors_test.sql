@@ -74,6 +74,8 @@ select id as foreman_role from public.company_roles where company_id = :'co' and
 select id as employee_role from public.company_roles where company_id = :'co' and name = 'Employee' \gset
 select id as manager_role from public.company_roles where company_id = :'co' and name = 'Office manager' \gset
 insert into public.company_roles (company_id, name, base_role, permissions) values (:'co', 'Dispatcher', 'office', '{schedule,job_costs}') returning id as dispatch_role \gset
+-- Admin access is given through the server (the admin_grants migration).
+reset role;
 insert into public.memberships (company_id, user_id, role, role_id) values
   (:'co', 'c1060000-0000-0000-0000-000000000002', 'admin', null),
   (:'co', 'c1060000-0000-0000-0000-000000000003', 'office', null),
@@ -82,6 +84,7 @@ insert into public.memberships (company_id, user_id, role, role_id) values
   (:'co', 'c1060000-0000-0000-0000-000000000006', 'crew_lead', :'foreman_role'),
   (:'co', 'c1060000-0000-0000-0000-000000000007', 'field_crew', :'employee_role'),
   (:'co', 'c1060000-0000-0000-0000-000000000009', 'office', :'manager_role');
+set local role authenticated;
 commit;
 
 begin;

@@ -6,6 +6,7 @@ import { contractInput, contractValues, resolveSections, sectionsHash } from "@c
 import { DEFAULT_TEMPLATE, templateSettings } from "@crewtavo/core/documents";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env";
+import { readClientLink } from "../src/lib/links";
 import { drawnPng } from "./fixtures/drawn";
 
 // Stand-ins for the signed-in person's Supabase client: tables of rows that eq, in, is (including a
@@ -123,6 +124,8 @@ const QUOTE = "00000000-0000-4000-8000-00000000d0c3";
 const MIKE = "00000000-0000-4000-8000-00000000d0c4";
 const CLIENT = "00000000-0000-4000-8000-00000000d0c5";
 const HOMEOWNER = drawnPng(1200, 340, "Alex");
+/** What a Hub link says about itself (lib/links), from the text it's in. */
+const hubLinkIn = (text: unknown) => readClientLink(env, String(text).match(/\/hub\/(\S+)/)![1]!);
 const MIKES = drawnPng(840, 280, "Mike");
 const SAVED = drawnPng(840, 280, "Mike, saved");
 
@@ -252,8 +255,13 @@ describe("signing on site", () => {
     expect(message).toMatchObject({ to: "alex@example.com", subject: "Your signed estimate from Ridgeline Roofing", replyTo: "office@ridgeline.example", fromName: "Ridgeline Roofing" });
     expect(message.text).toContain("Hi Alex,");
     expect(message.text).toContain("Here's your signed estimate from Ridgeline Roofing. You can view, print or save it any time:");
-    expect(message.text).toContain(body.link);
+    // The homeowner's email has their own link; the salesperson and the timeline get the office's copy.
+    const own = await hubLinkIn(message.text);
+    expect(own).toMatchObject({ c: ROOFER, t: "quote", id: QUOTE, own: 1 });
+    expect(own!.via).toBeUndefined();
+    expect(await hubLinkIn(body.link)).toMatchObject({ c: ROOFER, t: "quote", id: QUOTE, via: "office" });
     expect(state.tables.messages).toEqual([expect.objectContaining({ client_id: CLIENT, channel: "email", related_type: "quote", related_id: QUOTE, external_id: "email-1" })]);
+    expect(await hubLinkIn(state.tables.messages![0]!.body)).toMatchObject({ t: "quote", id: QUOTE, via: "office" });
     expect(background.kickAutomations).toHaveBeenCalledTimes(1);
   });
 
@@ -618,15 +626,48 @@ describe("the signed copy", () => {
     const res = await call(`/quotes/${QUOTE}/send-copy`, { channel: "sms" });
     const body = await res.json();
     expect(body).toEqual({ sent: true, link: expect.stringContaining("/hub/") });
-    expect(sendSms).toHaveBeenCalledWith(env, { to: "(614) 555-0142", body: `Ridgeline Roofing: Here's your signed estimate. You can view, print or save it any time: ${body.link}` });
+    expect(sendSms).toHaveBeenCalledWith(env, { to: "(614) 555-0142", body: expect.stringMatching(/^Ridgeline Roofing: Here's your signed estimate\. You can view, print or save it any time: https:\/\/ops\.example\.com\/hub\/\S+$/) });
+    // The text has the client's own link; the person sending it and the timeline get the office's copy.
+    expect((await hubLinkIn(sendSms.mock.calls[0]![1].body))!.via).toBeUndefined();
+    expect(await hubLinkIn(sendSms.mock.calls[0]![1].body)).toMatchObject({ own: 1 });
+    expect(await hubLinkIn(body.link)).toMatchObject({ t: "quote", id: QUOTE, via: "office" });
     expect(state.tables.messages).toEqual([expect.objectContaining({ channel: "sms", subject: "Signed estimate #1042", related_type: "quote", related_id: QUOTE })]);
+    expect(state.tables.messages![0]!.body).toMatch(/^Ridgeline Roofing: Here's your signed estimate\./);
+    expect(await hubLinkIn(state.tables.messages![0]!.body)).toMatchObject({ t: "quote", id: QUOTE, via: "office" });
   });
 
-  it("emails it to another address when asked", async () => {
+  it("emails it to another address when asked, with the office's copy of the link", async () => {
     roofer({ status: "converted", approval: { name: "Alex Morgan", signature: HOMEOWNER } });
     const res = await call(`/quotes/${QUOTE}/send-copy`, { channel: "email", to: "alex.work@example.com" });
     expect(await res.json()).toMatchObject({ sent: true });
     expect(sendEmail.mock.calls[0]![1].to).toBe("alex.work@example.com");
+    // Not the client's address on file, so not their own link: a year-long link that could say yes
+    // to autopay or tip doesn't go to whoever the sender typed (their own inbox, say).
+    const copy = await hubLinkIn(sendEmail.mock.calls[0]![1].text);
+    expect(copy).toMatchObject({ t: "quote", id: QUOTE, via: "office" });
+    expect(copy).not.toHaveProperty("own");
+    // Their address typed in another case is still theirs.
+    await call(`/quotes/${QUOTE}/send-copy`, { channel: "email", to: " ALEX@example.com" });
+    expect(await hubLinkIn(sendEmail.mock.calls[1]![1].text)).toMatchObject({ own: 1 });
+  });
+
+  it("texts the office's copy of the link to a number that isn't the client's", async () => {
+    roofer({ status: "approved", approval: { name: "Alex Morgan", signature: HOMEOWNER } });
+    await call(`/quotes/${QUOTE}/send-copy`, { channel: "sms", to: "(614) 555-0199" });
+    const copy = await hubLinkIn(sendSms.mock.calls[0]![1].body);
+    expect(copy).toMatchObject({ t: "quote", id: QUOTE, via: "office" });
+    expect(copy).not.toHaveProperty("own");
+    // Their own number, with the country code: their own link.
+    await call(`/quotes/${QUOTE}/send-copy`, { channel: "sms", to: "+16145550142" });
+    expect(await hubLinkIn(sendSms.mock.calls[1]![1].body)).toMatchObject({ own: 1 });
+  });
+
+  it("emails the copy at signing to another address with the office's copy of the link", async () => {
+    roofer();
+    const res = await call(`/quotes/${QUOTE}/sign`, { name: "Alex Morgan", signature: HOMEOWNER, company_signature: MIKES, email_copy: true, to: "sales@ridgeline.example" });
+    expect(await res.json()).toMatchObject({ status: "approved", emailed: true });
+    expect(sendEmail.mock.calls[0]![1].to).toBe("sales@ridgeline.example");
+    expect(await hubLinkIn(sendEmail.mock.calls[0]![1].text)).toMatchObject({ t: "quote", id: QUOTE, via: "office" });
   });
 
   it("says why it wasn't sent instead of failing", async () => {

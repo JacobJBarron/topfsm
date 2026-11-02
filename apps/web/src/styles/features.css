@@ -1198,6 +1198,23 @@ a.hub-list-row:hover { background: var(--fill); color: var(--ink); }
 .hub-drawing { overflow: hidden; break-inside: avoid; }
 .hub-drawing img { display: block; width: 100%; height: auto; background: var(--fill-2); border-bottom: 1px solid var(--divider); }
 
+/* Autopay in the Client Hub: the card on the client's home (ClientPortal AutopayCard) and the autopay
+   page (HubAutopay). A button can be a .hub-btn too ("Pay automatically"). */
+button.hub-btn { width: 100%; border: 0; font: inherit; font-size: var(--fs-16); font-weight: 700; cursor: pointer; }
+.hub-card-actions[data-count="1"] { grid-template-columns: minmax(0, 1fr); }
+.hub-card-actions > button:disabled { color: var(--text-4); cursor: not-allowed; background: none; }
+.hub-autopay { overflow: hidden; }
+.hub-autopay-body { display: flex; align-items: center; gap: 12px; padding: 16px; }
+.hub-autopay-state { margin: 0; padding: 0 16px 16px; font-size: var(--fs-14); color: var(--text-2); }
+.hub-autopay-points { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.hub-autopay-points li { display: flex; align-items: flex-start; gap: 10px; }
+.hub-autopay-points svg { flex: none; margin-top: 2px; color: var(--brand-text, var(--ink)); }
+.hub-autopay-method { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 12px 14px; border-radius: var(--radius-control); background: var(--fill); }
+/* The words the client agrees to, as they're kept with the agreement. */
+.hub-terms { margin: 0; padding: 12px 14px; border-left: 3px solid var(--brand); border-radius: var(--radius-sm); background: var(--fill); font-size: var(--fs-14); }
+.hub-terms p { margin: 0; }
+.hub-terms p + p { margin-top: 8px; }
+
 /* A price range on the client's account page (ClientPortal). The range's own page is hub/range.module.css. */
 .hub-range-line { font-size: var(--fs-14); font-weight: 700; color: var(--brand-text, var(--ink)); font-variant-numeric: tabular-nums; }
 

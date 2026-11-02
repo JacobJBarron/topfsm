@@ -4,7 +4,7 @@
  * rules hold (only owners make owners, nobody gives more than they have); the account itself, and
  * the one-time link to set it up, are made with the server's key.
  */
-import { isPlaceholderEmail, isRole, isSubLogin, SUB_LOGIN_MARK, type Role } from "@crewtavo/core";
+import { adminLevel, isPlaceholderEmail, isRole, isSubLogin, SUB_LOGIN_MARK, type Role } from "@crewtavo/core";
 import type { Env } from "../env";
 import { emailAuthLink } from "../lib/auth";
 import { renderEmail } from "../lib/email";
@@ -20,6 +20,28 @@ export interface TeamScope {
   userId: string;
   role: Role;
   baseUrl: string;
+}
+
+/** What an assistant, or anything without the giver's password, is told about admin access. */
+export const ADMIN_FROM_TEAM_PAGE = "Give admin access from Settings → People in Crewtavo, which asks for your password.";
+
+/**
+ * Whether a level, or a custom role (which sets its own level), is admin-level access (adminLevel).
+ * Read with `db`, so a role from another company is no role.
+ */
+export async function adminAccess(db: Db, companyId: string, role: string, roleId?: string | null): Promise<boolean> {
+  if (!roleId) return adminLevel(role);
+  const custom = must(await db.from("company_roles").select("base_role, permissions").eq("id", roleId).eq("company_id", companyId).maybeSingle(), "That role no longer exists.");
+  return adminLevel(custom.base_role, custom.permissions);
+}
+
+/**
+ * Once the giver has confirmed their password: for a minute, the database lets their own changes give
+ * `target` (a person, or a custom role's id) admin-level access (the admin_grants migration).
+ */
+export async function allowAdminGrant(env: Env, companyId: string, userId: string, target: string) {
+  const { error } = await adminClient(env).rpc("admin_grant_allow", { p_user: userId, p_company: companyId, p_target: target });
+  if (error) throw dbError(error);
 }
 
 /**
@@ -77,16 +99,22 @@ export async function sendInvite(s: TeamScope, to: { email: string; name?: strin
 /**
  * Add someone to the team: an account they already have, or a new one with a one-time link to set
  * it up, emailed to them. The link comes back too, for Settings → People to text it; an AI
- * assistant's tool never passes it on (whoever opens it gets into that account).
+ * assistant's tool never passes it on (whoever opens it gets into that account). Admin-level access
+ * needs `confirmAdmin` (the giver's password, checked before any account is made); without it,
+ * as for an assistant, it's refused.
  */
-export async function invitePerson(s: TeamScope, body: { email: string; full_name?: string; role: Role; role_id?: string | null }) {
+export async function invitePerson(s: TeamScope, body: { email: string; full_name?: string; role: Role; role_id?: string | null }, confirmAdmin?: () => Promise<unknown>) {
   if (!isRole(body.role)) throw new HttpError(400, "Pick a role.");
   // A sub isn't on the team: they sign in from their page under Subs (services/subAccess.ts).
   if (body.role === "subcontractor") throw new HttpError(400, "A sub isn't invited to the team. Give them a sign-in from their page under Subs.");
   if (isPlaceholderEmail(body.email)) throw new HttpError(400, "Enter their own email address.");
   // Checked before an account is made: the database would refuse the membership, but only after.
   if (body.role === "owner" && s.role !== "owner") throw new HttpError(403, "Only an owner can make someone an owner.");
-  if (body.role_id) must(await s.db.from("company_roles").select("id").eq("id", body.role_id).eq("company_id", s.companyId).maybeSingle(), "That role no longer exists.");
+  const givesAdmin = await adminAccess(s.db, s.companyId, body.role, body.role_id);
+  if (givesAdmin) {
+    if (!confirmAdmin) throw new HttpError(403, ADMIN_FROM_TEAM_PAGE);
+    await confirmAdmin();
+  }
   const admin = adminClient(s.env);
   const email = body.email.toLowerCase();
 
@@ -119,6 +147,7 @@ export async function invitePerson(s: TeamScope, body: { email: string; full_nam
     if (removed) throw dbError(removed);
   }
   // Inserted as the inviting person, so RLS checks they may grant this role.
+  if (givesAdmin) await allowAdminGrant(s.env, s.companyId, s.userId, userId);
   const { error } = await s.db.from("memberships").upsert({ company_id: s.companyId, user_id: userId, role: body.role, role_id: body.role_id ?? null, active: true });
   if (error) throw dbError(error);
 

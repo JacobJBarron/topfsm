@@ -88,6 +88,19 @@ export function memberPermissions(role: Role, customPermissions?: readonly strin
   return customPermissions ? allowed.filter((p) => customPermissions.includes(p)) : [...allowed];
 }
 
+/** The areas behind the Stripe key, the company's email (Apps or Settings) and the team. */
+export const ADMIN_AREAS: readonly Permission[] = ["apps", "settings", "team"];
+
+/**
+ * Admin-level access: an owner, or an admin whose areas (their custom role's, or all of them)
+ * include one of ADMIN_AREAS, so they could switch Stripe or make more admins. Giving it asks for
+ * the giver's password (POST /api/team/invite, PATCH /api/team/:userId/access, /api/team/roles); the
+ * database refuses it from the browser (private.admin_level, the admin_grants migration).
+ */
+export function adminLevel(role: string, customPermissions?: readonly string[] | null): boolean {
+  return isRole(role) && ADMINS.includes(role) && memberPermissions(role, customPermissions).some((p) => ADMIN_AREAS.includes(p));
+}
+
 /**
  * Who may make a password reset link for whom (Settings → People): only for someone strictly below
  * them, so nobody can take over an account with as much access as their own. The owner: everyone
