@@ -6,6 +6,7 @@
  * that offer options read and approved for the option the client chose, keeping the contract they
  * were sent.
  */
+import { assistantRefusal } from "@crewtavo/core";
 import { templateSettings } from "@crewtavo/core/documents";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env";
@@ -141,10 +142,11 @@ describe("money", () => {
       ["record_payment", { invoice_id: "6f4cc1b2-7e43-4c1d-9a8e-3c2f1d0b9a87", amount: 50, method: "check" }],
       ["create_quote", { client_id: "6f4cc1b2-7e43-4c1d-9a8e-3c2f1d0b9a87", title: "Sealcoat" }],
       ["mark_paid", { from: "2026-10-12", to: "2026-10-18", method: "check" }],
+      ["save_promo_code", { code: "SPRING10", kind: "percent", value: 10 }],
     ] as const) {
-      expect((await call("nomoney", name, args)).error, name).toMatch(/^This assistant can't change money: quotes, invoices, payments or pay\./);
+      expect((await call("nomoney", name, args)).error, name).toMatch(/^This assistant can't change money: quotes, invoices, payments, pay or promo codes\./);
     }
-    expect(sent.filter((s) => ["payments", "quotes", "pay_periods"].includes(s.table))).toEqual([]);
+    expect(sent.filter((s) => ["payments", "quotes", "pay_periods", "promo_codes"].includes(s.table))).toEqual([]);
   });
 
   it("job profit counts sub and crew pay as labor, once", async () => {
@@ -468,5 +470,66 @@ describe("automations about subs' offers", () => {
     expect((await call("full", "save_automation", { ...rule, actions: [{ type: "create_task", title: "Call {{sub.name}} about {{sub.price}}", days_from_now: 1 }] })).error).toMatch(/can't show the sub's price/);
     expect(await call("full", "save_automation", rule)).toMatchObject({ does: "When a sub turns down a job offer: notify Owners." });
     expect(sent.filter((s) => s.table === "automation_rules" && s.method === "POST")).toHaveLength(1);
+  });
+});
+
+describe("estimate templates", () => {
+  const SECTION = "0b8f6a52-3c1e-4d7a-9f2b-6e5d4c3b2a19";
+  const TEMPLATE = "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f";
+
+  it("change only what's sent, and keep one default", async () => {
+    const { db, sent } = supabase();
+    db.document_templates = [{ id: TEMPLATE, company_id: "company-1", name: "Standard", is_default: true, settings: { ...templateSettings({}), tagline: "Roofing · Gutters" } }];
+    db.contract_sections = [{ id: SECTION, company_id: "company-1", title: "Warranty" }];
+
+    expect(await call("full", "save_document_template", { template_id: TEMPLATE, footer: "Licensed and insured", invoice_sections: [SECTION] })).toEqual({ template_id: TEMPLATE, saved: true });
+    expect(db.document_templates[0].settings).toMatchObject({ tagline: "Roofing · Gutters", footer: "Licensed and insured", invoice_sections: [SECTION], header: "classic" });
+
+    expect((await call("full", "save_document_template", { name: "Storm work", make_default: true, color: "#2F6B3A" })).error).toBeUndefined();
+    const writes = sent.filter((s) => s.table === "document_templates" && s.method !== "GET");
+    // The old default steps down before the new one is saved.
+    expect(writes.slice(-2).map((s) => [s.method, s.body.is_default])).toEqual([["PATCH", false], ["POST", true]]);
+    expect(writes.at(-1)!.body.settings).toMatchObject({ color: "#2f6b3a", tagline: "" });
+  });
+
+  it("print only the business's own contract sections, written in Markdown", async () => {
+    const { db } = supabase();
+    expect((await call("full", "save_document_template", { sections: [SECTION] })).error).toMatch(/contract sections isn't here/);
+    expect(db.document_templates ?? []).toEqual([]);
+
+    expect((await call("full", "save_contract_section", { title: "Payment", body_markdown: "**{Total}** is due when the work is done.", place: "signatures" })).saved).toBe(true);
+    expect(db.contract_sections[0]).toMatchObject({ title: "Payment", place: "signatures", sort: 0, body: expect.stringContaining("<strong>{Total}</strong>") });
+  });
+
+  it("are an area of their own", async () => {
+    const { sent } = supabase();
+    expect((await call("jobsonly", "save_contract_section", { title: "Payment" })).error).toBe(assistantRefusal("templates"));
+    expect((await call("jobsonly", "save_document_template", { footer: "Thanks" })).error).toMatch(/can't change estimate templates and contract terms/);
+    expect(sent.filter((s) => ["document_templates", "contract_sections"].includes(s.table))).toEqual([]);
+  });
+});
+
+describe("marketing", () => {
+  const CAMPAIGN = "5a3e2c1d-9b8f-4e7a-8c6d-1f2e3d4c5b6a";
+
+  it("drafts a campaign for full access without money, saying how many it reaches", async () => {
+    const { db } = supabase("owner", { "rpc/campaign_audience": [{ client_id: "c-1" }, { client_id: "c-2" }] });
+    const saved = await call("nomoney", "save_campaign", { subject: "Spring cleanup", body: "Hi {{client.first_name}}, spots are open.", audience: { statuses: ["active"], cities: ["Radford", "radford"] } });
+    expect(saved).toMatchObject({ status: "draft", audience_count: 2 });
+    expect(db.campaigns[0]).toMatchObject({ name: "Untitled campaign", subject: "Spring cleanup", audience: { statuses: ["active"], cities: ["Radford"] } });
+  });
+
+  it("sends nothing while Marketing is uninstalled", async () => {
+    const { db, sent } = supabase();
+    db.companies = [{ id: "company-1", settings: {} }];
+    db.campaigns = [{ id: CAMPAIGN, company_id: "company-1", kind: "one_off", status: "draft", subject: "Spring", body: "Spots are open this spring." }];
+    expect((await call("full", "send_campaign", { campaign_id: CAMPAIGN })).error).toMatch(/^Marketing is off/);
+    expect(sent.filter((s) => s.table === "campaign_recipients" || (s.table === "campaigns" && s.method !== "GET"))).toEqual([]);
+  });
+
+  it("is for the office with the Marketing area", async () => {
+    supabase("field_crew");
+    expect((await call("full", "save_campaign", { subject: "Hi" })).error).toMatch(/Your role in Crewtavo doesn't allow that/);
+    expect((await call("full", "reply_to_review", { review_id: CAMPAIGN, comment: "Thank you!" })).error).toMatch(/Your role in Crewtavo doesn't allow that/);
   });
 });

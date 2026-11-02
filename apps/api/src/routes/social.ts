@@ -10,9 +10,6 @@ import { ADMINS, OFFICE } from "@crewtavo/core";
 import { marketingOn } from "@crewtavo/core/marketing";
 import {
   CANT_SHARE,
-  captionProblems,
-  GOOGLE_NEEDS_CAPTION,
-  captionProblemWords,
   cardDropsEmoji,
   cardSupported,
   cardText,
@@ -20,9 +17,6 @@ import {
   hasWords,
   MAX_PHOTOS,
   mentionsClient,
-  missingPermissionWords,
-  NAMES_CLIENT,
-  needsCaption,
   NETWORKS,
   type CantShare,
   type Network,
@@ -40,23 +34,26 @@ import { adminClient } from "../lib/supabase";
 import { companyAnthropicKey } from "../services/ai";
 import {
   cardInput,
+  checkPost,
   clientWords,
-  googleConnection,
   jobServices,
   imagesPublic,
   MARKETING_OFF_POSTS,
-  metaConnection,
-  metaMissing,
   photoFacts,
-  PRIVATE_ADDRESS_POSTS,
+  postableReview,
+  postBody,
   postNow,
+  postWhen,
+  PRIVATE_ADDRESS_POSTS,
   socialState,
   suggestCaption,
+  type PostBody,
 } from "../services/social";
 
 export const social = new Hono<AppEnv>();
 
 type Ctx = Parameters<typeof param>[0];
+const postScope = (c: Ctx) => ({ env: c.env, companyId: c.var.companyId });
 const PAGE = 25;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}(:?\d{2})?)?$/;
 
@@ -147,22 +144,9 @@ social.get("/social/reviews", requireUser, requireCompany(OFFICE, "marketing"), 
   return c.json({ reviews, more: rows.length === PAGE });
 });
 
-/** A review of the company's that can go on a card, or the reason it can't. */
-async function postableReview(c: Ctx, id: string) {
-  const admin = adminClient(c.env);
-  const { data: review } = await admin.from("reviews").select("*").eq("company_id", c.var.companyId).eq("id", id).is("deleted_at", null).maybeSingle();
-  if (!review) throw new HttpError(404, "That review isn't here. It may have been removed from Google.");
-  if ((review.rating ?? 0) < 4) throw new HttpError(400, "Only 4 and 5-star reviews can be posted.");
-  if (!hasWords(review.comment)) throw new HttpError(400, "This review has no words to put on a card.");
-  if (!cardSupported(review.comment)) throw new HttpError(400, "This review has characters the card can't show yet.");
-  const words = await clientWords(admin, c.var.companyId, [review.client_id]);
-  if (mentionsClient(review.comment ?? "", words).blocked.length) throw new HttpError(400, "This review names the client or their street, so it can't be posted.");
-  return review;
-}
-
 /** The review's card, as it posts: the composer's preview, and Share elsewhere. */
 social.get("/social/reviews/:id/card.jpg", requireUser, requireCompany(OFFICE, "marketing"), async (c) => {
-  const review = await postableReview(c, param(c, "id"));
+  const review = await postableReview(postScope(c), param(c, "id"));
   const jpeg = await renderReviewCard(await cardInput(adminClient(c.env), c.var.companyId, review));
   return c.body(jpeg, 200, { "Content-Type": "image/jpeg", "Cache-Control": "private, max-age=300" });
 });
@@ -228,17 +212,6 @@ social.get("/social/posts", requireUser, requireCompany(OFFICE, "marketing"), as
   });
 });
 
-const when = z.union([z.literal("draft"), z.literal("now"), z.object({ at: z.iso.datetime({ offset: true }) })]);
-const postBody = z.object({
-  source: z.enum(["photos", "review", "text"]),
-  review_id: uuid.nullable().optional(),
-  attachment_ids: z.array(uuid).max(20).default([]),
-  caption: z.string().max(2200).default(""),
-  caption_by: z.enum(["person", "ai"]).default("person"),
-  networks: z.array(z.enum(NETWORKS)).min(1, "Pick where it posts.").max(3),
-  when,
-});
-type PostBody = z.infer<typeof postBody>;
 // A change names only what changes: nothing here has a default, or it would undo what's saved.
 const patchBody = z.object({
   source: z.enum(["photos", "review", "text"]).optional(),
@@ -247,81 +220,8 @@ const patchBody = z.object({
   caption: z.string().max(2200).optional(),
   caption_by: z.enum(["person", "ai"]).optional(),
   networks: z.array(z.enum(NETWORKS)).min(1, "Pick where it posts.").max(3).optional(),
-  when: when.optional(),
+  when: postWhen.optional(),
 });
-
-/**
- * Everything a post must be before it's kept: the company's own photos, OK to share, of clients who
- * haven't said no (1 to 10), or a 4 or 5-star review with words the card can show; each network
- * connected, with the permissions it posts with, when it's to post, and for pictures this server's
- * address public; a caption every network takes that names no client; and a time from 5 minutes to
- * 90 days away. Says what to save, and warnings (a client's last name on its own).
- */
-async function checkPost(c: Ctx, body: PostBody) {
-  const admin = adminClient(c.env);
-  const networks = NETWORKS.filter((n) => body.networks.includes(n));
-  const ids = [...new Set(body.attachment_ids)];
-  let reviewKey: string | null = null;
-  let clients: Array<string | null> = [];
-  if (body.source === "photos") {
-    if (!ids.length) throw new HttpError(400, "Pick at least one photo.");
-    if (ids.length > MAX_PHOTOS) throw new HttpError(400, `Pick up to ${MAX_PHOTOS} photos.`);
-    const facts = await photoFacts(admin, c.var.companyId, ids);
-    for (const id of ids) {
-      const fact = facts.find((f) => f.id === id);
-      if (!fact) throw new HttpError(400, "One of the photos isn't here anymore.");
-      if (fact.problem) throw new HttpError(400, CANT_SHARE[fact.problem as CantShare] ?? "One of the photos can't be posted.");
-      if (!fact.shareable) throw new HttpError(400, "One of the photos isn't marked OK to share.");
-    }
-    clients = facts.map((f) => f.client_id);
-  } else if (body.source === "review") {
-    if (!body.review_id) throw new HttpError(400, "Pick a review.");
-    const review = await postableReview(c, body.review_id);
-    reviewKey = `${review.location_id}/${review.review_id}`;
-    clients = [review.client_id];
-  } else {
-    if (networks.includes("instagram")) throw new HttpError(400, "Instagram needs a photo.");
-    if (!body.caption.trim()) throw new HttpError(400, "Write what to post.");
-  }
-  // A draft can wait for its caption.
-  if (body.when !== "draft" && needsCaption(body.caption, networks)) throw new HttpError(400, GOOGLE_NEEDS_CAPTION);
-  const problem = captionProblems(body.caption, networks)[0];
-  if (problem) throw new HttpError(400, captionProblemWords(problem));
-  const mentions = mentionsClient(body.caption, await clientWords(admin, c.var.companyId, clients));
-  if (mentions.blocked.length) throw new HttpError(400, NAMES_CLIENT);
-  let scheduledFor: string | null = null;
-  if (body.when !== "draft") {
-    // Meta and Google fetch the pictures from this server, so it has to be reachable from the internet.
-    if (body.source !== "text" && !imagesPublic(c.env)) throw new HttpError(409, PRIVATE_ADDRESS_POSTS);
-    const [meta, google] = await Promise.all([metaConnection(c.env, admin, c.var.companyId), googleConnection(admin, c.var.companyId)]);
-    for (const network of networks) {
-      const ready = network === "facebook" ? meta.facebook : network === "instagram" ? meta.instagram : google.ready;
-      if (!ready) throw new HttpError(409, network === "google" ? "Google Business Profile isn't ready to post to. See Where it posts." : network === "instagram" ? "Instagram isn't connected. See Where it posts." : "Facebook isn't connected. See Where it posts.");
-      const missing = network === "google" ? [] : metaMissing(meta.row?.settings, network);
-      if (missing.length) throw new HttpError(409, missingPermissionWords(network, missing));
-    }
-    if (body.when === "now") scheduledFor = new Date().toISOString();
-    else {
-      const at = Date.parse(body.when.at);
-      if (at < Date.now() + 5 * 60_000) throw new HttpError(400, "Pick a time at least 5 minutes from now.");
-      if (at > Date.now() + 90 * 86_400_000) throw new HttpError(400, "Pick a time within 90 days.");
-      scheduledFor = new Date(at).toISOString();
-    }
-  }
-  return {
-    row: {
-      source: body.source,
-      review_id: body.source === "review" ? body.review_id! : null,
-      review_key: reviewKey,
-      attachment_ids: body.source === "photos" ? ids : [],
-      caption: body.caption,
-      networks,
-      status: body.when === "draft" ? "draft" : "scheduled",
-      scheduled_for: scheduledFor,
-    },
-    warnings: mentions.warnings,
-  };
-}
 
 /**
  * Checks a post as Post now would, saving nothing, so a caption that would be refused (it names a
@@ -330,14 +230,14 @@ async function checkPost(c: Ctx, body: PostBody) {
 social.post("/social/posts/check", requireUser, requireCompany(OFFICE, "marketing"), async (c) => {
   const body = await readJson(c, postBody);
   await requireMarketing(c);
-  const { warnings } = await checkPost(c, body);
+  const { warnings } = await checkPost(postScope(c), body);
   return c.json({ ok: true, warnings });
 });
 
 social.post("/social/posts", requireUser, requireCompany(OFFICE, "marketing"), async (c) => {
   const body = await readJson(c, postBody);
   await requireMarketing(c);
-  const { row, warnings } = await checkPost(c, body);
+  const { row, warnings } = await checkPost(postScope(c), body);
   const admin = adminClient(c.env);
   const { data, error } = await admin.from("social_posts")
     .insert({ ...row, company_id: c.var.companyId, caption_by: body.caption_by, created_by: c.var.userId, updated_by: c.var.userId })
@@ -372,7 +272,7 @@ social.patch("/social/posts/:id", requireUser, requireCompany(OFFICE, "marketing
     networks: (patch.networks ?? post.networks) as Network[],
     when: patch.when ?? (post.status === "draft" ? "draft" : post.scheduled_for && Date.parse(post.scheduled_for) < Date.now() + 5 * 60_000 ? "now" : { at: post.scheduled_for! }),
   };
-  const { row, warnings } = await checkPost(c, merged);
+  const { row, warnings } = await checkPost(postScope(c), merged);
   const captionChanged = patch.caption !== undefined && patch.caption !== post.caption;
   const { data, error } = await admin.from("social_posts")
     .update({ ...row, caption_by: captionChanged ? merged.caption_by : post.caption_by, note: null, updated_by: c.var.userId })
@@ -444,7 +344,7 @@ social.post("/social/caption", requireUser, requireCompany(OFFICE, "marketing"),
   }));
   const company = await requireMarketing(c, "Marketing is off, so captions can't be drafted. An owner or admin can install it again in Apps.");
   const admin = adminClient(c.env);
-  const review = body.source === "review" && body.review_id ? await postableReview(c, body.review_id) : null;
+  const review = body.source === "review" && body.review_id ? await postableReview(postScope(c), body.review_id) : null;
   const facts = body.source === "photos" ? await photoFacts(admin, c.var.companyId, body.attachment_ids) : [];
   try {
     const result = await suggestCaption(c.env, {

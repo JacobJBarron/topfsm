@@ -199,9 +199,9 @@ describe("MCP tools", () => {
     expect(hints.list_services).toMatchObject({ readOnlyHint: true, destructiveHint: false });
     expect(hints.add_services).toMatchObject({ readOnlyHint: false, destructiveHint: false });
     expect(hints.delete_service).toMatchObject({ readOnlyHint: false, destructiveHint: true });
-    // Every delete is marked, so the assistant asks first; so are voiding and writing off an invoice.
+    // Every delete is marked, so the assistant asks first; so are voiding and writing off an invoice, and taking down a public reply.
     const destructive = tools.filter((t) => t.annotations.destructiveHint).map((t) => t.name);
-    expect(destructive.filter((n) => !n.startsWith("delete_"))).toEqual(["void_invoice", "write_off_invoice"]);
+    expect(destructive.filter((n) => !n.startsWith("delete_"))).toEqual(["void_invoice", "write_off_invoice", "remove_review_reply"]);
     expect(tools.filter((t) => t.name.startsWith("delete_")).every((t) => t.annotations.destructiveHint)).toBe(true);
   });
 

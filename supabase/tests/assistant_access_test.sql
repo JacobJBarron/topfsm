@@ -185,12 +185,20 @@ select t1040.check(t1040.hook(:'owner', :'full', 'DELETE', '/payments') = 'none'
 select t1040.check(t1040.hook(:'owner', :'nomoney', 'POST', '/clients') = 'none', 'full access without money adds clients');
 select t1040.check(t1040.hook(:'owner', :'nomoney', 'DELETE', '/jobs') = 'none', 'deletes a job');
 select t1040.check(t1040.hook(:'owner', :'nomoney', 'POST', '/company_roles') = 'none', 'and saves roles');
-select t1040.check(e = 'PT403: This assistant can''t change money: quotes, invoices, payments or pay. To let it, give it Full access in Crewtavo, under Settings → AI assistants.',
+select t1040.check(e = 'PT403: This assistant can''t change money: quotes, invoices, payments, pay or promo codes. To let it, give it Full access in Crewtavo, under Settings → AI assistants.',
   'but doesn''t touch invoices: ' || e) from (select t1040.hook(:'owner', :'nomoney', 'POST', '/invoices') as e) x;
 select t1040.check(t1040.hook(:'owner', :'nomoney', 'PATCH', '/quotes') like 'PT403: This assistant can''t change money%', 'quotes');
 select t1040.check(t1040.hook(:'owner', :'nomoney', 'POST', '/pay_periods') like 'PT403: This assistant can''t change money%', 'or pay');
 select t1040.check(t1040.hook(:'owner', :'quoting', 'POST', '/quote_line_items') = 'none', 'an assistant given quotes changes them');
 select t1040.check(t1040.hook(:'owner', :'quoting', 'PATCH', '/visits') like 'PT403: This assistant can''t change the schedule.%', 'and nothing it wasn''t given');
+-- Estimate templates and marketing are setup; a promo code is a discount, so it's money.
+select t1040.check(t1040.hook(:'owner', :'nomoney', 'PATCH', '/document_templates') = 'none', 'full access without money changes estimate templates');
+select t1040.check(t1040.hook(:'owner', :'nomoney', 'DELETE', '/contract_sections') = 'none', 'and contract terms');
+select t1040.check(t1040.hook(:'owner', :'nomoney', 'POST', '/campaigns') = 'none', 'and campaigns');
+select t1040.check(t1040.hook(:'owner', :'nomoney', 'POST', '/promo_codes') like 'PT403: This assistant can''t change money%', 'but not promo codes');
+select t1040.check(t1040.hook(:'owner', :'quoting', 'POST', '/contract_sections') like 'PT403: This assistant can''t change estimate templates and contract terms.%', 'nor an assistant not given templates');
+select t1040.check(t1040.hook(:'owner', :'quoting', 'POST', '/campaigns') like 'PT403: This assistant can''t change campaigns, reviews and social posts.%', 'or marketing');
+select t1040.check(t1040.hook(:'owner', :'quoting', 'POST', '/social_posts') like 'PT403: An AI assistant can''t change this.%', 'and social posts are only the server''s to write');
 rollback;
 
 -- Two functions write for their area; the rest still can't. (The hook runs directly here: a read-only

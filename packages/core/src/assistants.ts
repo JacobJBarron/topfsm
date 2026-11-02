@@ -2,7 +2,7 @@
  * What a connected AI assistant (Claude, ChatGPT and other MCP clients) may change. Each
  * connection starts out only reading; the person who connected it can let it change chosen areas,
  * give it full access, which also lets it delete, or full access without money (quotes, invoices,
- * payments and pay). It never gets more than the person's own role (row-level security and the
+ * payments, pay and promo codes). It never gets more than the person's own role (row-level security and the
  * database's own rules still apply), and some things stay out of reach whatever it's given: sign-in,
  * passwords and spare keys, connected apps and keys, and its own access.
  *
@@ -14,7 +14,7 @@ import type { Permission, Role } from "./roles";
 const SALES_ROLES = ["owner", "admin", "office", "estimator"] as const;
 const OFFICE_ROLES = ["owner", "admin", "office"] as const;
 
-export const ASSISTANT_AREA_GROUPS = ["Customers and work", "Schedule and time", "Money", "Setup", "Team"] as const;
+export const ASSISTANT_AREA_GROUPS = ["Customers and work", "Schedule and time", "Money", "Marketing", "Setup", "Team"] as const;
 export type AssistantAreaGroup = (typeof ASSISTANT_AREA_GROUPS)[number];
 
 export const ASSISTANT_AREAS = [
@@ -29,8 +29,13 @@ export const ASSISTANT_AREAS = [
   { key: "quotes", label: "Quotes", group: "Money", money: true, roles: SALES_ROLES, permission: "sales" },
   { key: "invoices", label: "Invoices and payments", group: "Money", money: true, roles: OFFICE_ROLES, permission: "invoices" },
   { key: "pay", label: "Pay and pay rates", group: "Money", money: true, roles: OFFICE_ROLES, permission: "job_costs" },
+  // Campaigns, review and referral asks, Google review replies and social posts. Never a card charge.
+  { key: "marketing", label: "Campaigns, reviews and social posts", group: "Marketing", money: false, roles: OFFICE_ROLES, permission: "marketing" },
+  // A discount is money, so "Full access, no money" leaves promo codes out.
+  { key: "promos", label: "Promo codes", group: "Marketing", money: true, roles: OFFICE_ROLES, permission: "marketing" },
   { key: "company", label: "Company details", group: "Setup", money: false, roles: ["owner", "admin"], permission: null },
   { key: "prices", label: "Price list", group: "Setup", money: false, roles: SALES_ROLES, permission: "settings" },
+  { key: "templates", label: "Estimate templates and contract terms", group: "Setup", money: false, roles: OFFICE_ROLES, permission: "settings" },
   { key: "crews", label: "Crews", group: "Setup", money: false, roles: OFFICE_ROLES, permission: "settings" },
   { key: "checklists", label: "Checklists", group: "Setup", money: false, roles: OFFICE_ROLES, permission: "settings" },
   { key: "booking", label: "Online booking forms", group: "Setup", money: false, roles: OFFICE_ROLES, permission: "settings" },
@@ -51,7 +56,7 @@ export const READ_ONLY_ACCESS: AssistantAccess = { level: "read", areas: [] };
 
 export const isAssistantArea = (value: unknown): value is AssistantArea => ASSISTANT_AREAS.some((a) => a.key === value);
 export const assistantAreaLabel = (area: AssistantArea) => ASSISTANT_AREAS.find((a) => a.key === area)?.label ?? area;
-/** Quotes, invoices and payments, and pay: what "Full access, no money" leaves out. */
+/** Quotes, invoices and payments, pay, and promo codes: what "Full access, no money" leaves out. */
 export const isMoneyArea = (area: AssistantArea) => ASSISTANT_AREAS.some((a) => a.key === area && a.money);
 export const MONEY_AREAS: AssistantArea[] = ASSISTANT_AREAS.filter((a) => a.money).map((a) => a.key);
 
@@ -64,7 +69,7 @@ export function toAssistantAccess(row: { level?: string | null; areas?: readonly
 
 /**
  * Full access changes and deletes anything; full access without money the same, except quotes,
- * invoices, payments and pay; chosen areas add and change there, but don't delete.
+ * invoices, payments, pay and promo codes; chosen areas add and change there, but don't delete.
  */
 export function mayChange(access: AssistantAccess, area: AssistantArea, deleting = false): boolean {
   if (access.level === "full") return true;
@@ -87,8 +92,11 @@ const AREA_NOUNS: Record<AssistantArea, string> = {
   quotes: "quotes",
   invoices: "invoices and payments",
   pay: "pay",
+  marketing: "campaigns, reviews and social posts",
+  promos: "promo codes",
   company: "company details",
   prices: "the price list",
+  templates: "estimate templates and contract terms",
   crews: "crews",
   checklists: "checklists",
   booking: "booking forms",
@@ -100,7 +108,7 @@ const AREA_NOUNS: Record<AssistantArea, string> = {
 /** Why an assistant can't make a change, and where to allow it. The database says the same (hooks.before_request). */
 export function assistantRefusal(area: AssistantArea, deleting = false, access: AssistantAccess = READ_ONLY_ACCESS): string {
   if (access.level === "full_no_money" && isMoneyArea(area)) {
-    return "This assistant can't change money: quotes, invoices, payments or pay. To let it, give it Full access in Crewtavo, under Settings → AI assistants.";
+    return "This assistant can't change money: quotes, invoices, payments, pay or promo codes. To let it, give it Full access in Crewtavo, under Settings → AI assistants.";
   }
   return deleting && access.level === "areas"
     ? "This assistant can't delete things. Only an assistant with full access can, in Crewtavo, under Settings → AI assistants."
@@ -218,4 +226,30 @@ export const ASSISTANT_TOOL_LABELS: Record<string, string> = {
   automation_options: "Looked at automation options",
   save_automation: "Saved an automation",
   delete_automation: "Deleted an automation",
+  list_document_templates: "Looked at estimate templates",
+  save_document_template: "Saved an estimate template",
+  delete_document_template: "Deleted an estimate template",
+  list_contract_sections: "Looked at contract terms",
+  save_contract_section: "Saved a contract section",
+  delete_contract_section: "Deleted a contract section",
+  // Marketing
+  marketing_summary: "Looked at marketing",
+  list_campaigns: "Looked at campaigns",
+  save_campaign: "Saved a campaign",
+  send_campaign: "Sent or scheduled a campaign",
+  cancel_campaign: "Stopped a campaign",
+  delete_campaign: "Deleted a campaign",
+  request_review: "Asked a client for a review",
+  request_referral: "Asked a client for referrals",
+  list_reviews: "Looked at reviews",
+  reply_to_review: "Replied to a review",
+  remove_review_reply: "Took down a review reply",
+  list_social_photos: "Looked at photos to share",
+  list_social_posts: "Looked at social posts",
+  create_social_post: "Made a social post",
+  cancel_social_post: "Cancelled a social post",
+  delete_social_post: "Deleted a social post",
+  list_promo_codes: "Looked at promo codes",
+  save_promo_code: "Saved a promo code",
+  delete_promo_code: "Deleted a promo code",
 };

@@ -49,7 +49,7 @@ import { renderTemplate } from "@crewtavo/core";
 import { companyAnthropicKey, complete } from "../services/ai";
 import { companyAddress } from "../services/automations";
 import { logoImage } from "../services/logo";
-import { writeCampaignCounts } from "../services/campaigns";
+import { loadCampaign, requireCampaignEmail, requireCampaignsOn, startCampaign, stopCampaign } from "../services/campaigns";
 import { ReferralAskRefused, sendReferralAsk } from "../services/referrals";
 import { rescheduleReminders, sendReviewRequest } from "../services/reviews";
 
@@ -65,27 +65,9 @@ marketing.post("/marketing/enabled", requireUser, requireCompany(ADMINS, "apps")
 
 type Ctx = Parameters<typeof appUrl>[0];
 
-const requireEmail = async (c: Ctx) => {
-  if (!(await emailReady(c.env, c.var.companyId))) throw new HttpError(501, "Email isn't connected yet, so campaigns can't be sent. An admin can connect it in Settings → Email.");
-};
+const requireEmail = (c: Ctx) => requireCampaignEmail(c.env, c.var.companyId);
 
-/** Uninstalled, Marketing sends clients nothing, so no campaign goes out (or starts, or is tested). */
-const requireMarketing = async (c: Ctx) => {
-  const company = must(await c.var.db.from("companies").select("settings").eq("id", c.var.companyId).maybeSingle());
-  if (!marketingOn(company.settings as Record<string, unknown> | null)) {
-    throw new HttpError(409, "Marketing is off, so campaigns can't be sent. An owner or admin can install it again in Apps.");
-  }
-};
-
-/** A one-off campaign: an automated one is changed on Marketing → Campaigns, through its rule. */
-async function loadCampaign(c: Ctx) {
-  const campaign = must(
-    await c.var.db.from("campaigns").select("id, kind, status, name, subject, body, audience, scheduled_at").eq("id", param(c, "id")).eq("company_id", c.var.companyId).maybeSingle(),
-    "Campaign not found.",
-  );
-  if (campaign.kind === "automated") throw new HttpError(409, "This campaign sends by itself. Change it in Marketing → Campaigns.");
-  return campaign;
-}
+const requireMarketing = (c: Ctx) => requireCampaignsOn(c.var.db, c.var.companyId);
 
 /**
  * Sends the signed-in person (or `to`) a test copy, with "[Test]" in the subject: no tracking, and
@@ -118,70 +100,22 @@ async function sendTest(c: Ctx, d: { to?: string; subject: string; body: string;
   return c.json({ sent: true, to });
 }
 
-/** Send now, or schedule: snapshots the audience so later edits to clients don't change who gets it. */
+/** Send now, or schedule (services/campaigns.ts startCampaign). */
 marketing.post("/campaigns/:id/send", requireUser, requireCompany(OFFICE, "marketing"), async (c) => {
-  await requireMarketing(c);
-  await requireEmail(c);
   const body = await readJson(c, z.object({ scheduled_at: z.iso.datetime({ offset: true }).optional() }));
-  const campaign = await loadCampaign(c);
-  if (campaign.status !== "draft") throw new HttpError(409, "This campaign has already been sent or scheduled.");
-  if (!campaign.subject.trim()) throw new HttpError(400, "Add a subject line first.");
-  if (campaign.body.trim().length < 10) throw new HttpError(400, "Write the email before sending it.");
-  if (body.scheduled_at && Date.parse(body.scheduled_at) < Date.now() - 60_000) throw new HttpError(400, "Pick a time in the future.");
-
-  const audience = must(await c.var.db.rpc("campaign_audience", { p_company_id: c.var.companyId, p_audience: campaign.audience }));
-  if (!audience.length) throw new HttpError(400, "No one matches this audience. Clients need an email address and must not have unsubscribed.");
-  if (audience.length > 5000) throw new HttpError(400, "Campaigns are limited to 5,000 recipients. Narrow the audience.");
-
-  const admin = adminClient(c.env);
-  const { error } = await admin.from("campaign_recipients").upsert(
-    audience.map((a) => ({ company_id: c.var.companyId, campaign_id: campaign.id, client_id: a.client_id, email: a.email, name: a.display_name })),
-    { onConflict: "campaign_id,email,send_key", ignoreDuplicates: true },
-  );
-  if (error) throw dbError(error);
-  const scheduled = Boolean(body.scheduled_at && Date.parse(body.scheduled_at) > Date.now() + 60_000);
-  const { data: started, error: updateError } = await admin
-    .from("campaigns")
-    .update({
-      status: scheduled ? "scheduled" : "sending",
-      scheduled_at: scheduled ? body.scheduled_at : new Date().toISOString(),
-      started_at: scheduled ? null : new Date().toISOString(),
-      recipients_count: audience.length,
-    })
-    .eq("id", campaign.id)
-    .eq("status", "draft")
-    .select("id");
-  if (updateError) throw dbError(updateError);
-  // Only the request that moved it out of draft starts sending (a double-clicked Send doesn't).
-  if (!started?.length) throw new HttpError(409, "This campaign has already been sent or scheduled.");
-  if (!scheduled) kickCampaign(c, campaign.id);
-  return c.json({ status: scheduled ? "scheduled" : "sending", recipients: audience.length });
+  const result = await startCampaign(c.env, c.var.db, c.var.companyId, param(c, "id"), body.scheduled_at);
+  if (result.status === "sending") kickCampaign(c, param(c, "id"));
+  return c.json(result);
 });
 
-marketing.post("/campaigns/:id/cancel", requireUser, requireCompany(OFFICE, "marketing"), async (c) => {
-  const campaign = await loadCampaign(c);
-  if (!["scheduled", "sending"].includes(campaign.status)) throw new HttpError(409, "Only scheduled or sending campaigns can be stopped.");
-  const admin = adminClient(c.env);
-  // A scheduled campaign goes back to draft so it can be edited; a sending one stops where it is.
-  if (campaign.status === "scheduled") {
-    await admin.from("campaign_recipients").delete().eq("campaign_id", campaign.id);
-    await admin.from("campaigns").update({ status: "draft", scheduled_at: null, recipients_count: 0 }).eq("id", campaign.id);
-    return c.json({ status: "draft" });
-  }
-  // Stopped first: a run partway through its batch checks this before each email.
-  await admin.from("campaigns").update({ status: "cancelled", finished_at: new Date().toISOString() }).eq("id", campaign.id);
-  await admin.from("campaign_recipients").update({ status: "skipped", error: "Campaign stopped" }).eq("campaign_id", campaign.id).in("status", ["pending", "sending"]);
-  // Its counts say what went before it stopped: "Stopped · 3 of 10 sent".
-  await writeCampaignCounts(admin, campaign.id);
-  return c.json({ status: "cancelled" });
-});
+marketing.post("/campaigns/:id/cancel", requireUser, requireCompany(OFFICE, "marketing"), async (c) => c.json(await stopCampaign(c.env, c.var.db, c.var.companyId, param(c, "id"))));
 
 /** Send yourself a test copy. */
 marketing.post("/campaigns/:id/test", requireUser, requireCompany(OFFICE, "marketing"), async (c) => {
   await requireMarketing(c);
   await requireEmail(c);
   const body = await readJson(c, z.object({ to: z.email().optional() }));
-  const campaign = await loadCampaign(c);
+  const campaign = await loadCampaign(c.var.db, c.var.companyId, param(c, "id"));
   return sendTest(c, { to: body.to, subject: campaign.subject, body: campaign.body, vars: {}, unsubscribe: true, button: HUB_HOME_BUTTON });
 });
 
