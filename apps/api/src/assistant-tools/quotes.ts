@@ -115,14 +115,14 @@ export const quoteTools = {
   }),
   get_quote: tool({
     description:
-      "A quote in full: client, property, its lines and add-ons, totals, tax, discount and deposit, and status. A quote can offer two or three options (Good, Better, Best), each with its own lines and total: option_id is the one shown (once approved, the one the client chose), its totals are the quote's, and a line with an option_id is only on that option (lines without one are on every option).",
+      "A quote in full: client, property, its lines and add-ons, totals, tax, discount and deposit, and status. A quote can offer two or three options (Good, Better, Best), each with its own lines and total: option_id is the one shown (once approved, the one the client chose), its totals are the quote's, and a line with an option_id is only on that option (lines without one are on every option). With a recurrence_rule it's recurring work, and its totals are per visit.",
     input: z.object({ quote_id: z.uuid(), ...companyArg }),
     run: async (ctx, a) => {
       const { promo, ...quote } = await one(
         ctx.db
           .from("quotes")
           .select(
-            "id, number, title, message, status, subtotal, discount_amount, tax_rate, tax_amount, total, deposit_amount, valid_until, sent_at, approved_at, lost_reason, option_id, client:clients(id, display_name, email), property:properties(id, line1, city), promo:promo_codes(kind, value), lines:quote_line_items(id, option_id, service_id, name, description, quantity, unit, unit_price, taxable, optional, selected, option_group, sort), options:quote_options!quote_options_quote_fkey(id, name, tier, highlights, warranty, sort)",
+            "id, number, title, message, status, subtotal, discount_amount, tax_rate, tax_amount, total, deposit_amount, valid_until, sent_at, approved_at, lost_reason, option_id, recurrence_rule, active_months, starts_on, ends_on, client:clients(id, display_name, email), property:properties(id, line1, city), promo:promo_codes(kind, value), lines:quote_line_items(id, option_id, service_id, name, description, quantity, unit, unit_price, taxable, optional, selected, option_group, sort), options:quote_options!quote_options_quote_fkey(id, name, tier, highlights, warranty, sort)",
           )
           .eq("id", a.quote_id)
           .eq("company_id", ctx.companyId)
@@ -221,7 +221,7 @@ export const quoteTools = {
   }),
   convert_quote_to_job: tool({
     description:
-      "Turn an approved (or sent) quote into a job with its chosen lines and any discount; the client becomes active. A sent quote is approved by the assistant as it becomes a job, keeping the contract it was sent with. A quote that offers options is marked approved with the option the client chose first (mark_quote). To make it a recurring service or schedule it, follow with update_job or create_visit.",
+      "Turn an approved (or sent) quote into a job with its chosen lines and any discount; the client becomes active. A sent quote is approved by the assistant as it becomes a job, keeping the contract it was sent with. A quote that offers options is marked approved with the option the client chose first (mark_quote). A quote that says how often (its recurrence_rule, set on its page) becomes a recurring job billed per visit, with its next visits made. Otherwise, to make it a recurring service or schedule it, follow with update_job or create_visit.",
     input: z.object({ quote_id: z.uuid(), ...companyArg }),
     area: "quotes",
     run: async (ctx, a) => {

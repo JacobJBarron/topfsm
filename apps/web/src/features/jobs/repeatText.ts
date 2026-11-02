@@ -48,3 +48,19 @@ export function repeatText(rule: string): string {
   if (parts.FREQ === "YEARLY" && !days.length && !parts.BYMONTHDAY) return every("year", "Yearly");
   return fallback();
 }
+
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/** A season as it reads: "April to October" for months in a row, else "June, July and December"; null for all year. */
+export function seasonText(months: readonly number[] | null | undefined): string | null {
+  const sorted = [...new Set(months ?? [])].sort((a, b) => a - b);
+  if (!sorted.length || sorted.length === 12) return null;
+  const inRow = sorted.every((m, i) => i === 0 || m === sorted[i - 1]! + 1);
+  if (inRow && sorted.length > 2) return `${MONTH_NAMES[sorted[0]! - 1]} to ${MONTH_NAMES[sorted.at(-1)! - 1]}`;
+  return joined(sorted.map((m) => MONTH_NAMES[m - 1]!));
+}
+
+/** How often recurring work is done, as a quote tells the client: "Every 2 weeks, Tuesday, April to October". */
+export function scheduleText(rule: string, months?: readonly number[] | null): string {
+  return [repeatText(rule), seasonText(months)].filter(Boolean).join(", ");
+}

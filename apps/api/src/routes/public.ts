@@ -284,7 +284,7 @@ publicRoutes.get("/hub/:token", async (c) => {
       await admin
         .from("quotes")
         .select(
-          "id, number, status, title, message, subtotal, discount_amount, tax_rate, tax_amount, total, deposit_amount, valid_until, sent_at, created_at, approved_at, approval, client_id, change_order_for, template_id, roof_package_id, option_id, section_ids, range_low, range_high, range_sent_at, range_lines, range_accepted_at, priced_on_site_at, exact_sent_at, promo_code_id, promo:promo_codes(code, kind, value, description, min_subtotal), client:clients(display_name, billing_address), property:properties(line1, city, region, postal_code)",
+          "id, number, status, title, message, subtotal, discount_amount, tax_rate, tax_amount, total, deposit_amount, valid_until, sent_at, created_at, approved_at, approval, client_id, change_order_for, template_id, roof_package_id, option_id, section_ids, recurrence_rule, active_months, range_low, range_high, range_sent_at, range_lines, range_accepted_at, priced_on_site_at, exact_sent_at, promo_code_id, promo:promo_codes(code, kind, value, description, min_subtotal), client:clients(display_name, billing_address), property:properties(line1, city, region, postal_code)",
         )
         .eq("company_id", l.c)
         .eq("id", l.id)
@@ -402,6 +402,7 @@ publicRoutes.get("/hub/:token", async (c) => {
         total: exact ? quote.total : null,
         deposit_amount: exact ? quote.deposit_amount : null,
         valid_until: quote.valid_until, sent_at: quote.sent_at, created_at: quote.created_at, approved_at: quote.approved_at, client_id: quote.client_id, change_order_for: quote.change_order_for,
+        recurrence_rule: quote.recurrence_rule, active_months: quote.active_months,
         promo: quote.promo, client: quote.client ? { display_name: quote.client.display_name } : null, property: quote.property,
         package: roofPackage?.data ? { name: roofPackage.data.name } : null,
         approval: signed ? publicApproval(quote.approval, quote.approved_at) : null,
@@ -886,7 +887,7 @@ async function clientHome(c: Parameters<typeof appUrl>[0], admin: ReturnType<typ
   const settings = must(await admin.from("companies").select("timezone, settings").eq("id", companyId).maybeSingle());
   const today = new Date().toLocaleDateString("en-CA", { timeZone: settings.timezone || "UTC" });
   const [quotes, invoices, jobs, payments, requests, services] = await Promise.all([
-    admin.from("quotes").select("id, number, title, status, total, tax_rate, discount_amount, valid_until, sent_at, approved_at, range_low, range_high, range_accepted_at, priced_on_site_at, exact_sent_at, promo:promo_codes(kind, value)").eq("company_id", companyId).eq("client_id", clientId).in("status", ["sent", "changes_requested", "approved", "converted"]).order("created_at", { ascending: false }).limit(20),
+    admin.from("quotes").select("id, number, title, status, total, tax_rate, discount_amount, valid_until, sent_at, approved_at, recurrence_rule, range_low, range_high, range_accepted_at, priced_on_site_at, exact_sent_at, promo:promo_codes(kind, value)").eq("company_id", companyId).eq("client_id", clientId).in("status", ["sent", "changes_requested", "approved", "converted"]).order("created_at", { ascending: false }).limit(20),
     admin.from("invoices").select("id, number, subject, status, total, balance_due, due_on, issued_on").eq("company_id", companyId).eq("client_id", clientId).in("status", ["sent", "partially_paid", "overdue", "paid"]).order("issued_on", { ascending: false }).limit(20),
     admin.from("jobs").select("id").eq("company_id", companyId).eq("client_id", clientId),
     admin.from("payments").select("amount, tip_amount, method, received_at, invoice:invoices(number)").eq("company_id", companyId).eq("client_id", clientId).gt("amount", 0).order("received_at", { ascending: false }).limit(5),
@@ -958,6 +959,7 @@ async function clientHome(c: Parameters<typeof appUrl>[0], admin: ReturnType<typ
         return {
           id: q.id, number: q.number, title: q.title, status: q.status, valid_until: q.valid_until, sent_at: q.sent_at, approved_at: q.approved_at,
           total: ranged || hidesExactPrice(q) || offer ? null : q.total,
+          per_visit: Boolean(q.recurrence_rule),
           range: ranged ? { low: Number(q.range_low), high: Number(q.range_high), accepted_at: q.range_accepted_at } : null,
           options: offer,
           link: await sign("quote", q.id),

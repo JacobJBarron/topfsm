@@ -16,6 +16,7 @@ import { SITE_ADJUSTMENT_NAME } from "@crewtavo/core/estimates";
 import { isPackagePicturePath, packagePictureSrc } from "@crewtavo/core/presets";
 import { isIsoDate } from "@crewtavo/core/time";
 import { dateIn, formatDate, todayIn } from "@/lib/format";
+import { scheduleText } from "../jobs/repeatText";
 import type { DocumentCompany, DocumentContract, DocumentData, DocumentLine, DocumentOption, DocumentSection, DocumentSignature } from "./types";
 
 // ---------------------------------------------------------------------------------------------
@@ -294,6 +295,9 @@ export interface DocumentQuote {
   total: Amount;
   deposit_amount?: Amount;
   valid_until?: string | null;
+  /** How often, for recurring work; null for one time. */
+  recurrence_rule?: string | null;
+  active_months?: number[] | null;
   sent_at?: string | null;
   created_at?: string | null;
   approved_at?: string | null;
@@ -441,6 +445,7 @@ export function quoteDocument(quote: DocumentQuote, lines: readonly DocumentQuot
     tax: Number(quote.tax_amount ?? 0),
     total: Number(quote.total ?? 0),
     deposit: deposit > 0 ? deposit : null,
+    repeats: quote.recurrence_rule ? scheduleText(quote.recurrence_rule, quote.active_months) : null,
     notes: quote.message?.trim() || null,
     signatures: extras.signatures ?? approvalSignatures(quote.approval, quote.approved_at),
     ...(contract ? { contract: { sections: contract.sections } } : {}),

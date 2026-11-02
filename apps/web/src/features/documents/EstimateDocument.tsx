@@ -749,8 +749,14 @@ function Totals({ data }: { data: DocumentData }) {
           <dd>{formatMoneyCents(data.tax)}</dd>
         </>
       )}
-      <dt className={styles.grand}>Total</dt>
+      <dt className={styles.grand}>{estimate && data.repeats ? "Total per visit" : "Total"}</dt>
       <dd className={styles.grand}>{formatMoneyCents(data.total)}</dd>
+      {estimate && data.repeats && (
+        <>
+          <dt>How often</dt>
+          <dd>{data.repeats}</dd>
+        </>
+      )}
       {estimate && Number(data.deposit) > 0 && (
         <>
           <dt>Deposit to get on the schedule</dt>

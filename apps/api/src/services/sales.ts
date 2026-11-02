@@ -15,6 +15,7 @@ import { asJson, dbError, HttpError, must } from "../lib/http";
 import { clientLink } from "../lib/links";
 import { sendEmail, sendSms } from "../lib/notify";
 import { adminClient, type Db } from "../lib/supabase";
+import { materializeJob, recurringJob } from "../tasks";
 import { companyAddress } from "./automations";
 import { loadOptions, manualApproval } from "./contracts";
 import { logoImage } from "./logo";
@@ -35,7 +36,7 @@ export const sendSchema = z.object({
 });
 export type SendBody = z.infer<typeof sendSchema>;
 
-type Deliverable = { id: string; number: number | null; client_id: string; total?: number; balance_due?: number; client: { display_name: string; email: string | null; phone: string | null } | null };
+type Deliverable = { id: string; number: number | null; client_id: string; total?: number; balance_due?: number; recurrence_rule?: string | null; client: { display_name: string; email: string | null; phone: string | null } | null };
 
 /**
  * What a send says when the person didn't write their own message or subject: a roof estimate's
@@ -143,7 +144,8 @@ export async function deliver(s: SalesScope, kind: "quote" | "invoice", record: 
   const company = must(await s.db.from("companies").select("name, email, phone, address, currency, settings").eq("id", s.companyId).maybeSingle());
   const link = await clientLink(s.env, s.baseUrl, { c: s.companyId, t: kind, id: record.id });
   const label = `${kind === "quote" ? "Quote" : "Invoice"} #${record.number}`;
-  const amount = new Intl.NumberFormat("en-US", { style: "currency", currency: company.currency || "USD" }).format(Number(kind === "quote" ? record.total ?? 0 : record.balance_due ?? 0));
+  const money = new Intl.NumberFormat("en-US", { style: "currency", currency: company.currency || "USD" }).format(Number(kind === "quote" ? record.total ?? 0 : record.balance_due ?? 0));
+  const amount = record.recurrence_rule ? `${money} per visit` : money;
   const greeting = `Hi ${firstName(record.client?.display_name)},`;
   const intro =
     body.message?.trim() ||
@@ -207,7 +209,7 @@ export async function sendQuote(s: SalesScope, id: string, body: SendBody) {
     await s.db
       .from("quotes")
       .select(
-        "id, number, status, total, tax_rate, discount_amount, client_id, range_low, range_high, priced_on_site_at, exact_sent_at, client:clients(display_name, email, phone), promo:promo_codes(kind, value), lines:quote_line_items(id, option_id, quantity, unit_price, taxable, optional, selected), options:quote_options!quote_options_quote_fkey(id)",
+        "id, number, status, total, tax_rate, discount_amount, client_id, range_low, range_high, priced_on_site_at, exact_sent_at, recurrence_rule, client:clients(display_name, email, phone), promo:promo_codes(kind, value), lines:quote_line_items(id, option_id, quantity, unit_price, taxable, optional, selected), options:quote_options!quote_options_quote_fkey(id)",
       )
       .eq("id", id)
       .eq("company_id", s.companyId)
@@ -241,10 +243,11 @@ const UNSIGNED = ["draft", "sent", "changes_requested"];
  * filled in, so its signed copy prints those words and not today's. Only the approval is written,
  * not the status, so a change order still joins its job in the database's one step; and only while
  * it's unsigned, so a signature that came in meanwhile keeps its own. One that offers options is
- * approved with the option chosen first (the database refuses it otherwise). Returns the job's id.
+ * approved with the option chosen first (the database refuses it otherwise). One that says how often
+ * becomes a recurring job, and its next visits are made now. Returns the job's id.
  */
-export async function convertQuote(s: Pick<SalesScope, "db" | "companyId">, quoteId: string, by: string): Promise<string> {
-  const quote = must(await s.db.from("quotes").select("id, status, approval").eq("id", quoteId).eq("company_id", s.companyId).maybeSingle(), "Quote not found.");
+export async function convertQuote(s: Pick<SalesScope, "db" | "companyId" | "env">, quoteId: string, by: string): Promise<string> {
+  const quote = must(await s.db.from("quotes").select("id, status, approval, recurrence_rule, change_order_for").eq("id", quoteId).eq("company_id", s.companyId).maybeSingle(), "Quote not found.");
   const before = quote.approval;
   const kept = UNSIGNED.includes(quote.status) && !(await loadOptions(s.db, s.companyId, quoteId)).length;
   if (kept) {
@@ -257,6 +260,17 @@ export async function convertQuote(s: Pick<SalesScope, "db" | "companyId">, quot
     // Not a job after all: it's still unsigned, so it goes back to the approval it had.
     if (kept) await s.db.from("quotes").update({ approval: before }).eq("id", quoteId).eq("company_id", s.companyId).in("status", UNSIGNED);
     throw dbError(error);
+  }
+  if (quote.recurrence_rule && !quote.change_order_for) {
+    // The same visits the daily recurrence task would make (tasks.ts), so a role that sells but doesn't
+    // dispatch still gets them now. The job is made either way: that task catches up if this fails.
+    const admin = adminClient(s.env);
+    try {
+      const job = await recurringJob(admin, data);
+      if (job) await materializeJob(admin, job);
+    } catch (error) {
+      console.error("Couldn't make the converted job's visits", error);
+    }
   }
   return data;
 }

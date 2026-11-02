@@ -16,11 +16,12 @@ import type { TemplateSettings } from "@crewtavo/core/documents";
 import { inRangeMode, sitePriceSet } from "@crewtavo/core/estimates";
 import { optionBaseTotal, optionTotals, taxPercent, taxRateFromPercent, type Amount, type OptionLine, type TotalsPromo } from "@crewtavo/core/money";
 import { isPackagePicturePath } from "@crewtavo/core/presets";
+import { parseRule } from "@crewtavo/core/recurrence";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AnimatedNumber, MONEY_CENTS } from "@/components/ui/AnimatedNumber";
-import { Button } from "@/components/ui/Button";
+import { Button, cx } from "@/components/ui/Button";
 import { confirm } from "@/components/ui/Confirm";
 import { Dialog } from "@/components/ui/Dialog";
 import { Field, FormError } from "@/components/ui/Field";
@@ -71,6 +72,8 @@ import {
 import { DocumentSheet } from "../documents/EstimateDocument";
 import type { DocumentData } from "../documents/types";
 import { SignaturePad } from "../field/SignaturePad";
+import { RecurrenceEditor, type Recurrence } from "../jobs/RecurrenceEditor";
+import { scheduleText } from "../jobs/repeatText";
 import { DrawingsCard } from "../measure/drawings";
 import { PlansCard } from "../plans/PlansCard";
 import { dayText } from "../roofing/flow/model";
@@ -98,7 +101,7 @@ async function loadQuote(id: string) {
   return unwrapOne(
     await supabase()
       .from("quotes")
-      .select("id, number, title, status, message, subtotal, discount_amount, tax_rate, tax_amount, total, deposit_amount, valid_until, sent_at, approved_at, approval, lost_reason, request_id, created_at, template_id, option_id, section_ids, roof_package_id, promo_code_id, promo:promo_codes(code, kind, value, description), request:requests(promo_code), client:clients(id, display_name, email, phone, billing_address), property:properties(id, line1, city, region, postal_code, lat, lng), lines:quote_line_items(id, name, description, quantity, unit, unit_price, unit_cost, taxable, optional, selected, option_group, option_id, formula, sort, service_id), jobs!jobs_company_id_quote_id_fkey(id, number), change_order_for, change_job:jobs!quotes_change_order_fkey(id, number, title), package:roof_packages!quotes_roof_package_fkey(name, warranty), range_low, range_high, range_accepted_at, priced_on_site_at, exact_sent_at")
+      .select("id, number, title, status, message, subtotal, discount_amount, tax_rate, tax_amount, total, deposit_amount, valid_until, recurrence_rule, active_months, starts_on, ends_on, sent_at, approved_at, approval, lost_reason, request_id, created_at, template_id, option_id, section_ids, roof_package_id, promo_code_id, promo:promo_codes(code, kind, value, description), request:requests(promo_code), client:clients(id, display_name, email, phone, billing_address), property:properties(id, line1, city, region, postal_code, lat, lng), lines:quote_line_items(id, name, description, quantity, unit, unit_price, unit_cost, taxable, optional, selected, option_group, option_id, formula, sort, service_id), jobs!jobs_company_id_quote_id_fkey(id, number), change_order_for, change_job:jobs!quotes_change_order_fkey(id, number, title), package:roof_packages!quotes_roof_package_fkey(name, warranty), range_low, range_high, range_accepted_at, priced_on_site_at, exact_sent_at")
       .eq("id", id)
       .order("sort", { referencedTable: "quote_line_items" })
       .maybeSingle(),
@@ -691,7 +694,13 @@ export function QuotePage() {
               {editable ? <MoneyInput percent label="Tax rate" value={taxPercent(q.tax_rate)} max={99.99} onSave={(v) => saveField({ tax_rate: taxRateFromPercent(v) })} onEdit={save.edited} onUnchanged={unchanged} /> : <AnimatedNumber value={tab.tax} format={MONEY_CENTS} />}
             </div>
             {editable && <div className="line"><span>Tax amount</span><AnimatedNumber value={tab.tax} format={MONEY_CENTS} /></div>}
-            <div className="line grand"><span>Total</span><AnimatedNumber value={tab.total} format={MONEY_CENTS} /></div>
+            <div className="line grand"><span>{q.recurrence_rule ? "Total per visit" : "Total"}</span><AnimatedNumber value={tab.total} format={MONEY_CENTS} /></div>
+            {!q.change_order_for && (
+              <div className={cx("line", styles.howOftenRow)}>
+                <span>How often</span>
+                <HowOften quote={q} editable={editable} onSaved={refresh} />
+              </div>
+            )}
             <div className="line">
               <span>Deposit required</span>
               {editable ? <MoneyInput label="Deposit" value={Number(q.deposit_amount)} max={cap.amount} onSave={(v) => saveField({ deposit_amount: v })} onEdit={save.edited} onUnchanged={unchanged} /> : <span>{formatMoneyCents(q.deposit_amount)}</span>}
@@ -1189,6 +1198,72 @@ function ValidUntil({ value, editable, onEdit, onUnchanged, onSave }: { value: s
       <span className="muted">No end date</span>
       <Button size="sm" variant="ghost" icon="calendar" onClick={() => setPicking(true)}>Set date</Button>
     </span>
+  );
+}
+
+type QuoteSchedule = Pick<QuoteRow, "id" | "recurrence_rule" | "active_months" | "starts_on" | "ends_on">;
+
+/**
+ * "How often" in the totals, for recurring work like mowing: one time, or how it repeats. The
+ * client's quote says it beside a total per visit, and converting it makes a recurring job.
+ */
+function HowOften({ quote, editable, onSaved }: { quote: QuoteSchedule; editable: boolean; onSaved: () => void }) {
+  const [open, setOpen] = useState(false);
+  const text = quote.recurrence_rule ? scheduleText(quote.recurrence_rule, quote.active_months) : null;
+  if (!editable) return text ? <span className={styles.howOften}>{text}</span> : <span className="muted">One time</span>;
+  return (
+    <span className={styles.validUntil}>
+      {text ? (
+        <Button size="sm" variant="ghost" className={cx(styles.validUntilDate, styles.howOften)} aria-label={`${text}. Change how often`} onClick={() => setOpen(true)}>{text}</Button>
+      ) : (
+        <>
+          <span className="muted">One time</span>
+          <Button size="sm" variant="ghost" icon="refresh" onClick={() => setOpen(true)}>Repeat</Button>
+        </>
+      )}
+      {open && <HowOftenDialog quote={quote} onClose={() => setOpen(false)} onSaved={onSaved} />}
+    </span>
+  );
+}
+
+function HowOftenDialog({ quote, onClose, onSaved }: { quote: QuoteSchedule; onClose: () => void; onSaved: () => void }) {
+  const session = useSession();
+  const [repeats, setRepeats] = useState(true);
+  const [recurrence, setRecurrence] = useState<Recurrence>({
+    rule: quote.recurrence_rule ?? "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO",
+    months: quote.active_months,
+    starts_on: quote.starts_on ?? todayIn(session.company.timezone),
+    ends_on: quote.ends_on,
+  });
+  const save = useMutation({
+    meta: { inline: true },
+    mutationFn: async () => {
+      if (repeats) parseRule(recurrence.rule); // says what's wrong before anything is saved
+      const patch = repeats
+        ? { recurrence_rule: recurrence.rule, active_months: recurrence.months, starts_on: recurrence.starts_on, ends_on: recurrence.ends_on }
+        : { recurrence_rule: null, active_months: null, starts_on: null, ends_on: null };
+      unwrap(await supabase().from("quotes").update(patch).eq("id", quote.id));
+    },
+    onSuccess: () => {
+      onSaved();
+      onClose();
+    },
+  });
+  return (
+    <Dialog open onClose={onClose} title="How often" description="For work that repeats, like mowing. Their quote says how often and prices it per visit. As a job, its visits are scheduled." size="lg">
+      <form onSubmit={(e: FormEvent) => { e.preventDefault(); save.mutate(); }}>
+        <div className="segmented" role="group" aria-label="How often">
+          <button type="button" aria-pressed={!repeats} onClick={() => setRepeats(false)}>One time</button>
+          <button type="button" aria-pressed={repeats} onClick={() => setRepeats(true)}>Repeats</button>
+        </div>
+        {repeats && <RecurrenceEditor value={recurrence} onChange={setRecurrence} />}
+        <FormError error={save.error} />
+        <div className="form-actions">
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="primary" loading={save.isPending}>Save</Button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 

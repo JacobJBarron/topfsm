@@ -89,6 +89,7 @@ import {
 } from "./document";
 import styles from "./range.module.css";
 import { SignaturePad } from "../field/SignaturePad";
+import { scheduleText } from "../jobs/repeatText";
 
 type View = QuoteView | InvoiceView | ClientView;
 
@@ -1013,7 +1014,7 @@ function OpenQuote({ token, data, onChanged, printing }: { token: string; data: 
                 <span className="hub-meta">Your choice</span>
                 <strong>{choiceLabel(choice)}</strong>
               </span>
-              <strong className="hub-amount">{formatMoneyCents(totals.total)}</strong>
+              <strong className="hub-amount">{formatMoneyCents(totals.total)}{q.recurrence_rule ? " per visit" : ""}</strong>
               {open && <Button size="sm" variant="ghost" onClick={() => goTo("choose")}>Change<span className="sr-only"> the option</span></Button>}
             </div>
           )}
@@ -1051,7 +1052,7 @@ function OpenQuote({ token, data, onChanged, printing }: { token: string; data: 
                   <label className="checkbox">
                     <input type="checkbox" checked={agree} onChange={(e) => setAgreed(e.target.checked ? agreeKey : null)} />
                     <span>
-                      I approve this {q.change_order_for ? "change order" : "quote"} for {formatMoneyCents(totals.total)}
+                      I approve this {q.change_order_for ? "change order" : "quote"} for {formatMoneyCents(totals.total)}{q.recurrence_rule ? ` per visit, ${scheduleText(q.recurrence_rule, q.active_months).replace(/^./, (c) => c.toLowerCase())}` : ""}
                       {choice ? ` (${choiceLabel(choice)})` : ""}
                       {steps.includes("review") ? ", agree to the terms I reviewed," : ""} and authorize {data.company.name} to do {q.change_order_for ? "this added work" : "the work"}.
                     </span>
@@ -1170,7 +1171,8 @@ function LinesCard({ token, data, lines, optionId, chosen, onChoose, editable, t
           </div>
         )}
         {totals.tax > 0 && <div className="line"><span>Tax</span><span>{formatMoneyCents(totals.tax)}</span></div>}
-        <div className="line grand" style={{ fontSize: 24 }}><span>Total</span><span>{formatMoneyCents(totals.total)}</span></div>
+        <div className="line grand" style={{ fontSize: 24 }}><span>{q.recurrence_rule ? "Total per visit" : "Total"}</span><span>{formatMoneyCents(totals.total)}</span></div>
+        {q.recurrence_rule && <div className="line"><span>How often</span><span style={{ textAlign: "right" }}>{scheduleText(q.recurrence_rule, q.active_months)}</span></div>}
         {deposit > 0 && <div className="line"><span>Deposit to book</span><span>{formatMoneyCents(deposit)}</span></div>}
         {q.valid_until && <div className="line"><span>Valid until</span><span className={expired ? "text-danger" : undefined}>{formatDate(q.valid_until)}</span></div>}
       </div>

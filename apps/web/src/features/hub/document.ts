@@ -152,6 +152,9 @@ export interface QuoteView {
     total?: number | null;
     deposit_amount: number | null;
     valid_until: string | null;
+    /** How often, for recurring work (its totals are per visit); null, or left out by older servers, for one time. */
+    recurrence_rule?: string | null;
+    active_months?: number[] | null;
     sent_at?: string | null;
     created_at?: string | null;
     approved_at: string | null;

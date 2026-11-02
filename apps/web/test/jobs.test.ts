@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { repeatText } from "../src/features/jobs/repeatText";
+import { repeatText, scheduleText, seasonText } from "../src/features/jobs/repeatText";
 
 // The job page says a recurring job's repeat in sentence case, the way the rest of the app writes.
 describe("a job's repeat", () => {
@@ -23,5 +23,23 @@ describe("a job's repeat", () => {
   it("falls back to RRule's wording, capitalized, for anything else", () => {
     expect(repeatText("FREQ=YEARLY;BYMONTH=4;BYMONTHDAY=15")).toBe("Every April on the 15th");
     expect(repeatText("FREQ=DAILY;INTERVAL=1")).toBe("Daily");
+  });
+});
+
+// A quote for recurring work tells the client how often, season and all.
+describe("how often, on a quote", () => {
+  it("reads a season as a run of months, or names them", () => {
+    expect(seasonText([4, 5, 6, 7, 8, 9, 10])).toBe("April to October");
+    expect(seasonText([10, 4, 5, 6, 7, 8, 9])).toBe("April to October");
+    expect(seasonText([6, 7])).toBe("June and July");
+    expect(seasonText([6, 7, 12])).toBe("June, July and December");
+    expect(seasonText(null)).toBeNull();
+    expect(seasonText([])).toBeNull();
+    expect(seasonText([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])).toBeNull();
+  });
+
+  it("says the repeat, then the season", () => {
+    expect(scheduleText("FREQ=WEEKLY;INTERVAL=2;BYDAY=TU", [4, 5, 6, 7, 8, 9, 10])).toBe("Every 2 weeks, Tuesday, April to October");
+    expect(scheduleText("FREQ=WEEKLY;INTERVAL=1;BYDAY=MO", null)).toBe("Weekly, Monday");
   });
 });
