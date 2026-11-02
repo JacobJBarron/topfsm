@@ -149,3 +149,64 @@ describe("routes", () => {
     expect(writes("visits", "update")).toEqual([]);
   });
 });
+
+const { updateVisit, visitChangeInput, tapTime } = await import("../src/services/schedule");
+
+describe("a Complete tapped in the field", () => {
+  const VISIT = "00000000-0000-4000-8000-0000000000e1";
+  const CREW = "00000000-0000-4000-8000-0000000000e2";
+  const HOUR = 3_600_000;
+  const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+
+  /** The crew's Supabase client: one visit as it is now, and the changes asked of it. */
+  const visitDb = (visit: { status: string; completed_at: string | null }) => {
+    const updates: Array<Record<string, unknown>> = [];
+    const from = () => {
+      let change: Record<string, unknown> | null = null;
+      const builder: Record<string, unknown> = {};
+      for (const name of ["select", "eq", "in", "is", "order"]) builder[name] = () => builder;
+      builder.update = (payload: Record<string, unknown>) => ((change = payload), updates.push(payload), builder);
+      builder.maybeSingle = () => Promise.resolve({ data: { id: VISIT, ...visit }, error: null });
+      builder.then = (resolve: (r: unknown) => unknown) =>
+        resolve({ data: change ? [{ id: VISIT, scheduled_on: null, starts_at: null, crew_id: null, status: change.status }] : null, error: null });
+      return builder;
+    };
+    const scope = { db: { from } as never, companyId: "00000000-0000-4000-8000-000000000001", role: "field_crew" as const, permissions: [], userId: CREW };
+    return { scope, updates };
+  };
+  const tap = (visit: { status: string; completed_at: string | null }, body: unknown) => {
+    const { scope, updates } = visitDb(visit);
+    return updateVisit(scope, VISIT, visitChangeInput.parse(body)).then(() => updates);
+  };
+
+  it("keeps the time it was tapped, with who tapped it, so autopay goes by when the work was done", async () => {
+    const at = ago(5 * HOUR);
+    const updates = await tap({ status: "in_progress", completed_at: null }, { status: "completed", forward_only: true, completed_at: at });
+    expect(updates).toEqual([{ status: "completed", completed_at: at, completed_by: CREW }]);
+  });
+
+  it("leaves it to the database (now) for a time from the future, more than 3 days back, or one it can't read", async () => {
+    for (const completed_at of [new Date(Date.now() + 10 * 60_000).toISOString(), ago(73 * HOUR), "yesterday", "2026-13-40T99:00:00Z"]) {
+      const updates = await tap({ status: "in_progress", completed_at: null }, { status: "completed", forward_only: true, completed_at });
+      expect(updates, completed_at).toEqual([{ status: "completed" }]);
+    }
+  });
+
+  it("only goes with Complete, and never moves the date of a visit already finished", async () => {
+    // With another status it's ignored, not refused.
+    expect(await tap({ status: "en_route", completed_at: null }, { status: "in_progress", forward_only: true, completed_at: ago(HOUR) })).toEqual([{ status: "in_progress" }]);
+    // Finished before (and reopened, or tapped again): its date stays, so a Complete sent again can't make it look later.
+    expect(await tap({ status: "completed", completed_at: ago(30 * HOUR) }, { status: "completed", forward_only: true, completed_at: ago(HOUR) })).toEqual([{ status: "completed" }]);
+    expect(await tap({ status: "scheduled", completed_at: ago(30 * HOUR) }, { status: "completed", completed_at: ago(HOUR) })).toEqual([{ status: "completed" }]);
+  });
+
+  it("is believed only within its bounds", () => {
+    const now = Date.parse("2026-11-01T18:00:00Z");
+    expect(tapTime("completed", "2026-11-01T10:00:00-04:00", now)).toBe("2026-11-01T14:00:00.000Z");
+    expect(tapTime("completed", "2026-10-29T18:00:00Z", now)).toBe("2026-10-29T18:00:00.000Z");
+    expect(tapTime("completed", "2026-10-29T17:59:59Z", now)).toBeNull();
+    expect(tapTime("completed", "2026-11-01T18:00:01Z", now)).toBeNull();
+    expect(tapTime("in_progress", "2026-11-01T10:00:00Z", now)).toBeNull();
+    expect(tapTime("completed", undefined, now)).toBeNull();
+  });
+});

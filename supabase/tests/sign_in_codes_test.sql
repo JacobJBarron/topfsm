@@ -129,8 +129,11 @@ set local role authenticated;
 select t1100.as_user(:'oz');
 select public.create_company('Quill Roofing', 'roofing') as co \gset
 insert into public.company_roles (company_id, name, base_role, permissions) values (:'co', 'Dispatcher', 'office', '{schedule}') returning id as dispatch_role \gset
+-- Admin access is given through the server (the admin_grants migration).
+reset role;
 insert into public.memberships (company_id, user_id, role, role_id) values (:'co', :'opal', 'office', null), (:'co', :'dee', 'office', :'dispatch_role'), (:'co', :'cy', 'field_crew', null),
   (:'co', :'ed', 'estimator', null), (:'co', :'lee', 'crew_lead', null), (:'co', :'ada', 'admin', null);
+set local role authenticated;
 commit;
 begin;
 set local role authenticated;

@@ -12,6 +12,11 @@ import { hmacSha256Hex, safeEqual } from "../lib/crypto";
 
 export const STRIPE_VERSION = "2024-06-20";
 
+/**
+ * What Stripe said went wrong. A declined card also says why (`declineCode`), and an error from
+ * paying an invoice names its PaymentIntent and how far it got (`paymentIntentStatus`), which is
+ * how a charge that needs the client to confirm it is told from one that was declined.
+ */
 export class StripeError extends Error {
   override name = "StripeError";
   constructor(
@@ -19,6 +24,10 @@ export class StripeError extends Error {
     readonly status: number,
     readonly code?: string,
     readonly param?: string,
+    readonly declineCode?: string,
+    readonly type?: string,
+    readonly paymentIntent?: string,
+    readonly paymentIntentStatus?: string,
   ) {
     super(message);
   }
@@ -77,10 +86,15 @@ export async function stripeApi<T>(
       await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
       continue;
     }
-    const json = readJson(text) as { error?: { message?: string; code?: string; param?: string } };
+    const json = readJson(text) as {
+      error?: { message?: string; code?: string; param?: string; decline_code?: string; type?: string; payment_intent?: { id?: string; status?: string } | null };
+    };
     if (response.ok) return json as T;
     const retry = (response.status === 429 || response.status >= 500) && attempt < 2 && repeatable;
-    if (!retry) throw new StripeError(json.error?.message ?? `Stripe returned ${response.status}`, response.status, json.error?.code, json.error?.param);
+    if (!retry) {
+      const e = json.error;
+      throw new StripeError(e?.message ?? `Stripe returned ${response.status}`, response.status, e?.code, e?.param, e?.decline_code, e?.type, e?.payment_intent?.id, e?.payment_intent?.status);
+    }
     await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
   }
 }
@@ -187,11 +201,73 @@ export interface StripeInvoice {
   due_date: number | null;
   created: number;
   paid_out_of_band: boolean;
+  /**
+   * Always the id: recordPayment keeps it as the payment's processor_ref, which refunds and
+   * disputes match on. Never expand it.
+   */
   payment_intent: string | null;
   charge: string | StripeCharge | null;
   metadata: Record<string, string> | null;
   status_transitions: { finalized_at: number | null; paid_at: number | null; marked_uncollectible_at?: number | null };
   lines: { data: StripeInvoiceLine[]; has_more: boolean };
+  /** send_invoice: the client pays it on Stripe's page. charge_automatically: autopay charges the saved method. */
+  collection_method: "send_invoice" | "charge_automatically";
+  default_payment_method: string | null;
+}
+
+/** How far a payment got (an invoice's, read when paying it leaves it open). */
+export interface StripePaymentIntent {
+  id: string;
+  status: "requires_payment_method" | "requires_confirmation" | "requires_action" | "processing" | "requires_capture" | "canceled" | "succeeded";
+  last_payment_error: { code?: string | null; decline_code?: string | null; message?: string | null } | null;
+}
+
+/** A card or bank account saved with a Stripe customer. */
+export interface StripePaymentMethod {
+  id: string;
+  type: string;
+  customer: string | null;
+  livemode: boolean;
+  card?: {
+    brand: string | null;
+    last4: string | null;
+    exp_month: number | null;
+    exp_year: number | null;
+    wallet?: { type: string } | null;
+    checks?: { cvc_check: string | null; address_postal_code_check: string | null } | null;
+  } | null;
+  us_bank_account?: { bank_name: string | null; last4: string | null } | null;
+  link?: Record<string, unknown> | null;
+}
+
+/** Saving a payment method for later: what Checkout's setup mode makes. */
+export interface StripeSetupIntent {
+  id: string;
+  status: "requires_payment_method" | "requires_confirmation" | "requires_action" | "processing" | "canceled" | "succeeded";
+  customer: string | null;
+  payment_method: string | StripePaymentMethod | null;
+  metadata: Record<string, string> | null;
+  /** Why it failed; a bank account that failed verification is named here, no longer on payment_method. */
+  last_setup_error: { code?: string | null; message?: string | null; payment_method?: { id: string } | null } | null;
+}
+
+/** Stripe's hosted page (setup mode, for autopay). */
+export interface StripeCheckoutSession {
+  id: string;
+  url: string | null;
+  mode: "payment" | "setup" | "subscription";
+  status: "open" | "complete" | "expired" | null;
+  customer: string | null;
+  setup_intent: string | StripeSetupIntent | null;
+  metadata: Record<string, string> | null;
+}
+
+export interface StripeRefund {
+  id: string;
+  amount: number;
+  charge: string | null;
+  payment_intent: string | null;
+  status: string;
 }
 
 export interface StripePayout {

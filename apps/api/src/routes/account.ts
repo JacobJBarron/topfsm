@@ -1,10 +1,11 @@
 /** Public config, the signed-in user, onboarding (company + trade preset), the license and team invites. */
-import { ADMINS, emailKey, getPreset, isPlaceholderEmail, isSubLogin, isTimeZoneName, memberPermissions, OFFICE, presetSummaries, ROLE_LABELS, ROLES, signInPhone, subSettings, TERMS_VERSION, WITH_SUBS, type Role, type TradePreset } from "@crewtavo/core";
+import { ADMINS, adminLevel, emailKey, getPreset, isPlaceholderEmail, isSubLogin, isTimeZoneName, memberPermissions, OFFICE, PERMISSIONS, presetSummaries, ROLE_LABELS, ROLES, signInPhone, STAFF, subSettings, TERMS_VERSION, WITH_SUBS, type Permission, type Role, type TradePreset } from "@crewtavo/core";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { AppEnv, Env } from "../env";
 import { platformOf } from "../lib/address";
-import { emailAuthLink, requireCompany, requireUser } from "../lib/auth";
+import { confirmAdminGrant, confirmPassword, EMAILED_SIGN_INS, emailAuthLink, passwordIn, requireCompany, requireUser, signedInWithin } from "../lib/auth";
+import { runInBackground } from "../lib/background";
 import { appUrl, asJson, dbError, HttpError, must, readJson, uuid } from "../lib/http";
 import { renderEmail } from "../lib/email";
 import { allow } from "../lib/limit";
@@ -15,9 +16,10 @@ import { saveLetterheadPicture } from "../services/letterhead";
 import { emailCodesOffered } from "../services/signInCodes";
 import { removeLogo, setLogo } from "../services/logo";
 import { removePhoto, setPhoto } from "../services/photos";
-import { invitePerson, inviteStatus, sendInvite, welcomeLink, type TeamScope } from "../services/team";
+import { adminAccess, allowAdminGrant, invitePerson, inviteStatus, sendInvite, welcomeLink, type TeamScope } from "../services/team";
 import { clientIp } from "../lib/visitor";
 import { railwayNeeded, setRailwaySetup } from "../services/railway";
+import { emailOwners, tellOwners } from "./apps";
 
 export const account = new Hono<AppEnv>();
 
@@ -191,6 +193,42 @@ account.patch("/me", requireUser, async (c) => {
   const body = await readJson(c, z.object({ full_name: z.string().trim().min(1).max(120).optional(), phone: z.string().max(40).nullable().optional() }));
   const { error } = await c.var.db.from("profiles").update(body).eq("user_id", c.var.userId);
   if (error) throw dbError(error);
+  return c.json({ ok: true });
+});
+
+/** How soon after signing in someone without a password yet can choose their first one. */
+const FIRST_PASSWORD_SECONDS = 10 * 60;
+
+/**
+ * A new password for the signed-in person (Settings → Profile). Asks for the current one, so a
+ * leftover or stolen session can't set its own and then pass every password check (confirmPassword).
+ * Someone without one yet (they sign in with Google, or skipped it after an invitation) chooses a
+ * first one within 10 minutes of signing in with Google, an emailed link or a code. Every other
+ * sign-in ends, as after a reset.
+ */
+account.post("/account/password", requireUser, async (c) => {
+  const body = await readJson(c, z.object({ current: z.string().max(200).optional(), password: z.string().min(8).max(72) }));
+  if (body.current) await confirmPassword(c, body.current, "account-password");
+  else {
+    // The token requireUser checked: how and when this session signed in.
+    let claims: Record<string, unknown> | null = null;
+    try {
+      claims = JSON.parse(Buffer.from(c.var.token.split(".")[1] ?? "", "base64url").toString("utf8"));
+    } catch {
+      // Not a token Auth made: no recent sign-in to go by.
+    }
+    if (!signedInWithin(claims, ["oauth", ...EMAILED_SIGN_INS], FIRST_PASSWORD_SECONDS)) {
+      throw new HttpError(400, "Enter your current password. If you don't have one yet, sign out and in again, then set it within 10 minutes.");
+    }
+  }
+  const admin = adminClient(c.env);
+  const { error } = await admin.auth.admin.updateUserById(c.var.userId, { password: body.password });
+  if (error?.status && error.status < 500) throw new HttpError(400, "Choose a stronger password: at least 8 characters, mixing letters and numbers.");
+  if (error) {
+    console.error("Couldn't change a password", error.message);
+    throw new HttpError(500, "Couldn't change your password. Try again in a moment.");
+  }
+  await admin.auth.admin.signOut(c.var.token, "others");
   return c.json({ ok: true });
 });
 
@@ -379,18 +417,132 @@ account.post("/time/rates", requireUser, requireCompany(OFFICE, "job_costs"), as
   return c.json(await timeRates(adminClient(c.env), c.var.companyId, body));
 });
 
+/** The person's own password, asked for before admin-level access is given (confirmAdminGrant). */
+const currentPassword = z.string().max(200).optional();
+
+const ADMIN_IF_NOT_YOU = "If this wasn't you, sign in, check Settings → People, and change your password.";
+
+/**
+ * Admin-level access given (an invite, someone's new role, or a role's new areas): on record, on
+ * every owner's bell (tellOwners) and by email, after the response, so it never holds up the change.
+ */
+function noteAdminGrant(c: Context<AppEnv>, who: { email: string; full_name: string | null }, what: string) {
+  const summary = `${who.full_name || who.email} ${what}`;
+  const title = "Someone was given admin access";
+  const link = "/settings?tab=team";
+  runInBackground(c, tellOwners(c, { verb: "team.admin_access", summary, title, body: `${summary}. ${ADMIN_IF_NOT_YOU}`, link }).then((ownerIds) => emailOwners(c, ownerIds, { title, who, details: `What: ${what}`, ifNotYou: ADMIN_IF_NOT_YOU, link })));
+}
+
+/** A level or custom role, as people read it. */
+async function accessName(c: Context<AppEnv>, role: Role, roleId?: string | null): Promise<string> {
+  if (!roleId) return ROLE_LABELS[role];
+  return (await c.var.db.from("company_roles").select("name").eq("id", roleId).maybeSingle()).data?.name ?? ROLE_LABELS[role];
+}
+
+/** Someone on the team, by name. */
+async function personName(c: Context<AppEnv>, userId: string): Promise<string> {
+  const { data } = await c.var.db.from("profiles").select("full_name, email").eq("user_id", userId).maybeSingle();
+  return data?.full_name || data?.email || "someone";
+}
+
 account.post("/team/invite", requireUser, requireCompany(ADMINS, "team"), async (c) => {
-  const body = await readJson(
+  const { current_password, ...body } = await readJson(
     c,
     z.object({
       email: z.email(),
       full_name: z.string().trim().max(120).optional(),
       role: z.enum(ROLES).default("field_crew"),
       role_id: uuid.nullable().optional(),
+      current_password: currentPassword,
     }),
   );
+  // Admin-level access asks for the password before any account is made (services/team.ts).
+  const grant: { who?: { email: string; full_name: string | null } } = {};
+  const invited = await invitePerson(teamScope(c), body, async () => (grant.who = await confirmAdminGrant(c, current_password)));
+  if (grant.who) noteAdminGrant(c, grant.who, `invited ${body.email.toLowerCase()} as ${await accessName(c, body.role, body.role_id)}`);
   // The link comes back either way, so the admin can text it too (or instead, when email isn't connected).
-  return c.json(await invitePerson(teamScope(c), body), 201);
+  return c.json(invited, 201);
+});
+
+/**
+ * Someone's level or custom role (Settings → People). Through here rather than straight to the
+ * database, which refuses admin-level access from the browser (the admin_grants migration): giving
+ * it asks for the password. Written with the person's own client, so the database's other rules hold
+ * (nobody gives areas they don't have, nobody changes their own role, there's always an owner).
+ */
+account.patch("/team/:userId/access", requireUser, requireCompany(ADMINS, "team"), async (c) => {
+  const parsed = uuid.safeParse(c.req.param("userId"));
+  if (!parsed.success) throw new HttpError(404, "That person isn't on your team.");
+  const targetId = parsed.data;
+  const { db, companyId, userId, role } = c.var;
+  const body = await readJson(c, z.object({ role: z.enum(STAFF as [Role, ...Role[]]), role_id: uuid.nullable().optional(), current_password: currentPassword }));
+  const member = must(await db.from("memberships").select("role, role_id").eq("company_id", companyId).eq("user_id", targetId).maybeSingle(), "That person isn't on your team.");
+  if (member.role === "subcontractor") throw new HttpError(400, "A sub's sign-in is given and taken away on their page, under Subs.");
+  if (targetId === userId && role !== "owner") throw new HttpError(403, "Ask an owner to change your own role or access.");
+  if (body.role === "owner" && role !== "owner") throw new HttpError(403, "Only an owner can make someone an owner.");
+  if (member.role === "owner" && role !== "owner") throw new HttpError(403, "Only an owner can do that for another owner.");
+  const roleId = body.role_id ?? null;
+  // A custom role sets the level itself (its base role).
+  const custom = roleId ? must(await db.from("company_roles").select("name, base_role, permissions").eq("id", roleId).eq("company_id", companyId).maybeSingle(), "That role no longer exists.") : null;
+  const level = custom?.base_role ?? body.role;
+  // As the database counts it: admin-level access they didn't have, or a different admin-level role.
+  const givesAdmin = adminLevel(level, custom?.permissions) && (level !== member.role || roleId !== member.role_id);
+  const who = givesAdmin ? await confirmAdminGrant(c, body.current_password) : null;
+  if (who) await allowAdminGrant(c.env, companyId, userId, targetId);
+  const { data, error } = await db.from("memberships").update({ role: level, role_id: roleId }).eq("company_id", companyId).eq("user_id", targetId).select("user_id");
+  if (error) throw dbError(error);
+  if (!data.length) throw new HttpError(404, "That person isn't on your team.");
+  if (who) noteAdminGrant(c, who, `made ${await personName(c, targetId)} ${custom?.name ?? ROLE_LABELS[level]}`);
+  return c.json({ ok: true });
+});
+
+/** A custom role as Settings → Roles saves it. */
+const roleRow = z.object({
+  name: z.string().trim().min(1).max(60),
+  base_role: z.enum(STAFF.filter((r) => r !== "owner") as [Role, ...Role[]]),
+  permissions: z.array(z.enum(PERMISSIONS.map((p) => p.key) as [Permission, ...Permission[]])).max(PERMISSIONS.length),
+  current_password: currentPassword,
+});
+
+/**
+ * A role that becomes admin-level (it wasn't, or is new) asks for the password, as giving a person
+ * admin access does, and the database is told to let it through (`id` is the role's). Null otherwise.
+ */
+async function roleGrant(c: Context<AppEnv>, id: string, row: { base_role: Role; permissions: string[] }, was: { base_role: Role; permissions: string[] } | null, password: string | undefined) {
+  if (!adminLevel(row.base_role, row.permissions) || (was && adminLevel(was.base_role, was.permissions))) return null;
+  const who = await confirmAdminGrant(c, password);
+  await allowAdminGrant(c.env, c.var.companyId, c.var.userId, id);
+  return who;
+}
+
+/**
+ * Custom roles made and changed (Settings → Roles), here for the password a role that becomes
+ * admin-level asks for. Written with the person's own client, so the database's rules hold (nobody
+ * gives a role areas they don't have, or changes the role they have). Deleting one stays in the browser.
+ */
+account.post("/team/roles", requireUser, requireCompany(ADMINS, "team"), async (c) => {
+  const { current_password, ...row } = await readJson(c, roleRow);
+  // Its id is chosen here, so the database knows it's the role the password was given for.
+  const id = crypto.randomUUID();
+  const who = await roleGrant(c, id, row, null, current_password);
+  const made = must(await c.var.db.from("company_roles").insert({ id, company_id: c.var.companyId, ...row }).select("id").single());
+  if (who) noteAdminGrant(c, who, `made the ${row.name} role, with admin access`);
+  return c.json(made, 201);
+});
+
+account.put("/team/roles/:id", requireUser, requireCompany(ADMINS, "team"), async (c) => {
+  const parsed = uuid.safeParse(c.req.param("id"));
+  if (!parsed.success) throw new HttpError(404, "That role no longer exists.");
+  const id = parsed.data;
+  const { db, companyId } = c.var;
+  const { current_password, ...row } = await readJson(c, roleRow);
+  const was = must(await db.from("company_roles").select("base_role, permissions").eq("id", id).eq("company_id", companyId).maybeSingle(), "That role no longer exists.");
+  const who = await roleGrant(c, id, row, was, current_password);
+  const { data, error } = await db.from("company_roles").update(row).eq("id", id).eq("company_id", companyId).select("id");
+  if (error) throw dbError(error);
+  if (!data.length) throw new HttpError(404, "That role no longer exists.");
+  if (who) noteAdminGrant(c, who, `gave the ${row.name} role admin access`);
+  return c.json({ id });
 });
 
 /** Who on the team hasn't set up their account yet, and when their latest link went out. */
@@ -477,12 +629,14 @@ account.post("/team/:userId/invite-link", requireUser, requireCompany(ADMINS, "t
   const { companyId, userId, role } = c.var;
   if (!(await allow(c.env, `invite-link:${userId}`, 20, 3600))) throw new HttpError(429, "Too many invites. Wait a while and try again.");
 
-  const { data: member, error } = await c.var.db.from("memberships").select("role, active").eq("company_id", companyId).eq("user_id", targetId).maybeSingle();
+  const { data: member, error } = await c.var.db.from("memberships").select("role, role_id, active").eq("company_id", companyId).eq("user_id", targetId).maybeSingle();
   if (error) throw dbError(error);
   if (!member?.active) throw new HttpError(404, "That person isn't on your team.");
   if (member.role === "subcontractor") throw new HttpError(400, "A sub signs in with a link from their page under Subs.");
   // As with changing their role, only an owner acts for an owner.
   if (member.role === "owner" && role !== "owner") throw new HttpError(403, "Only an owner can do that for another owner.");
+  // A link into an account with admin-level access asks for the password, as giving that access does.
+  if (await adminAccess(c.var.db, companyId, member.role, member.role_id)) await confirmAdminGrant(c, await passwordIn(c));
   const invite = await inviteStatus(c.env, companyId, targetId);
   if (invite.status !== "pending") {
     throw invite.status === "joined"

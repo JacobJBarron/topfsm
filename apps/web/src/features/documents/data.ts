@@ -41,10 +41,14 @@ export function useTemplates() {
   return useQuery(templatesQuery(company.id));
 }
 
-/** The template a quote prints with: the one it names, else the default, else the built-in look. */
+/**
+ * The template a quote prints with: the one it names, else the default, else the built-in look, with
+ * the business's trade's starter terms until it saves its own (as the Client Hub and the signed copy).
+ */
 export function useDocumentTemplate(templateId?: string | null): { template: TemplateSettings; isPending: boolean } {
+  const { company } = useSession();
   const templates = useTemplates();
-  return { template: pickTemplate(templates.data ?? [], templateId), isPending: templates.isPending };
+  return { template: pickTemplate(templates.data ?? [], templateId, company.trade_preset), isPending: templates.isPending };
 }
 
 /**

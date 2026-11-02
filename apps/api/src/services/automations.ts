@@ -16,7 +16,9 @@
 import {
   actionsForTrigger,
   addDays,
+  autopaySettings,
   evaluateConditions,
+  isAutopayTrigger,
   localDate,
   memberPermissions,
   renderTemplate,
@@ -41,6 +43,7 @@ import { clientLink } from "../lib/links";
 import { sendEmail, sendSms } from "../lib/notify";
 import { adminClient, type Db } from "../lib/supabase";
 import { CAMPAIGN_LINK_DAYS, campaignRuleOf, letStretchGo, sendCampaignEmail } from "./automatedCampaigns";
+import { sendAutopayInvite } from "./autopay";
 import { logoImage } from "./logo";
 import { sendReferralAsk } from "./referrals";
 import { Busy, sendReviewRequest, WaitUntil } from "./reviews";
@@ -148,6 +151,33 @@ async function lastVisit(admin: Db, companyId: string, clientId: string): Promis
   return times.length ? new Date(Math.max(...times)) : null;
 }
 
+/**
+ * For the "On autopay" condition: whether the client is being charged automatically, that is the
+ * company has autopay on and the client has an agreement in force that isn't paused (as
+ * private.autopay_ready, less the card's state, which the office fixes with the client). Null when
+ * it can't be told.
+ */
+async function clientOnAutopay(admin: Db, company: CompanyInfo, clientId: string): Promise<Facts["autopay"]> {
+  if (!autopaySettings(company.settings).enabled) return "no";
+  const { data, error } = await admin
+    .from("autopay_authorizations")
+    .select("id")
+    .eq("company_id", company.id)
+    .eq("client_id", clientId)
+    .is("revoked_at", null)
+    .is("paused_at", null)
+    .limit(1);
+  if (error) return null;
+  return (data ?? []).length ? "yes" : "no";
+}
+
+/** For the "On autopay" condition: whether the invoice has an autopay charge that wasn't called off. Null when it can't be told. */
+async function invoiceOnAutopay(admin: Db, companyId: string, invoiceId: string): Promise<Facts["autopay"]> {
+  const { data, error } = await admin.from("autopay_charges").select("id").eq("company_id", companyId).eq("invoice_id", invoiceId).neq("status", "called_off").limit(1);
+  if (error) return null;
+  return (data ?? []).length ? "yes" : "no";
+}
+
 /** Everything a rule can know about the record it runs on. Null when the record is gone. */
 export async function loadContext(admin: Db, companyId: string, subjectType: string, subjectId: string): Promise<RunContext | null> {
   if (!SUBJECTS.includes(subjectType as SubjectKind)) return null;
@@ -220,7 +250,7 @@ export async function loadContext(admin: Db, companyId: string, subjectType: str
     case "job": {
       const { data } = await admin
         .from("jobs")
-        .select("number, title, status, kind, financials:job_financials(contract_total), client_id, property_id, property:properties(line1, city, region), lines:job_line_items(name)")
+        .select("number, title, status, kind, autopay, financials:job_financials(contract_total), client_id, property_id, property:properties(line1, city, region), lines:job_line_items(name)")
         .eq("company_id", companyId)
         .eq("id", subjectId)
         .maybeSingle();
@@ -230,6 +260,7 @@ export async function loadContext(admin: Db, companyId: string, subjectType: str
       jobId = subjectId;
       facts = {
         status: data.status, kind: data.kind, job_kind: data.kind, amount: Number(data.financials?.contract_total ?? 0), line_items: (data.lines as Array<{ name: string }>).map((l) => l.name),
+        autopay: autopaySettings(co.settings).enabled && data.autopay === true ? "yes" : "no",
       };
       vars = { number: data.number, title: data.title, total: fmt(data.financials?.contract_total ?? 0), address: addressOf(data.property as Property) };
       label = `Job #${data.number}`;
@@ -273,7 +304,7 @@ export async function loadContext(admin: Db, companyId: string, subjectType: str
       jobId = data.job_id;
       facts = {
         status: data.status, invoice_kind: data.kind, job_kind: (data.job as unknown as { kind: string } | null)?.kind ?? null, amount: Number(data.total), amount_paid: Number(data.amount_paid ?? 0),
-        line_items: (data.lines as Array<{ name: string }>).map((l) => l.name),
+        line_items: (data.lines as Array<{ name: string }>).map((l) => l.name), autopay: await invoiceOnAutopay(admin, companyId, subjectId),
       };
       vars = { number: data.number, title: data.subject || `Invoice #${data.number}`, total: fmt(data.total), balance: fmt(data.balance_due) };
       label = `Invoice #${data.number}`;
@@ -296,7 +327,7 @@ export async function loadContext(admin: Db, companyId: string, subjectType: str
       // Days since their last visit, in the company's own dates, as client.inactive counts them.
       const tz = co.timezone || "UTC";
       const last = await lastVisit(admin, companyId, client.id);
-      facts = { status: client.status, days_since_visit: last ? daysSinceVisit(last, new Date(), tz) : null };
+      facts = { status: client.status, days_since_visit: last ? daysSinceVisit(last, new Date(), tz) : null, autopay: await clientOnAutopay(admin, co, client.id) };
       vars = { title: client.display_name, last_visit: last ? last.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: tz }) : "" };
       label = client.display_name;
     }
@@ -322,10 +353,14 @@ export async function loadContext(admin: Db, companyId: string, subjectType: str
   };
 }
 
-/** Adds the signed client link ({{link}}): a quote's or invoice's Client Hub page, or for a client the Hub's home. */
+/**
+ * Adds the signed client link ({{link}}): a quote's or invoice's Client Hub page, or for a client the
+ * Hub's home. It's the client's own (own: 1), for the emails and texts that go to their own email and
+ * phone. Everything else a rule writes, where the team reads it, has the office's copy (officeVars).
+ */
 async function withLink(env: Env, ctx: RunContext, baseUrl: string | null): Promise<RunContext> {
   if (!baseUrl || (ctx.subject !== "quote" && ctx.subject !== "invoice" && ctx.subject !== "client")) return ctx;
-  const link = await clientLink(env, baseUrl, { c: ctx.company.id, t: ctx.subject, id: ctx.id });
+  const link = await clientLink(env, baseUrl, { c: ctx.company.id, t: ctx.subject, id: ctx.id, own: 1 });
   return { ...ctx, vars: { ...ctx.vars, link } };
 }
 
@@ -343,7 +378,9 @@ async function withHomeLink(env: Env, ctx: RunContext, baseUrl: string | null): 
  * Adds what the event itself says, for the triggers that carry it: a sub's offer gives {{sub.name}},
  * {{sub.price}} (the price offered) and, turned down, {{sub.reason}}; a referral credit earned gives
  * {{referral.name}} (the friend's first name), {{referral.credit}} and {{referral.invoice}} (the
- * invoice it went on, if it did).
+ * invoice it went on, if it did). Autopay's give
+ * {{autopay.card}} ("Visa ending 4242"), {{autopay.reason}} (why a charge failed) and
+ * {{autopay.expires}} ("08/28"), as private.emit wrote them into the activity's data.
  */
 export async function withEvent(admin: Db, ctx: RunContext, trigger: string, activityId: number | null | undefined): Promise<RunContext> {
   if (!triggerDef(trigger)?.variables?.length || activityId == null) return ctx;
@@ -355,10 +392,49 @@ export async function withEvent(admin: Db, ctx: RunContext, trigger: string, act
     const invoice = event.invoice_number == null ? "" : `#${event.invoice_number}`;
     return { ...ctx, vars: { ...ctx.vars, referral: { name: event.friend_name ? firstName(text(event.friend_name)) : "", credit: amount(event.credit), invoice } } };
   }
+  if (isAutopayTrigger(trigger)) {
+    return { ...ctx, vars: { ...ctx.vars, autopay: { ...autopayVars(ctx.vars), card: text(event.card), reason: text(event.reason), expires: text(event.expires) } } };
+  }
   return {
     ...ctx,
     vars: { ...ctx.vars, sub: { name: text(event.sub_name), price: amount(event.total), reason: text(event.reason) } },
   };
+}
+
+/** The {{autopay.*}} values so far, as an object (none yet is an empty one). */
+function autopayVars(vars: TemplateVars): Record<string, string | number | null | undefined> {
+  const group = vars.autopay;
+  return group && typeof group === "object" ? group : {};
+}
+
+/**
+ * Adds {{autopay.link}} to rules about autopay: the client's own Hub link to their autopay page
+ * (own: 1, and fresh, so it works for the full 120 days), for their emails and texts. Without the
+ * app's address, or a client, it stays empty.
+ */
+export async function withAutopayLink(env: Env, ctx: RunContext, trigger: string, baseUrl: string | null): Promise<RunContext> {
+  if (!baseUrl || !ctx.client || !isAutopayTrigger(trigger)) return ctx;
+  const link = `${await clientLink(env, baseUrl, { c: ctx.company.id, t: "client", id: ctx.client.id, own: 1 })}?view=autopay`;
+  return { ...ctx, vars: { ...ctx.vars, autopay: { ...autopayVars(ctx.vars), link } } };
+}
+
+/**
+ * The values for the office's own notices, the notes and tasks a rule adds, and the copy of a
+ * client's email or text kept on their timeline: the client links in them are the office's copies
+ * (via "office", as Copy Client Hub link makes them), so none can be used to confirm a card for the
+ * client or add a tip to their saved card. Everything else is as the client's emails have it.
+ */
+export async function officeVars(env: Env, ctx: RunContext, baseUrl: string | null): Promise<TemplateVars> {
+  if (!baseUrl) return ctx.vars;
+  const vars: TemplateVars = { ...ctx.vars };
+  if (vars.link && (ctx.subject === "quote" || ctx.subject === "invoice")) {
+    vars.link = await clientLink(env, baseUrl, { c: ctx.company.id, t: ctx.subject, id: ctx.id, via: "office" });
+  }
+  const group = autopayVars(vars);
+  if (group.link && ctx.client) {
+    vars.autopay = { ...group, link: `${await clientLink(env, baseUrl, { c: ctx.company.id, t: "client", id: ctx.client.id, via: "office" })}?view=autopay` };
+  }
+  return vars;
 }
 
 export async function buildContext(env: Env, admin: Db, companyId: string, subjectType: string, subjectId: string, baseUrl: string | null) {
@@ -370,8 +446,10 @@ const render = (template: string | undefined, ctx: RunContext) => renderTemplate
 
 /**
  * Whoever of these the trigger lets hear about it: for a sub's offer (its price), only the office with
- * the Subcontractors area (private.subs_office), whatever levels or people the rule names, so neither
- * a rule saved before someone lost the area nor one written straight to the database tells anyone else.
+ * the Subcontractors area (private.subs_office); for autopay (a client's card, why a charge failed),
+ * only the office with the invoices area (private.money_office). That holds whatever levels or people
+ * the rule names, so neither a rule saved before someone lost the area nor one written straight to the
+ * database tells anyone else.
  */
 async function mayHear(admin: Db, ctx: RunContext, people: Array<{ user_id: string; role: string; role_id?: string | null }>) {
   const trigger = ctx.trigger ? triggerDef(ctx.trigger) : undefined;
@@ -388,6 +466,14 @@ async function mayHear(admin: Db, ctx: RunContext, people: Array<{ user_id: stri
     return areas.includes(trigger.area);
   });
 }
+
+/**
+ * What a message a rule sends is about. Rules about autopay carry a client's card and their own link,
+ * so their emails and texts are kept as "autopay" messages, which only the office with the invoices
+ * area reads (messages_read), not as the record's, which crews who see the client can read.
+ */
+const messageAbout = (ctx: RunContext, clientId: string) =>
+  isAutopayTrigger(ctx.trigger) ? { related_type: "autopay", related_id: clientId } : { related_type: ctx.subject, related_id: ctx.id };
 
 /**
  * Performs one action. Returns a short description of what happened (a Skip when there was nothing
@@ -414,10 +500,17 @@ export async function performAction(env: Env, admin: Db, ctx: RunContext, action
       const named = (data ?? []).filter((m) => action.roles?.includes(m.role) || action.user_ids?.includes(m.user_id) || onIt.has(m.user_id));
       if (!named.length) throw new Error("No one on the team matches who this rule notifies.");
       const people = await mayHear(admin, ctx, named);
-      if (!people.length) throw new Error("Only the office with the Subcontractors area hears about subs' offers, and nobody this rule notifies has it.");
-      const title = render(action.title, ctx) || ruleName;
+      if (!people.length) {
+        throw new Error(
+          ctx.trigger && triggerDef(ctx.trigger)?.area === "invoices"
+            ? "Only the office with the Invoices and payments area hears about autopay, and nobody this rule notifies has it."
+            : "Only the office with the Subcontractors area hears about subs' offers, and nobody this rule notifies has it.",
+        );
+      }
+      const office = { ...ctx, vars: await officeVars(env, ctx, baseUrl) };
+      const title = render(action.title, office) || ruleName;
       const { error: insertError } = await admin.from("notifications").insert(
-        people.map((p) => ({ company_id: ctx.company.id, user_id: p.user_id, kind: ctx.subject, title: title.slice(0, 300), body: render(action.body, ctx) || null, link: ctx.appPath })),
+        people.map((p) => ({ company_id: ctx.company.id, user_id: p.user_id, kind: ctx.subject, title: title.slice(0, 300), body: render(action.body, office) || null, link: ctx.appPath })),
       );
       if (insertError) throw new Error(insertError.message);
       return `Notified ${people.length} ${people.length === 1 ? "person" : "people"}`;
@@ -432,9 +525,11 @@ export async function performAction(env: Env, admin: Db, ctx: RunContext, action
       const email = renderEmail({ companyName: ctx.company.name, logo: baseUrl ? logoImage(baseUrl, ctx.company.id, ctx.company.settings) : null, text, footer: companyFooter(ctx.company) });
       const result = await sendEmail(env, { to: client.email!.trim(), subject, text: email.text, html: email.html, replyTo: ctx.company.email ?? undefined, fromName: ctx.company.name }, ctx.company.id);
       if (!result.sent) throw new Error(result.reason ?? "The email wasn't sent.");
+      // The timeline's copy has the office's copies of the client's links (officeVars).
+      const kept = { ...ctx, vars: await officeVars(env, ctx, baseUrl) };
       await admin.from("messages").insert({
-        company_id: ctx.company.id, client_id: client.id, channel: "email", direction: "out", subject, body: text,
-        related_type: ctx.subject, related_id: ctx.id, external_id: result.id ?? null, sent_by: null,
+        company_id: ctx.company.id, client_id: client.id, channel: "email", direction: "out", subject: render(action.subject, kept), body: render(action.body, kept),
+        ...messageAbout(ctx, client.id), external_id: result.id ?? null, sent_by: null,
       });
       return `Emailed ${client.email}`;
     }
@@ -446,9 +541,11 @@ export async function performAction(env: Env, admin: Db, ctx: RunContext, action
       const result = await sendSms(env, { to: client.phone, body });
       await noteRefusedText(admin, client, client.phone, result);
       if (!result.sent) throw new Error(result.reason ?? "The text wasn't sent.");
+      // The timeline's copy has the office's copies of the client's links (officeVars).
+      const kept = { ...ctx, vars: await officeVars(env, ctx, baseUrl) };
       await admin.from("messages").insert({
-        company_id: ctx.company.id, client_id: client.id, channel: "sms", direction: "out", body,
-        related_type: ctx.subject, related_id: ctx.id, external_id: result.id ?? null, sent_by: null,
+        company_id: ctx.company.id, client_id: client.id, channel: "sms", direction: "out", body: render(action.body, kept),
+        ...messageAbout(ctx, client.id), external_id: result.id ?? null, sent_by: null,
       });
       return `Texted ${client.phone}`;
     }
@@ -467,8 +564,12 @@ export async function performAction(env: Env, admin: Db, ctx: RunContext, action
     }
     case "add_note": {
       if (!client) throw new Error("There's no client on this record.");
+      // Crews who see the client read its notes: nothing about autopay goes there (the database refuses the rule too).
+      if (isAutopayTrigger(ctx.trigger)) throw new Error("A rule about autopay can't add a client note (crews can read them).");
+      // The team reads notes, so a link in one is the office's copy (officeVars), as the preview shows it.
+      const kept = { ...ctx, vars: await officeVars(env, ctx, baseUrl) };
       const { error } = await admin.from("messages").insert({
-        company_id: ctx.company.id, client_id: client.id, channel: "note", direction: "internal", body: render(action.body, ctx),
+        company_id: ctx.company.id, client_id: client.id, channel: "note", direction: "internal", body: render(action.body, kept),
         related_type: ctx.subject, related_id: ctx.id, sent_by: null,
       });
       if (error) throw new Error(error.message);
@@ -477,8 +578,10 @@ export async function performAction(env: Env, admin: Db, ctx: RunContext, action
     case "create_task": {
       const today = localDate(new Date(), ctx.company.timezone || "UTC");
       const due = addDays(today, Math.max(0, Math.min(365, Math.round(Number(action.days_from_now) || 0))));
-      // A task is on the schedule, where the crew sees it: never a sub's price or reason in it.
-      const title = renderTemplate(action.title ?? "", ctx.trigger ? taskVars(ctx.trigger, ctx.vars) : ctx.vars).trim();
+      // A task is on the schedule, where the crew sees it: never a sub's price or reason in it, and
+      // a link in it is the office's copy (officeVars), as the preview shows it.
+      const office = await officeVars(env, ctx, baseUrl);
+      const title = renderTemplate(action.title ?? "", ctx.trigger ? taskVars(ctx.trigger, office) : office).trim();
       const { error } = await admin.from("visits").insert({
         company_id: ctx.company.id, kind: "task", title: (title || ruleName).slice(0, 200), scheduled_on: due, status: "scheduled",
         job_id: ctx.subject === "job" || ctx.subject === "visit" || ctx.subject === "invoice" ? ctx.jobId : null,
@@ -509,6 +612,14 @@ export async function performAction(env: Env, admin: Db, ctx: RunContext, action
       const { error } = await admin.from(table).update({ status: action.status }).eq("id", ctx.id).eq("company_id", ctx.company.id);
       if (error) throw new Error(error.message);
       return action.status === "lost" ? "Marked lost" : "Archived";
+    }
+    case "invite_autopay": {
+      if (!client) throw new Error("There's no client on this record.");
+      // Skips (already on autopay, invited in the last week) are fine; a reason it can't go out fails the action.
+      const result = await sendAutopayInvite(env, admin, {
+        companyId: ctx.company.id, clientId: client.id, channel: action.channel === "sms" ? "sms" : "email", baseUrl, createdBy: null, skipIfRecentDays: 7,
+      });
+      return result.detail;
     }
     default:
       throw new Error("Unknown action.");
@@ -577,7 +688,12 @@ export async function executeRun(env: Env, admin: Db, run: RunRow, baseUrl: stri
     const loaded = await buildContext(env, admin, run.company_id, run.subject_type, run.subject_id, baseUrl);
     if (!loaded) return finish(admin, run, "skipped", [], "The record was deleted.");
     const campaign = campaignRuleOf(rule) ?? undefined;
-    let ctx: RunContext = { ...(await withEvent(admin, loaded, rule.trigger, run.activity_id)), trigger: rule.trigger, campaign, run: { id: run.id, activity_id: run.activity_id ?? null } };
+    let ctx: RunContext = await withAutopayLink(
+      env,
+      { ...(await withEvent(admin, loaded, rule.trigger, run.activity_id)), trigger: rule.trigger, campaign, run: { id: run.id, activity_id: run.activity_id ?? null } },
+      rule.trigger,
+      baseUrl,
+    );
     // A marketing campaign's run does nothing at all (an action a business added, a text, included)
     // while Marketing is off, or for a client who unsubscribed from marketing or is archived.
     if (campaign?.marketing) {

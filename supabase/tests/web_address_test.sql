@@ -32,9 +32,12 @@ begin;
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub": "b4000000-0000-0000-0000-000000000001", "role": "authenticated"}', true);
 select public.create_company('Quail Roofing', 'roofing') as co \gset
+-- Admin access is given through the server (the admin_grants migration).
+reset role;
 insert into public.memberships (company_id, user_id, role) values
   (:'co', 'b4000000-0000-0000-0000-000000000002', 'admin'),
   (:'co', 'b4000000-0000-0000-0000-000000000003', 'office');
+set local role authenticated;
 select twa.expect_error(format('insert into public.web_address (company_id, domain) values (%L, %L)', :'co', 'app.quail.test'), 'not even the owner writes the address directly');
 commit;
 

@@ -8,8 +8,9 @@ import { Hono, type Context } from "hono";
 import type { Env } from "../env";
 import { STORAGE_PAUSED, storageWritesPaused } from "../services/storageBucket";
 import { guardAssistant, guardConsent } from "./assistants";
+import { EMAILED_SIGN_INS, signedInWithin } from "./auth";
 import { authMetadata, signsIdTokens, withoutOpenId } from "./authMetadata";
-import { guardSignIn, isGuessable } from "./signInGuard";
+import { guardSignIn, isGuessable, readUpTo } from "./signInGuard";
 import type { Stack } from "./stack";
 import { guardStorage, routedPath, snapshotsFrom, verifiedClaims, type SnapshotSource } from "./storageLimits";
 import { adminClient } from "./supabase";
@@ -49,7 +50,9 @@ export function gateway(
     if (plain && !(await signsIdTokens(`${stack.auth.replace(/\/$/, "")}/.well-known/jwks.json`))) incoming = new Request(plain, incoming);
     // ...and only someone on a team connects one (a sub's sign-in can't).
     return guardConsent(env, incoming, "/auth/v1", (consented) =>
-      guardAssistant(env, consented, "/auth/v1", (request) => (isGuessable(request.method, new URL(request.url), "/auth/v1") ? guardSignIn(env, request, send) : send(request))),
+      guardAssistant(env, consented, "/auth/v1", (request) =>
+        isGuessable(request.method, new URL(request.url), "/auth/v1") ? guardSignIn(env, request, send) : guardPasswordChange(request, jwtSecret, send),
+      ),
     );
   });
   routes.all("/rest/v1/*", (c) => guardAssistant(env, c.req.raw, "/rest/v1", (request) => forward(request, stack.rest, "/rest/v1", visitor(c))));
@@ -79,6 +82,48 @@ export function gateway(
     return safeFile(request, res);
   });
   return routes;
+}
+
+/** What a change to the signed-in person's account may carry (Auth's PUT /user). */
+const USER_FIELDS = ["email", "password", "nonce", "data", "phone", "channel", "code_challenge", "code_challenge_method"];
+/** How long after opening a reset, invitation or sign-in link a new password can be chosen. */
+export const PASSWORD_LINK_SECONDS = 15 * 60;
+export const PASSWORD_LINK_STALE = "That link was opened more than 15 minutes ago. Use Forgot password on the sign-in page to get a new one.";
+export const EMAIL_CHANGE_STALE = "Sign in with a link or code sent to your email, then change it within 15 minutes.";
+
+/**
+ * A new password straight through Auth (PUT /auth/v1/user with a password) only within 15 minutes of
+ * opening a reset, invitation or sign-in link (the app's "Choose a new password" screen). Anywhere
+ * else it's changed in Crewtavo with the current one (POST /api/account/password), so a leftover or
+ * stolen session can't set its own and then pass every password check (lib/auth.ts confirmPassword).
+ * A new email or phone too: Auth takes one at once (MAILER_AUTOCONFIRM), and a sign-in link to it
+ * would then let that session choose a password. Auth reads the body's names whatever their case,
+ * so it gets exactly what was checked here, in a body with one spelling of each field, as the
+ * sign-in guard does.
+ */
+async function guardPasswordChange(request: Request, secret: string | undefined, send: (request: Request) => Promise<Response>): Promise<Response> {
+  let path = new URL(request.url).pathname.slice("/auth/v1".length);
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    // Auth turns away a path it can't read.
+  }
+  if (["GET", "HEAD", "OPTIONS"].includes(request.method) || path.replace(/\/+/g, "/").replace(/\/$/, "").toLowerCase() !== "/user") return send(request);
+  const text = await readUpTo(request, 64 * 1024);
+  let parsed: unknown = null;
+  try {
+    parsed = text === null ? null : JSON.parse(text);
+  } catch {
+    // Not JSON: refused below.
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return Response.json({ code: 400, error_code: "bad_json", msg: "Send the change as JSON." }, { status: 400 });
+  const fields: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(parsed)) if (USER_FIELDS.includes(name.toLowerCase())) fields[name.toLowerCase()] = value;
+  const token = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
+  if (["password", "email", "phone"].some((name) => name in fields) && !signedInWithin(verifiedClaims(token, secret), EMAILED_SIGN_INS, PASSWORD_LINK_SECONDS)) {
+    return Response.json({ code: 403, error_code: "reauthentication_needed", msg: "password" in fields ? PASSWORD_LINK_STALE : EMAIL_CHANGE_STALE }, { status: 403 });
+  }
+  return send(new Request(request.url, { method: request.method, headers: request.headers, body: JSON.stringify(fields) }));
 }
 
 /**

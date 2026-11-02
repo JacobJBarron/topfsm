@@ -14,7 +14,8 @@ import { toast } from "@/lib/toast";
 import { Icon, type IconName } from "../ui/Icon";
 import { Skeleton } from "../ui/Skeleton";
 
-const ICONS: Record<string, IconName> = { quote: "quote", invoice: "invoice", request: "requests", job: "job", visit: "calendar", client: "clients", equipment: "truck", subs: "users", jobs: "job", applicant: "user" };
+// By notification kind, and by the first word of an activity's verb ("autopay.failed", "payment_method.expiring") or its subject.
+const ICONS: Record<string, IconName> = { quote: "quote", invoice: "invoice", request: "requests", job: "job", visit: "calendar", client: "clients", equipment: "truck", subs: "users", jobs: "job", applicant: "user", autopay: "card", payment_method: "card" };
 
 const subjectPath = (type: string, id: string | null) =>
   !id ? null : ({ client: `/clients/${id}`, request: `/requests/${id}`, quote: `/quotes/${id}`, job: `/jobs/${id}`, invoice: `/invoices/${id}`, equipment: `/equipment/${id}` } as Record<string, string>)[type] ?? null;

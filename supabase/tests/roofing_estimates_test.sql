@@ -45,6 +45,8 @@ set local role authenticated;
 select set_config('request.jwt.claims', '{"sub": "e57a0000-0000-0000-0000-000000000001", "role": "authenticated"}', true);
 select public.create_company('Ridge Top Roofing', 'roofing_exteriors') as co \gset
 select id as ops_role from public.company_roles where company_id = :'co' and name = 'Operations manager' \gset
+-- Admin access is given through the server (the admin_grants migration).
+reset role;
 insert into public.memberships (company_id, user_id, role, role_id) values
   (:'co', 'e57a0000-0000-0000-0000-000000000002', 'admin', null),
   (:'co', 'e57a0000-0000-0000-0000-000000000003', 'office', null),
@@ -52,6 +54,7 @@ insert into public.memberships (company_id, user_id, role, role_id) values
   (:'co', 'e57a0000-0000-0000-0000-000000000005', 'field_crew', null),
   -- Office level, but the Settings area is off (the starter "Operations manager" role).
   (:'co', 'e57a0000-0000-0000-0000-000000000006', 'office', :'ops_role');
+set local role authenticated;
 insert into public.services (company_id, name, unit, unit_price, unit_cost, formula) values (:'co', 'Architectural shingle roof', 'square', 560, 330, 'squares') returning id as roof \gset
 insert into public.services (company_id, name, unit, unit_price, unit_cost, formula) values (:'co', 'Standing-seam metal roof', 'square', 1150, 700, 'squares') returning id as metal_roof \gset
 insert into public.services (company_id, name, unit, unit_price, unit_cost, formula) values (:'co', 'Ridge vent', 'ft', 9, 4, 'ridge_ft') returning id as ridge \gset

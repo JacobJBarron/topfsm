@@ -1,6 +1,7 @@
 import { DEFAULT_TEMPLATE } from "@crewtavo/core/documents";
 import { describe, expect, it } from "vitest";
 import {
+  autopayPayNote,
   depositToBook,
   firstOption,
   groupTiers,
@@ -9,11 +10,13 @@ import {
   hubSteps,
   hubTemplate,
   hubTotals,
+  invoiceAutopayLine,
   invoiceDocument,
   isRoofJob,
   keepPicks,
   listedLines,
   maybePrice,
+  needsNewCard,
   optionLinesOf,
   pickedOption,
   promoShortfall,
@@ -21,6 +24,7 @@ import {
   rangeWords,
   reviewChange,
   unpickedGroup,
+  waitingInvoices,
   type HubOption,
   type InvoiceView,
   type QuoteView,
@@ -327,5 +331,55 @@ describe("the price range page", () => {
     expect(maybePrice({ price: 3.5, per: "ft" })).toBe("$3.50 a foot");
     expect(maybePrice({ price: 120, per: "hr" })).toBe("$120 an hour");
     expect(maybePrice({ price: 40, per: "ea" })).toBe("$40");
+  });
+});
+
+describe("autopay on the Client Hub's invoices", () => {
+  const visa = (status: "charging" | "processing" | "paid" | "failed" | "needs_client", charged_at: string | null = null) => ({ status, method: "Visa ending 4242", charged_at });
+
+  it("says under an invoice's heading that it was paid automatically, or is being charged", () => {
+    // 9:30 PM in New York on Oct 27 is the 28th in UTC: the day is the business's.
+    expect(invoiceAutopayLine(visa("paid", "2026-10-28T01:30:00Z"), "America/New_York", 0)).toBe("Paid automatically with Visa ending 4242 on Oct 27");
+    expect(invoiceAutopayLine(visa("paid", "2026-10-28T01:30:00Z"), "UTC", 0)).toBe("Paid automatically with Visa ending 4242 on Oct 28");
+    expect(invoiceAutopayLine({ status: "paid", method: null, charged_at: null }, "UTC", 0)).toBe("Paid automatically");
+    expect(invoiceAutopayLine(visa("charging"), "UTC", 0)).toBe("Charging your Visa ending 4242 now");
+    expect(invoiceAutopayLine({ status: "charging", method: null, charged_at: null }, "UTC", 0)).toBe("Charging your saved card now");
+    expect(invoiceAutopayLine(visa("processing"), "UTC", 0)).toMatch(/^Your bank payment is on its way/);
+    // A charge that didn't go through is said beside Pay instead.
+    for (const status of ["failed", "needs_client"] as const) expect(invoiceAutopayLine(visa(status), "UTC", 0)).toBeNull();
+    expect(invoiceAutopayLine(null, "UTC", 0)).toBeNull();
+    expect(invoiceAutopayLine(undefined, "UTC", 0)).toBeNull();
+  });
+
+  it("says it was paid automatically only while nothing is owed", () => {
+    // Refunded since: owed again, or written off with what's left. The charge stays paid.
+    expect(invoiceAutopayLine(visa("paid", "2026-10-28T01:30:00Z"), "UTC", 45)).toBeNull();
+    expect(invoiceAutopayLine(visa("paid", "2026-10-28T01:30:00Z"), "UTC", "45.00" as unknown as number)).toBeNull();
+    expect(invoiceAutopayLine(visa("paid", "2026-10-28T01:30:00Z"), "UTC", -5)).toBe("Paid automatically with Visa ending 4242 on Oct 28");
+    // Being charged, or on its way, is said whatever is owed.
+    expect(invoiceAutopayLine(visa("charging"), "UTC", 45)).toBe("Charging your Visa ending 4242 now");
+  });
+
+  it("says beside Pay why it's there when the charge didn't go through", () => {
+    expect(autopayPayNote(visa("failed"))).toBe("We couldn't charge your Visa ending 4242. We'll try again in a few days, or you can pay now.");
+    expect(autopayPayNote(visa("needs_client"))).toBe("We couldn't charge your Visa ending 4242 automatically. Pay below, or update your card.");
+    for (const status of ["charging", "processing", "paid"] as const) expect(autopayPayNote(visa(status))).toBeNull();
+    expect(autopayPayNote(null)).toBeNull();
+  });
+
+  it("leaves what autopay is charging out of what's waiting on the client", () => {
+    const invoices = [
+      { id: "owed", status: "sent", balance_due: 45 },
+      { id: "late", status: "overdue", balance_due: 45, autopay: null },
+      { id: "charging", status: "sent", balance_due: 45, autopay: "charging" as const },
+      { id: "bank", status: "sent", balance_due: 45, autopay: "processing" as const },
+      { id: "failed", status: "sent", balance_due: 45, autopay: "failed" as const },
+      { id: "confirm", status: "partially_paid", balance_due: 20, autopay: "needs_client" as const },
+      { id: "paid", status: "paid", balance_due: 0, autopay: "paid" as const },
+      // A numeric as Postgres writes it.
+      { id: "text", status: "sent", balance_due: "0.00" as unknown as number },
+    ];
+    expect(waitingInvoices(invoices).map((i) => i.id)).toEqual(["owed", "late", "failed", "confirm"]);
+    expect(invoices.filter(needsNewCard).map((i) => i.id)).toEqual(["failed", "confirm"]);
   });
 });

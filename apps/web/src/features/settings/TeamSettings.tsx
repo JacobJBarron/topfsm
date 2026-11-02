@@ -22,9 +22,10 @@ import { can, useSession } from "@/lib/session";
 import { RatesCard } from "../subs/RatesCard";
 import { handlesTeamPay, useTeamRateCounts } from "../subs/payData";
 import { PhotoButtons } from "./ProfilePhoto";
-import { choiceFor, patchFor, roleChoices, roleName, useCompanyRoles } from "./roles";
+import { accessFor, choiceFor, givesAdmin, patchFor, roleChoices, roleName, useCompanyRoles } from "./roles";
 import { limitable, setsAllowances, useStorageOverview, type StoragePerson } from "./storage";
 import { AllowanceDialog } from "./StorageSettings";
+import { PASSWORD_HINT } from "../apps/catalog";
 
 export interface Member { user_id: string; role: Role; role_id: string | null; active: boolean; labor_rate: number | null; profile: { full_name: string; email: string | null; color: string | null; avatar_url: string | null } | null }
 /** Someone invited who hasn't set up their account yet, and when their latest link went out. */
@@ -46,6 +47,8 @@ export function TeamSettings() {
   };
   const [resetting, setResetting] = useState<Member | null>(null);
   const [resending, setResending] = useState<Member | null>(null);
+  // A role change that gives admin access, waiting on the changer's password.
+  const [granting, setGranting] = useState<{ member: Member; choice: string } | null>(null);
   const [photoFor, setPhotoFor] = useState<string | null>(null);
   const [ratesFor, setRatesFor] = useState<Member | null>(null);
   const [storageFor, setStorageFor] = useState<{ member: Member; usage: StoragePerson | undefined } | null>(null);
@@ -57,17 +60,26 @@ export function TeamSettings() {
   const invites = useQuery({ queryKey: ["team-invites", session.company.id], queryFn: () => api.get<PendingInvite[]>("/team/invites") });
   const pending = new Map((invites.data ?? []).map((i) => [i.user_id, i.sent_at]));
   const roles = useCompanyRoles();
+  const refreshTeam = () => {
+    queryClient.invalidateQueries({ queryKey: ["team", session.company.id] });
+    queryClient.invalidateQueries({ queryKey: ["team-invites", session.company.id] });
+    queryClient.invalidateQueries({ queryKey: ["dispatch-options", session.company.id] });
+  };
   const update = useMutation({
     // Access and roles change things elsewhere, so they're announced.
-    meta: { success: (_: unknown, v: { patch: { role?: Role; role_id?: string | null; active?: boolean; labor_rate?: number | null } }) => (v.patch.active === false ? "Access removed" : v.patch.active ? "Access restored" : "role_id" in v.patch ? "Role changed" : null) },
-    mutationFn: async ({ userId, patch }: { userId: string; patch: { role?: Role; role_id?: string | null; labor_rate?: number | null; active?: boolean } }) =>
+    meta: { success: (_: unknown, v: { patch: { active: boolean } }) => (v.patch.active ? "Access restored" : "Access removed") },
+    mutationFn: async ({ userId, patch }: { userId: string; patch: { active: boolean } }) =>
       unwrap(await supabase().from("memberships").update(patch).eq("company_id", session.company.id).eq("user_id", userId)),
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["team", session.company.id] });
-      queryClient.invalidateQueries({ queryKey: ["team-invites", session.company.id] });
-      queryClient.invalidateQueries({ queryKey: ["dispatch-options", session.company.id] });
-    },
+    onSettled: refreshTeam,
   });
+  // Roles go through the API, which asks for the changer's password when one gives admin access.
+  const access = useMutation({
+    meta: { success: "Role changed", inline: Boolean(granting) },
+    mutationFn: ({ userId, choice, password }: { userId: string; choice: string; password?: string }) =>
+      api.patch(`/team/${userId}/access`, { ...accessFor(choice, roles.data), current_password: password || undefined }),
+    onSettled: refreshTeam,
+  });
+  const changeRole = (member: Member, choice: string) => (givesAdmin(choice, roles.data) ? setGranting({ member, choice }) : access.mutate({ userId: member.user_id, choice }));
   // A labor cost saves when its field loses focus, and says so beside the head count.
   const saving = useSaveStatus();
   const rate = useMutation({
@@ -143,7 +155,7 @@ export function TeamSettings() {
                     </td>
                     <td>
                       {locked ? <span>{roleName(m, roles.data)}</span> : (
-                        <RolePicker value={choiceFor(m)} roles={roles.data} viewerIsOwner={isOwner || m.role === "owner"} disabled={!m.active} label={`Role for ${name}`} onChange={(choice) => update.mutate({ userId: m.user_id, patch: patchFor(choice) })} />
+                        <RolePicker value={choiceFor(m)} roles={roles.data} viewerIsOwner={isOwner || m.role === "owner"} disabled={!m.active} label={`Role for ${name}`} onChange={(choice) => changeRole(m, choice)} />
                       )}
                     </td>
                     <td className="num">
@@ -180,6 +192,19 @@ export function TeamSettings() {
       {inviting && <InviteDialog prefill={handed} onClose={stopInviting} />}
       {resetting && <ResetPasswordDialog member={resetting} onClose={() => setResetting(null)} />}
       {resending && <ResendInviteDialog member={resending} onClose={() => setResending(null)} />}
+      {granting && (
+        <GrantWithPassword
+          name={granting.member.profile?.full_name || granting.member.profile?.email || "this person"}
+          roleLabel={roleName(accessFor(granting.choice, roles.data), roles.data)}
+          busy={access.isPending}
+          error={access.error}
+          onGrant={(password) => access.mutate({ userId: granting.member.user_id, choice: granting.choice, password }, { onSuccess: () => setGranting(null) })}
+          onClose={() => {
+            setGranting(null);
+            access.reset();
+          }}
+        />
+      )}
       {photoMember && <PhotoDialog member={photoMember} onClose={() => setPhotoFor(null)} />}
       {storageFor && (
         <AllowanceDialog
@@ -206,6 +231,41 @@ export function TeamSettings() {
 function storageLink(usage: StoragePerson | undefined): string {
   if (!usage?.limit_bytes) return "Storage limit";
   return `Storage: ${formatBytes(usage.limit_bytes)}${usage.limit_source === "role" ? " (role)" : ""}`;
+}
+
+/** The changer's own password, for anything that gives admin access (the API checks it with confirmPassword). */
+export function YourPassword({ value, onChange, autoFocus }: { value: string; onChange: (password: string) => void; autoFocus?: boolean }) {
+  return (
+    <Field label="Your Crewtavo password" hint={PASSWORD_HINT} requiredMessage="Enter your password to give someone admin access.">
+      <input className="input" type="password" value={value} onChange={(e) => onChange(e.target.value)} autoComplete="current-password" maxLength={200} required autoFocus={autoFocus} />
+    </Field>
+  );
+}
+
+/** A role change that gives admin access, with the changer's password; it's cleared once sent, and a wrong one says so here. */
+function GrantWithPassword({ name, roleLabel, busy, error, onGrant, onClose }: { name: string; roleLabel: string; busy: boolean; error: unknown; onGrant: (password: string) => void; onClose: () => void }) {
+  const [password, setPassword] = useState("");
+  const first = name.split(/\s+/)[0];
+  return (
+    <Dialog open onClose={onClose} title={`Give ${first} the ${roleLabel} role?`} size="sm">
+      <form
+        className="stack-sm"
+        onSubmit={(e: FormEvent) => {
+          e.preventDefault();
+          onGrant(password);
+          setPassword("");
+        }}
+      >
+        <div className="muted" style={{ marginTop: -6 }}>This gives {first} admin access, including payments, email and who's on the team.</div>
+        <YourPassword value={password} onChange={setPassword} autoFocus />
+        <FormError error={error} />
+        <div className="form-actions">
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="primary" loading={busy}>Change role</Button>
+        </div>
+      </form>
+    </Dialog>
+  );
 }
 
 /** Someone's photo, from their avatar in the list: shown wherever the team sees them. */
@@ -237,13 +297,16 @@ function PhotoDialog({ member, onClose }: { member: Member; onClose: () => void 
  * /api/team/:id/password-link). Emailed when the company can send email; otherwise the admin hands
  * it over. Only for people below the admin's own level (canMakeResetLink).
  */
-function ResetPasswordDialog({ member, onClose }: { member: Member; onClose: () => void }) {
+export function ResetPasswordDialog({ member, onClose }: { member: Member; onClose: () => void }) {
   const session = useSession();
   const name = member.profile?.full_name || member.profile?.email || "this person";
   const first = name.split(/\s+/)[0];
+  // Whoever opens the link has their account, so for someone with admin access it takes your password.
+  const admin = givesAdmin(choiceFor(member), useCompanyRoles().data);
+  const [password, setPassword] = useState("");
   const reset = useMutation({
     meta: { inline: true },
-    mutationFn: () => api.post<{ emailed: boolean; link: string | null }>(`/team/${member.user_id}/password-link`),
+    mutationFn: (current_password: string) => api.post<{ emailed: boolean; link: string | null }>(`/team/${member.user_id}/password-link`, { current_password: current_password || undefined }),
   });
   return (
     <Dialog open onClose={onClose} title={reset.data ? (reset.data.emailed ? "Reset link sent" : "Reset link ready") : `Reset ${first}'s password?`}>
@@ -270,14 +333,15 @@ function ResetPasswordDialog({ member, onClose }: { member: Member; onClose: () 
           <div className="form-actions"><Button variant="primary" onClick={onClose}>Done</Button></div>
         </div>
       ) : (
-        <div className="dialog-body">
+        <form className="dialog-body" onSubmit={(e: FormEvent) => { e.preventDefault(); reset.mutate(password); setPassword(""); }}>
           <p style={{ margin: 0 }}>This makes a one-time link for {name} to choose a new password. Their current password keeps working until they do.</p>
+          {admin && <YourPassword value={password} onChange={setPassword} autoFocus />}
           <FormError error={reset.error} />
           <div className="form-actions">
             <Button onClick={onClose}>Cancel</Button>
-            <Button variant="primary" icon="lock" loading={reset.isPending} onClick={() => reset.mutate()}>Make reset link</Button>
+            <Button type="submit" variant="primary" icon="lock" loading={reset.isPending}>Make reset link</Button>
           </div>
-        </div>
+        </form>
       )}
     </Dialog>
   );
@@ -292,13 +356,12 @@ function InviteDialog({ onClose, prefill }: { onClose: () => void; prefill?: { n
   const [choice, setChoice] = useState<string | null>(null);
   const employee = roles.data?.find((r) => r.base_role === "field_crew");
   const picked = choice ?? (employee ? `role:${employee.id}` : "level:field_crew");
+  const admin = givesAdmin(picked, roles.data);
+  const [password, setPassword] = useState("");
   const invite = useMutation({
     meta: { inline: true },
-    mutationFn: () => {
-      const patch = patchFor(picked);
-      const level = patch.role ?? roles.data?.find((r) => r.id === patch.role_id)?.base_role ?? "field_crew";
-      return api.post<InviteSent & { invited: boolean }>("/team/invite", { email: email.trim(), full_name: name.trim() || undefined, role: level, role_id: patch.role_id });
-    },
+    mutationFn: (current_password: string) =>
+      api.post<InviteSent & { invited: boolean }>("/team/invite", { email: email.trim(), full_name: name.trim() || undefined, ...accessFor(picked, roles.data), current_password: current_password || undefined }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["team", session.company.id] });
       queryClient.invalidateQueries({ queryKey: ["team-invites", session.company.id] });
@@ -315,7 +378,7 @@ function InviteDialog({ onClose, prefill }: { onClose: () => void; prefill?: { n
           onClose={onClose}
         />
       ) : (
-        <form onSubmit={(e: FormEvent) => { e.preventDefault(); invite.mutate(); }}>
+        <form onSubmit={(e: FormEvent) => { e.preventDefault(); invite.mutate(admin ? password : ""); setPassword(""); }}>
           <div className="form-grid">
             <Field label="Email"><input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required maxLength={200} /></Field>
             <Field label="Name" optional><input className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={120} /></Field>
@@ -323,6 +386,7 @@ function InviteDialog({ onClose, prefill }: { onClose: () => void; prefill?: { n
           <Field label="Role" hint={levelHint(picked, roles.data)}>
             <RolePicker value={picked} roles={roles.data} viewerIsOwner={session.role === "owner"} onChange={setChoice} label="Role" />
           </Field>
+          {admin && <YourPassword value={password} onChange={setPassword} />}
           <FormError error={invite.error} />
           <div className="form-actions">
             <FormChecks />
@@ -372,15 +436,18 @@ function InviteResult({ sent, message, onClose }: { sent: InviteSent; message: s
 }
 
 /** A new invite for someone who hasn't set up their account yet (POST /api/team/:id/invite-link). */
-function ResendInviteDialog({ member, onClose }: { member: Member; onClose: () => void }) {
+export function ResendInviteDialog({ member, onClose }: { member: Member; onClose: () => void }) {
   const session = useSession();
   const queryClient = useQueryClient();
   const email = member.profile?.email;
   const name = member.profile?.full_name || email || "this person";
   const first = name.split(/\s+/)[0];
+  // The link opens their account, so for someone with admin access it takes your password.
+  const admin = givesAdmin(choiceFor(member), useCompanyRoles().data);
+  const [password, setPassword] = useState("");
   const resend = useMutation({
     meta: { inline: true },
-    mutationFn: () => api.post<InviteSent>(`/team/${member.user_id}/invite-link`),
+    mutationFn: (current_password: string) => api.post<InviteSent>(`/team/${member.user_id}/invite-link`, { current_password: current_password || undefined }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["team-invites", session.company.id] }),
   });
   return (
@@ -388,14 +455,15 @@ function ResendInviteDialog({ member, onClose }: { member: Member; onClose: () =
       {resend.data ? (
         <InviteResult sent={resend.data} message={resend.data.emailed ? `We emailed ${email ?? first} a new link to set up their account.` : `${first} can join with the link below.`} onClose={onClose} />
       ) : (
-        <div className="dialog-body">
+        <form className="dialog-body" onSubmit={(e: FormEvent) => { e.preventDefault(); resend.mutate(password); setPassword(""); }}>
           <p style={{ margin: 0 }}>{first} hasn't set up their account yet. This makes a new one-time link for them to join {session.company.name}, and emails it if your email is connected.</p>
+          {admin && <YourPassword value={password} onChange={setPassword} autoFocus />}
           <FormError error={resend.error} />
           <div className="form-actions">
             <Button onClick={onClose}>Cancel</Button>
-            <Button variant="primary" icon="send" loading={resend.isPending} onClick={() => resend.mutate()}>Resend invite</Button>
+            <Button type="submit" variant="primary" icon="send" loading={resend.isPending}>Resend invite</Button>
           </div>
-        </div>
+        </form>
       )}
     </Dialog>
   );

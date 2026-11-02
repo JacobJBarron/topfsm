@@ -8,6 +8,18 @@ import type { Env } from "../src/env";
 import { cronMatches } from "../src/lib/cron";
 import { CRON_TASKS, runTask, TASKS } from "../src/tasks";
 
+// Autopay's own work is tested in autopay.test.ts and the Stripe tests; here, only that the tasks call it.
+const autopay = vi.hoisted(() => ({ reconcile: vi.fn(async () => 0), charge: vi.fn(), job: vi.fn() }));
+vi.mock("../src/integrations/stripe", async (original) => ({
+  ...(await original<typeof import("../src/integrations/stripe")>()),
+  reconcileAutopayProcessing: autopay.reconcile,
+}));
+vi.mock("../src/services/autopay", async (original) => ({
+  ...(await original<typeof import("../src/services/autopay")>()),
+  chargeDueAutopay: autopay.charge,
+  runAutopayJob: autopay.job,
+}));
+
 const env: Env = {
   SUPABASE_URL: "https://example.supabase.co",
   SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
@@ -92,25 +104,40 @@ describe("hourly upkeep", () => {
       if (call.path === "rpc/expire_sub_offers") return 3;
       // Two certificates running out; the subs have no email or phone to remind.
       if (call.path === "rpc/emit_sub_document_alerts") return [{ remind_sub: false }, { remind_sub: false }];
+      if (call.path === "rpc/emit_card_expiry_alerts") return 5;
       if (call.path === "rpc/clock_upkeep") return { reminded: 1, stopped: 0 };
       if (call.path === "rpc/tidy_sign_in_codes") return 4;
       throw new Error(`unexpected ${call.path}`);
     });
+    autopay.reconcile.mockResolvedValueOnce(2);
     expect(await runTask("followups", env)).toEqual({
       overdue: 0,
       reminders: 2,
       equipment: 1,
       offers: 3,
       subs: { alerts: 2, reminded: { subs: 0, email: 0, sms: 0, failed: 0 } },
+      cards: 5,
+      autopay_processing: 2,
       clocks: { reminded: 1, stopped: 0 },
       codes: 4,
       problems: ['mark_overdue_invoices: time zone "Not/AZone" not recognized'],
     });
+    // Cards expiring next month are flagged before the clocks.
     expect(calls.map((c) => c.path)).toEqual([
-      "rpc/mark_overdue_invoices", "rpc/emit_visit_reminders", "rpc/emit_equipment_alerts", "rpc/expire_sub_offers", "rpc/emit_sub_document_alerts", "rpc/clock_upkeep",
-      "rpc/tidy_sign_in_codes",
+      "rpc/mark_overdue_invoices", "rpc/emit_visit_reminders", "rpc/emit_equipment_alerts", "rpc/expire_sub_offers", "rpc/emit_sub_document_alerts",
+      "rpc/emit_card_expiry_alerts", "rpc/clock_upkeep", "rpc/tidy_sign_in_codes",
     ]);
+    expect(autopay.reconcile).toHaveBeenCalledWith(env, expect.anything());
     expect(error).toHaveBeenCalled();
+  });
+
+  it("reads autopay's bank payments back from Stripe, and keeps going when Stripe can't be asked", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const calls = serve((call) => (call.path === "rpc/emit_sub_document_alerts" ? [] : call.path === "rpc/clock_upkeep" ? { reminded: 0, stopped: 0 } : call.path.startsWith("rpc/") ? 0 : []));
+    autopay.reconcile.mockRejectedValueOnce(new Error("Stripe didn't answer"));
+    const out = (await runTask("followups", env)) as { cards: number; autopay_processing: number; problems: string[] };
+    expect(out).toMatchObject({ cards: 0, autopay_processing: 0, problems: ["reconcile_autopay_processing: Stripe didn't answer"] });
+    expect(calls.slice(-2).map((c) => c.path)).toEqual(["rpc/clock_upkeep", "rpc/tidy_sign_in_codes"]);
   });
 
   it("only promises subs a link the server can send, and keeps going when reminding them fails", async () => {
@@ -235,5 +262,40 @@ describe("the nightly tidy-up", () => {
     expect(await runTask("plans", env)).toEqual({ unrecorded: 0, subs: { unrecorded: 0 }, applicants: { unrecorded: 0 }, photos: { unrecorded: 1, kept: 0 }, social: 0, meta: { checked: 0, signin: 0, expiring: 0 } });
     expect(calls.find((c) => c.path === "rpc/unrecorded_files")?.body).toEqual({ p_limit: 1000 });
     expect(calls.filter((c) => c.method === "DELETE").map((c) => c.body)).toEqual([{ prefixes: ["co-1/kb/stray.jpg"] }]);
+  });
+});
+
+describe("autopay", () => {
+  it("charges what's due every 5 minutes, alongside the outbox that sends its receipts", async () => {
+    expect(CRON_TASKS["*/5 * * * *"]).toEqual(["outbox", "autopay"]);
+    const result = { claimed: 2, charged: 1, processing: 0, needs_approval: 0, called_off: 0, failed: 1, needs_client: 0, busy: 0, retry: 0, lost: 0 };
+    autopay.charge.mockResolvedValueOnce(result);
+    expect(await runTask("autopay", env)).toEqual(result);
+    expect(autopay.charge).toHaveBeenCalledWith(env);
+  });
+
+  it("hands the outbox's autopay jobs to the autopay service, and a job that keeps failing shows on Stripe's app", async () => {
+    const rows = [
+      { id: 1, company_id: "co-1", topic: "autopay.receipt", payload: { charge_id: "ch-1" }, attempts: 1 },
+      { id: 2, company_id: "co-1", topic: "autopay.notice", payload: { charge_id: "ch-2", status: "failed", failures: 1 }, attempts: 8 },
+      { id: 3, company_id: "co-1", topic: "autopay.agreed", payload: { authorization_id: "au-1" }, attempts: 1 },
+    ];
+    autopay.job.mockImplementation(async (_env: Env, _admin: unknown, row: { topic: string }) => {
+      if (row.topic === "autopay.notice") throw new Error("Resend is having trouble right now. Try again in a few minutes.");
+    });
+    const calls = serve((call) => (call.path === "rpc/claim_outbox" ? rows : []));
+    expect(await runTask("outbox", env)).toEqual({ claimed: 3, done: 2, failed: 1 });
+    expect(autopay.job.mock.calls.map((c) => c[2])).toEqual(rows.map(({ company_id, topic, payload }) => ({ company_id, topic, payload })));
+    const outbox = calls.filter((c) => c.method === "PATCH" && c.path === "outbox");
+    expect(outbox.map((c) => [c.url.searchParams.get("id"), Boolean(c.body.done_at), Boolean(c.body.dead_at)])).toEqual([
+      ["eq.1", true, false],
+      ["eq.2", false, true],
+      ["eq.3", true, false],
+    ]);
+    const marked = calls.find((c) => c.method === "PATCH" && c.path === "integrations")!;
+    expect(marked.url.searchParams.get("provider")).toBe("in.(stripe)");
+    expect(marked.body).toEqual({ last_error: "Resend is having trouble right now. Try again in a few minutes." });
+    // Nothing went to Stripe's invoice sync or the books.
+    expect(calls.some((c) => c.url.host === "api.stripe.com")).toBe(false);
   });
 });

@@ -1,3 +1,4 @@
+import { autopayDueText, autopaySettings, methodLabel } from "@crewtavo/core/autopay";
 import type { TablesUpdate } from "@crewtavo/core/database";
 import { paymentProblem, taxPercent, taxRateFromPercent } from "@crewtavo/core/money";
 import { givenBackWords, goneInvoiceWords } from "@crewtavo/core/promos";
@@ -20,7 +21,7 @@ import { EntityStatus, statusText } from "@/components/ui/StatusPill";
 import { api, supabase, unwrap, unwrapOne } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
 import { ApiError, errorMessage, isAuthError, isNetworkError, isRestarting } from "@/lib/errors";
-import { addDaysIso, formatDate, formatMoneyCents, formatTaxRate, todayIn } from "@/lib/format";
+import { addDaysIso, formatDate, formatMoney, formatMoneyCents, formatTaxRate, todayIn } from "@/lib/format";
 import { useListAnimation } from "@/lib/motion";
 import { useRememberRecent } from "@/lib/recent";
 import { can, hasRole, useSession } from "@/lib/session";
@@ -35,11 +36,14 @@ import { DiscountRows } from "../quotes/PromoRow";
 import { paidWords } from "./creditRules";
 import { ReferralCredits } from "./ReferralCredits";
 import { SendDialog } from "../quotes/SendDialog";
-import { refundable } from "./refunds";
+import { refundable, stripeCharge, stripeRefundable, stripeRefundToasts, type StripeRefundResult } from "./refunds";
 import { settle } from "./settle";
-import { bankPayment, bankPaymentNote, paidInStripe, paymentAmount, RECORD_IN_STRIPE } from "./stripeInvoices";
+import { autopayBankNote, bankPayment, bankPaymentNote, paidInStripe, paymentAmount, RECORD_IN_STRIPE } from "./stripeInvoices";
+import { chargeOutcomeText, type ChargeResult } from "./charges";
 
 const METHODS: Record<string, string> = { check: "Check", cash: "Cash", card: "Card", ach: "Bank transfer", other: "Other" };
+/** A charge still going, or waiting on someone: the database lets an invoice have one at a time. */
+const LIVE_CHARGES = new Set(["waiting", "needs_approval", "charging", "processing", "failed", "needs_client"]);
 /** The totals roll to their new figures, cents and all, as lines, payments and the tax rate change. */
 
 export function InvoicePage() {
@@ -54,25 +58,54 @@ function InvoicePageScreen() {
   const queryClient = useQueryClient();
   const [dialog, setDialog] = useState<null | "send" | "payment">(null);
   const [refunding, setRefunding] = useState<null | { id: string; amount: number; method: string }>(null);
+  const [stripeRefund, setStripeRefund] = useState<null | { id: string; amount: number; tip_amount: number; method: string; processor_ref: string | null }>(null);
   const today = todayIn(session.company.timezone);
 
   const invoice = useQuery({
     queryKey: ["invoice", id],
-    queryFn: async () =>
-      unwrapOne(
-        await supabase()
+    queryFn: async () => {
+      // Its autopay charges and referral credits come in alongside, by the same key: one select with
+      // them embedded too is more than the typed client can read.
+      const [row, autopay, credits] = await Promise.all([
+        supabase()
           .from("invoices")
-          .select("*, promo:promo_codes(code, kind, value, description), client:clients(id, display_name, email, phone, billing_address, sms_opt_out_at), job:jobs(id, number, title, po_number, kind, billing_mode, property:properties(line1, city, region, postal_code), quote:quotes!jobs_company_id_quote_id_fkey(approval, option_id, option:quote_options!quotes_option_fkey(name, warranty), package:roof_packages!quotes_roof_package_fkey(name, warranty))), lines:invoice_line_items(id, name, description, quantity, unit, unit_price, taxable, sort, service_id, discount_quote_id), credits:referral_credits(id, amount, note, referral_id, created_at), payments(id, amount, tip_amount, method, received_at, processor, notes, fee_amount, payout:payouts(arrival_on, status)), stripe:stripe_invoices(stripe_id, origin, status, number, hosted_url, livemode, amount_due, created_at, detached_at, processing_at)")
+          .select("*, promo:promo_codes(code, kind, value, description), client:clients(id, display_name, email, phone, billing_address, sms_opt_out_at), job:jobs(id, number, title, po_number, kind, billing_mode, property:properties(line1, city, region, postal_code), quote:quotes!jobs_company_id_quote_id_fkey(approval, option_id, option:quote_options!quotes_option_fkey(name, warranty), package:roof_packages!quotes_roof_package_fkey(name, warranty))), lines:invoice_line_items(id, name, description, quantity, unit, unit_price, taxable, sort, service_id, discount_quote_id), payments(id, amount, tip_amount, method, received_at, processor, processor_ref, notes, fee_amount, payout:payouts(arrival_on, status)), stripe:stripe_invoices(stripe_id, origin, status, number, hosted_url, livemode, amount_due, created_at, detached_at, processing_at, collection, purpose)")
           .eq("id", id)
           .order("sort", { referencedTable: "invoice_line_items" })
           .order("received_at", { referencedTable: "payments" })
           .order("created_at", { referencedTable: "stripe_invoices", ascending: false })
-          .order("created_at", { referencedTable: "referral_credits" })
           .maybeSingle(),
-        "This invoice",
-      ),
+        supabase()
+          .from("autopay_charges")
+          .select("id, source, status, due_at, attempts, failures, last_error, decline_code, charged_at, approved_at, method:client_payment_methods!autopay_charges_method_fkey(type, brand, last4, bank_name, wallet)")
+          .eq("invoice_id", id)
+          .order("created_at", { ascending: false }),
+        supabase().from("referral_credits").select("id, amount, note, referral_id, created_at").eq("invoice_id", id).order("created_at"),
+      ]);
+      return { ...unwrapOne(row, "This invoice"), autopay: unwrap(autopay), credits: unwrap(credits) };
+    },
+    // While it's being charged (or was just approved), look again every few seconds until Stripe answers.
+    refetchInterval: (query) => (query.state.data?.autopay.some((a) => a.status === "charging" || (a.status === "waiting" && a.approved_at)) ? 10_000 : false),
   });
   const inv = invoice.data;
+  // Whether the company's Stripe key can make refunds (Settings → Payments reads the same), asked
+  // only for an invoice with a payment Stripe took. Unknown (loading, or an older server) leaves
+  // Refund on: the server says why if it can't.
+  const autopayStatus = useQuery({
+    queryKey: ["company", session.company.id, "payments"],
+    enabled: Boolean(inv?.payments.some(stripeCharge)),
+    meta: { silent: true },
+    queryFn: () => api.get<{ can_refund: boolean }>("/autopay/status"),
+  });
+  const canRefund = autopayStatus.data?.can_refund !== false;
+  // Charge card's card, when the server says it can be pressed: charging saved cards is on, it's
+  // owed, and the client agreed to a card. Asked only while nothing is charging it already.
+  const chargeable = useQuery({
+    queryKey: ["invoice", id, "charge"],
+    enabled: Boolean(inv && Number(inv.balance_due) > 0 && !inv.autopay.some((a) => LIVE_CHARGES.has(a.status))) && autopaySettings(session.company.settings, session.company.trade_preset).enabled,
+    meta: { silent: true },
+    queryFn: () => api.get<{ manual: { card: string } | null }>(`/invoices/${id}/charge`),
+  });
   useDocumentTitle(inv ? `Invoice #${inv.number}` : "Invoice");
   useRememberRecent(session.company.id, inv ? { kind: "invoice", id: inv.id, title: `Invoice #${inv.number}`, subtitle: inv.client?.display_name, path: `/invoices/${inv.id}` } : null);
 
@@ -146,6 +179,38 @@ function InvoicePageScreen() {
     mutationFn: (print: boolean) => api.get<{ link: string }>(`/invoices/${id}/link`).then((r) => ({ ...r, print })),
     onSuccess: ({ link, print }) => window.open(print ? `${link}?print=1` : link, "_blank", "noopener"),
   });
+  // What Stripe does next (a charge, a refund) is booked a few seconds later, so look again then too.
+  const refreshSoon = () => {
+    refresh();
+    window.setTimeout(() => void queryClient.invalidateQueries({ queryKey: ["invoice", id] }), 5000);
+  };
+  // Approve charge: a charge over the autopay limit goes ahead, and the server starts on it at once.
+  const approveCharge = useMutation({
+    meta: { success: "Charging it now", tone: "invoice" },
+    mutationFn: (chargeId: string) => api.post(`/autopay/charges/${chargeId}/approve`, {}),
+    onSuccess: refreshSoon,
+  });
+  // Charge card: queued for the autopay task, which the server starts on at once. Charge card goes
+  // as soon as it's queued, so a second press can't queue another. It sends the balance the office
+  // confirmed: if a line changed it since, the server says so (changed) and the page shows the new one.
+  const chargeCard = useMutation({
+    meta: { success: (r: { results: ChargeResult[] }) => (r.results[0]?.outcome === "queued" ? "Charging it now" : null), tone: "invoice" },
+    mutationFn: (amount: number) => api.post<{ results: ChargeResult[] }>("/invoices/charge", { invoices: [{ id, amount }] }),
+    onSuccess: ({ results }) => {
+      const r = results[0];
+      if (r && r.outcome !== "queued") toast.error("Not charged", { description: chargeOutcomeText(r) });
+      queryClient.setQueryData(["invoice", id, "charge"], { manual: null });
+      refreshSoon();
+    },
+  });
+  // Send it the usual way: the charge is called off, and the draft goes out with the Send dialog.
+  const callOffCharge = useMutation({
+    mutationFn: (chargeId: string) => api.post(`/autopay/charges/${chargeId}/call-off`, {}),
+    onSuccess: () => {
+      refresh();
+      setDialog("send");
+    },
+  });
 
   if (invoice.isPending) return <DetailSkeleton />;
   if (invoice.error || !inv) return <PageError error={invoice.error} onRetry={() => invoice.refetch()} back={<BackLink to="/invoices">Invoices</BackLink>} />;
@@ -159,15 +224,54 @@ function InvoicePageScreen() {
   const paid = Number(inv.amount_paid);
   const daysLate = inv.due_on && balance > 0 && !draft && !isVoid && !writtenOff ? Math.floor((Date.parse(today) - Date.parse(inv.due_on)) / 86_400_000) : 0;
   const lastPayment = inv.payments.at(-1);
-  // The Stripe invoice that matters now: the live one, else the latest.
-  const stripe = inv.stripe.find((s) => s.status === "open" || s.status === "processing") ?? inv.stripe.find((s) => s.stripe_id);
+  // The Stripe invoice that matters now: the live one, else the latest. A tip added after an
+  // automatic charge is its own small Stripe invoice, and isn't the one for this invoice's bill.
+  const billed = inv.stripe.filter((s) => s.purpose !== "tip");
+  const stripe = billed.find((s) => s.status === "open" || s.status === "processing") ?? billed.find((s) => s.stripe_id);
   const bank = bankPayment(inv.stripe);
-  // Said next to Record payment, and asked about before recording one.
-  const bankNote = bank && balance > 0 ? bankPaymentNote(bank, session.company.timezone) : null;
+  // Charged automatically (autopay): its charge, if one is still going or done. Only one at a time
+  // isn't called off, and one called off leaves the invoice to be sent and paid as usual.
+  const charge = inv.autopay.find((a) => a.status !== "called_off") ?? null;
+  // The task holds it: Stripe is charging it, and the database refuses changes to it meanwhile.
+  const charging = charge?.status === "charging";
+  const card = charge?.method ? methodLabel(charge.method) : "the saved card";
+  // Its bank payment is on its way: it settles or bounces on its own, so payments, voiding and moving
+  // it back to draft wait until then (the database holds them back too), and this says why. Not in a
+  // Stripe account Crewtavo has since left: Crewtavo won't hear how that one ends, so the office
+  // follows it there, as any bank payment there (bankNote says so), and nothing waits for it.
+  const left = inv.stripe.some((s) => s.collection === "charge_automatically" && s.purpose === "invoice" && s.status === "processing" && Boolean(s.detached_at));
+  const clearing = charge?.status === "processing" && !left;
+  const clearingNote = clearing ? autopayBankNote(card, bank, session.company.timezone) : null;
+  // Any other bank payment on its way: said next to Record payment, and asked about before recording one.
+  const bankNote = bank && balance > 0 && !clearing ? bankPaymentNote(bank, session.company.timezone) : null;
+  const clientName = inv.client?.display_name ?? "The client";
+  // Over the limit, or with visits autopay didn't queue itself: the draft waits for the office.
+  const asking = charge?.status === "needs_approval" && draft;
+  // Declined, or the client has to do something: they were sent the Pay link, and a reminder is the next step.
+  // Not while their bank payment is on its way (bankNote says so): nothing is tried again meanwhile.
+  // One in a Stripe account Crewtavo left doesn't hold the retry back, so that one still says it.
+  // Moved back to be tried on a card the client agreed to since (autopay_try_new_card: no failures
+  // on it): said as one waiting, so nothing says that card was declined.
+  const onNewCard = charge?.status === "failed" && charge.failures === 0;
+  const chargeFailed = ((charge?.status === "failed" && !onNewCard) || charge?.status === "needs_client") && balance > 0 && (!bank || bank.left);
+  // A draft being charged stays as it is until it's done (the database refuses edits meanwhile).
+  const editable = draft && !charging;
   // Made in Stripe: paid as Stripe billed it, so its total changes there, not here.
   const fromStripe = inv.stripe.some((s) => s.origin === "stripe");
   // And while it's open there, so do its payments.
   const paysInStripe = paidInStripe(inv.stripe);
+  // Charge card: not while a charge is going, or a bank payment (in a Stripe account left too, while
+  // it may still clear there) or Stripe is collecting it already. The server says the same.
+  const manual = balance > 0 && !inv.autopay.some((a) => LIVE_CHARGES.has(a.status)) && !paysInStripe && !bank ? (chargeable.data?.manual ?? null) : null;
+  const chargeNow = async (card: string) => {
+    const amount = formatMoneyCents(balance);
+    const ok = await confirm({
+      title: `Charge ${amount} to ${card}?`,
+      body: `Invoice #${inv.number}${inv.client ? ` for ${inv.client.display_name}` : ""}. It's charged in the next minute or so, and this page shows when it goes through.${draft ? " The draft is marked as sent, without an email." : ""}`,
+      confirmLabel: `Charge ${amount}`,
+    });
+    if (ok) chargeCard.mutate(balance);
+  };
 
   // A payment marked by mistake goes at once, with Undo, and the balance goes back up with it.
   type Loaded = typeof inv;
@@ -195,22 +299,28 @@ function InvoicePageScreen() {
         title={`Invoice #${inv.number}`}
         actions={
           <>
-            {!isVoid && !writtenOff && <Button icon="send" variant={draft ? "primary" : "secondary"} disabled={!inv.lines.length} title={!inv.lines.length ? "Add a line item first" : undefined} onClick={() => setDialog("send")}>{draft ? "Send invoice" : "Resend"}</Button>}
-            {!draft && !isVoid && balance > 0 && <Button variant="primary" icon="dollar" disabled={paysInStripe} title={paysInStripe ? "Made in Stripe: record its payments there" : (bankNote ?? undefined)} onClick={() => setDialog("payment")}>Record payment</Button>}
+            {!isVoid && !writtenOff && (
+              <Button icon="send" variant={draft && !asking ? "primary" : "secondary"} disabled={!inv.lines.length || charging} title={!inv.lines.length ? "Add a line item first" : charging ? `Charging ${card} now` : undefined} onClick={() => setDialog("send")}>
+                {draft ? "Send invoice" : "Resend"}
+              </Button>
+            )}
+            {manual && <Button icon="card" loading={chargeCard.isPending} onClick={() => void chargeNow(manual.card)}>Charge card</Button>}
+            {!draft && !isVoid && balance > 0 && <Button variant="primary" icon="dollar" disabled={paysInStripe || charging || clearing} title={paysInStripe ? "Made in Stripe: record its payments there" : charging ? `Charging ${card} now` : (clearingNote ?? bankNote ?? undefined)} onClick={() => setDialog("payment")}>Record payment</Button>}
+            {/* While it's being charged, or its bank payment is on its way, the menu leaves out what the database refuses until it's done. */}
             <Menu
               items={[
                 { label: "Preview as client", icon: "eye", onSelect: () => openClientView.mutate(false) },
                 { label: "Print or save PDF", icon: "printer", onSelect: () => openClientView.mutate(true) },
                 { separator: true },
-                { label: "Mark as sent", icon: "check", hidden: !draft || !inv.lines.length, onSelect: () => update.mutate({ status: "sent" }) },
-                { label: "Record payment", icon: "dollar", hidden: !draft || !inv.lines.length, onSelect: () => setDialog("payment") },
-                { label: "Move back to draft", icon: "undo", hidden: draft || isVoid || writtenOff || inv.payments.length > 0 || fromStripe, onSelect: () => update.mutate({ status: "draft", sent_at: null }) },
+                { label: "Mark as sent", icon: "check", hidden: !draft || !inv.lines.length || charging, onSelect: () => update.mutate({ status: "sent" }) },
+                { label: "Record payment", icon: "dollar", hidden: !draft || !inv.lines.length || charging || clearing, onSelect: () => setDialog("payment") },
+                { label: "Move back to draft", icon: "undo", hidden: draft || isVoid || writtenOff || inv.payments.length > 0 || fromStripe || charging || clearing, onSelect: () => update.mutate({ status: "draft", sent_at: null }) },
                 {
                   label: "Write off",
                   icon: "archive",
-                  hidden: draft || isVoid || writtenOff || inv.status === "paid" || balance <= 0,
+                  hidden: draft || isVoid || writtenOff || inv.status === "paid" || balance <= 0 || charging,
                   // A bank payment on its way may still pay it.
-                  disabled: Boolean(bank),
+                  disabled: Boolean(bank) || clearing,
                   onSelect: async () => {
                     const ok = await confirm({
                       title: `Write off invoice #${inv.number}?`,
@@ -225,7 +335,7 @@ function InvoicePageScreen() {
                   label: "Void invoice",
                   icon: "x",
                   danger: true,
-                  hidden: isVoid || paid !== 0,
+                  hidden: isVoid || paid !== 0 || charging || clearing,
                   onSelect: async () => {
                     const promo = await givenBack();
                     if (await confirm({ title: `Void invoice #${inv.number}?`, body: `It stays on record but no longer counts as owed. Visits it covered can be invoiced again.${promo ? ` ${promo}` : ""}`, confirmLabel: "Void invoice", danger: true })) update.mutate({ status: "void" });
@@ -235,7 +345,7 @@ function InvoicePageScreen() {
                   label: "Delete draft",
                   icon: "trash",
                   danger: true,
-                  hidden: !draft || paid !== 0,
+                  hidden: !draft || paid !== 0 || charging || clearing,
                   onSelect: async () => {
                     const promo = await givenBack();
                     if (await confirm({ title: `Delete draft invoice #${inv.number}?`, body: `This can't be undone.${promo ? ` ${promo}` : ""}`, confirmLabel: "Delete", danger: true })) remove.mutate();
@@ -267,18 +377,57 @@ function InvoicePageScreen() {
           <Button size="sm" icon="undo" disabled={writeOff.isPending} onClick={() => writeOff.mutate(false)}>Undo write-off</Button>
         </div>
       )}
-      {inv.status === "paid" && <div className="callout callout-good"><Icon name="check" size={20} /><div className="grow">{paidWords(paid, Number(inv.credit_amount), lastPayment?.received_at ? formatDate(lastPayment.received_at) : null)}</div></div>}
+      {inv.status === "paid" && (
+        <div className="callout callout-good">
+          <Icon name="check" size={20} />
+          <div className="grow">
+            {charge?.status === "paid" ? `Paid automatically with ${card} on ${formatDate(charge.charged_at ?? lastPayment?.received_at)}.` : paidWords(paid, Number(inv.credit_amount), lastPayment?.received_at ? formatDate(lastPayment.received_at) : null)}
+          </div>
+        </div>
+      )}
+      {charging && <div className="callout callout-info"><Icon name="card" size={20} /><div className="grow">Charging {card} now.</div></div>}
+      {/* Approved, or on its way back to the task after a moment's wait. */}
+      {(charge?.status === "waiting" || onNewCard) && charge && (
+        <div className="callout callout-info">
+          <Icon name="card" size={20} />
+          <div className="grow">{charge.approved_at ? `Charging ${card} in the next few minutes.` : `Charged automatically to ${card} ${autopayDueText(charge.due_at, session.company.timezone)}.`}</div>
+        </div>
+      )}
       {bankNote && <div className="callout callout-info"><Icon name="clock" size={20} /><div className="grow">{bankNote}</div></div>}
-      {/* Up front, rather than refused once someone has filled in a payment. */}
-      {paysInStripe && !bank && !isVoid && balance > 0 && <div className="callout callout-info"><Icon name="info" size={20} /><div className="grow">{RECORD_IN_STRIPE}</div></div>}
-      {daysLate > 0 && !bank && (
+      {/* The bank payment the charge started: why Record payment waits. */}
+      {clearingNote && !isVoid && balance > 0 && <div className="callout callout-info"><Icon name="clock" size={20} /><div className="grow">{clearingNote}</div></div>}
+      {asking && charge && (
+        <div className="callout callout-warning">
+          <Icon name="card" size={20} />
+          <div className="grow">{approvalText(charge, balance, autopaySettings(session.company.settings, session.company.trade_preset).max_amount)}</div>
+          <div className="row wrap" style={{ gap: 6 }}>
+            <Button size="sm" variant="primary" icon="check" loading={approveCharge.isPending} disabled={callOffCharge.isPending} onClick={() => approveCharge.mutate(charge.id)}>Approve charge</Button>
+            <Button size="sm" icon="send" loading={callOffCharge.isPending} disabled={approveCharge.isPending || !inv.lines.length} onClick={() => callOffCharge.mutate(charge.id)}>Send it the usual way</Button>
+          </div>
+        </div>
+      )}
+      {chargeFailed && charge && (
         <div className="callout callout-danger">
-          <Icon name="alert" size={20} />
-          <div className="grow">{daysLate} {daysLate === 1 ? "day" : "days"} past due. {formatMoneyCents(balance)} is still owed.</div>
+          <Icon name="card" size={20} />
+          <div className="grow">
+            {charge.status === "failed"
+              ? `Autopay failed${charge.last_error ? `: ${clause(charge.last_error)}` : ""}. ${clientName} was sent the Pay link and a way to update their card. We'll try again ${autopayDueText(charge.due_at, session.company.timezone)}.`
+              : `Autopay needs ${clientName}: ${needsClientReason(charge)}.`}
+          </div>
           <Button size="sm" icon="send" onClick={() => setDialog("send")}>Send a reminder</Button>
         </div>
       )}
-      {draft && <div className="callout callout-info"><Icon name="info" size={20} /><div className="grow">This invoice hasn't been sent yet.</div></div>}
+      {/* Up front, rather than refused once someone has filled in a payment. */}
+      {paysInStripe && !bank && !isVoid && balance > 0 && <div className="callout callout-info"><Icon name="info" size={20} /><div className="grow">{RECORD_IN_STRIPE}</div></div>}
+      {daysLate > 0 && !bank && !clearing && (
+        <div className="callout callout-danger">
+          <Icon name="alert" size={20} />
+          <div className="grow">{daysLate} {daysLate === 1 ? "day" : "days"} past due. {formatMoneyCents(balance)} is still owed.</div>
+          {/* A failed charge's callout above has the reminder already. */}
+          {!chargeFailed && <Button size="sm" icon="send" onClick={() => setDialog("send")}>Send a reminder</Button>}
+        </div>
+      )}
+      {draft && !charge && <div className="callout callout-info"><Icon name="info" size={20} /><div className="grow">This invoice hasn't been sent yet.</div></div>}
       {!isVoid && balance < 0 && <div className="callout callout-info"><Icon name="info" size={20} /><div className="grow">The client paid {formatMoneyCents(-balance)} more than they owed. Record a refund, or keep it as a credit for their next invoice.</div></div>}
 
       <div className="two-col">
@@ -289,7 +438,7 @@ function InvoicePageScreen() {
             parent="invoice_id"
             parentId={inv.id}
             lines={inv.lines}
-            editable={draft}
+            editable={editable}
             onChanged={refresh}
             // Work that repeats has a next invoice for a once-per-job code to go on, which the toast can say.
             promoJob={inv.job ? { id: inv.job.id, repeats: inv.job.kind === "recurring" || inv.job.billing_mode === "per_visit" } : null}
@@ -314,8 +463,12 @@ function InvoicePageScreen() {
                       </span>
                     </span>
                     <span className="muted small">{formatDate(p.received_at)}</span>
-                    {/* Online payments are refunded in Stripe, and the refund shows up here on its own. */}
-                    {!p.processor && (
+                    {/*
+                      Payments recorded here are refunded and removed here. One Stripe took is refunded
+                      through Stripe (Refund here, or in Stripe's dashboard), and either way the refund
+                      is booked from Stripe, so it shows up here as a negative payment on its own.
+                    */}
+                    {!p.processor ? (
                       <Menu
                         triggerClassName="btn btn-sm btn-ghost btn-icon"
                         label="Payment actions"
@@ -325,6 +478,19 @@ function InvoicePageScreen() {
                           { label: "Remove payment", icon: "trash", danger: true, onSelect: () => takeOff(p) },
                         ]}
                       />
+                    ) : (
+                      stripeCharge(p) && (
+                        <Menu
+                          triggerClassName="btn btn-sm btn-ghost btn-icon"
+                          label="Payment actions"
+                          items={[
+                            // The menu can't explain a turned-off item itself, so it says why above it.
+                            { heading: "Needs a new Stripe key", hidden: canRefund },
+                            // Hidden once it's all been refunded.
+                            { label: "Refund", icon: "undo", hidden: stripeRefundable(p, inv.payments) <= 0, disabled: !canRefund, title: canRefund ? undefined : "Your Stripe key can't make refunds. Update it on the Apps page.", onSelect: () => setStripeRefund(p) },
+                          ]}
+                        />
+                      )
                     )}
                   </div>
                 );
@@ -342,10 +508,10 @@ function InvoicePageScreen() {
               promo={inv.promo}
               discount={Number(inv.discount_amount)}
               subtotal={Number(inv.subtotal)}
-              canEditDiscount={draft}
-              // Not while a bank payment clears: the client is paying what Stripe asked for (the database says why).
+              canEditDiscount={editable}
+              // Not while a bank payment clears or the card is being charged: the client is paying what Stripe asked for (the database says why).
               // One code to an invoice: one with its job's code on a line takes no other.
-              canChangePromo={!isVoid && !fromStripe && !bank && inv.payments.length === 0 && ["draft", "sent", "overdue"].includes(inv.status) && (Boolean(inv.promo) || !promoJobId)}
+              canChangePromo={!isVoid && !fromStripe && !bank && !charging && inv.payments.length === 0 && ["draft", "sent", "overdue"].includes(inv.status) && (Boolean(inv.promo) || !promoJobId)}
               onSaveDiscount={(v) => saveField({ discount_amount: v })}
               onEditDiscount={save.edited}
               onUnchangedDiscount={unchanged}
@@ -353,10 +519,10 @@ function InvoicePageScreen() {
             />
             <ReferralCredits invoice={inv} onChanged={refresh} />
             <div className="line">
-              <span>Tax {draft ? "" : `(${formatTaxRate(inv.tax_rate)})`}</span>
-              {draft ? <MoneyInput percent label="Tax rate" value={taxPercent(inv.tax_rate)} max={99.99} onSave={(v) => saveField({ tax_rate: taxRateFromPercent(v) })} onEdit={save.edited} onUnchanged={unchanged} /> : <AnimatedNumber value={Number(inv.tax_amount)} format={MONEY_CENTS} />}
+              <span>Tax {editable ? "" : `(${formatTaxRate(inv.tax_rate)})`}</span>
+              {editable ? <MoneyInput percent label="Tax rate" value={taxPercent(inv.tax_rate)} max={99.99} onSave={(v) => saveField({ tax_rate: taxRateFromPercent(v) })} onEdit={save.edited} onUnchanged={unchanged} /> : <AnimatedNumber value={Number(inv.tax_amount)} format={MONEY_CENTS} />}
             </div>
-            {draft && <div className="line"><span>Tax amount</span><AnimatedNumber value={Number(inv.tax_amount)} format={MONEY_CENTS} /></div>}
+            {editable && <div className="line"><span>Tax amount</span><AnimatedNumber value={Number(inv.tax_amount)} format={MONEY_CENTS} /></div>}
             <div className="line grand"><span>Total</span><AnimatedNumber value={Number(inv.total)} format={MONEY_CENTS} /></div>
             {Number(inv.retainage_amount) > 0 && <div className="line"><span>Retainage held ({Number(inv.retainage_pct)}%)</span><span>−<AnimatedNumber value={Number(inv.retainage_amount)} format={MONEY_CENTS} /></span></div>}
             {paid !== 0 && <div className="line"><span>Paid</span><span>−<AnimatedNumber value={paid} format={MONEY_CENTS} /></span></div>}
@@ -392,8 +558,45 @@ function InvoicePageScreen() {
       {dialog === "send" && <SendDialog kind="invoice" id={inv.id} number={inv.number} email={inv.client?.email ?? null} phone={inv.client?.phone ?? null} textsOffSince={inv.client?.sms_opt_out_at} onClose={() => setDialog(null)} onSent={refresh} />}
       {dialog === "payment" && <PaymentDialog invoice={{ id: inv.id, client_id: inv.client_id, balance, draft }} bank={bankNote} onClose={() => setDialog(null)} onSaved={refresh} />}
       {refunding && <RefundDialog invoice={{ id: inv.id, client_id: inv.client_id }} payment={refunding} left={refundable(refunding, inv.payments)} onClose={() => setRefunding(null)} onSaved={refresh} />}
+      {stripeRefund && <StripeRefundDialog payment={stripeRefund} left={stripeRefundable(stripeRefund, inv.payments)} onClose={() => setStripeRefund(null)} onSaved={refreshSoon} />}
     </>
   );
+}
+
+/** A message from Stripe or the database as part of a sentence: without its full stop. */
+const clause = (text: string) => text.trim().replace(/[.\s]+$/, "");
+
+/** Whole dollars when it's a round figure ("$500"), else with cents. */
+const limitText = (amount: number) => (Number.isInteger(amount) ? formatMoney(amount) : formatMoneyCents(amount));
+
+/**
+ * Why a charge waits for the office's OK. The database asks first, whatever the amount, when the
+ * invoice has visits autopay didn't queue itself or from before the client agreed, and says why
+ * ("Includes visits from before autopay started"); and when it's over the company's limit, with no
+ * reason given.
+ */
+function approvalText(charge: { last_error: string | null }, balance: number, cap: number | null): string {
+  if (charge.last_error) return `${clause(charge.last_error).replace(/^Includes /, "It includes ")}, so it waits for your OK.`;
+  if (cap != null && balance > cap) return `${formatMoneyCents(balance)} is over your ${limitText(cap)} limit, so it waits for your OK.`;
+  return "It waits for your OK before it's charged.";
+}
+
+/** Stripe's answers that mean the client's bank wants them to confirm the payment themselves. */
+const CONFIRM_CODES = new Set(["authentication_required", "invoice_payment_intent_requires_action"]);
+
+/**
+ * Why a charge waits on the client, in the words the office is told (the database's notice for it):
+ * a bank payment that bounced or a card declined twice pauses autopay until they update it (a
+ * declined Charge card just sends them the Pay link); their
+ * bank asking them to confirm the payment; else what Stripe said.
+ */
+function needsClientReason(charge: { source: string; failures: number; last_error: string | null; decline_code: string | null; method: { type: string } | null }): string {
+  if (charge.failures > 0 && (charge.method?.type === "us_bank_account" || charge.decline_code === "bank_failed")) return "their bank payment didn't go through, so autopay is paused until they update it";
+  // Charge card isn't tried again, and one decline the office asked for doesn't pause autopay.
+  if (charge.failures > 0 && charge.source === "manual") return "the card was declined, so they were sent the Pay link and a way to update their card";
+  if (charge.failures >= 2) return "the card was declined twice, so autopay is paused until they update it";
+  if (CONFIRM_CODES.has(charge.decline_code ?? "") || !charge.last_error) return "their bank wants them to confirm the payment";
+  return clause(charge.last_error);
 }
 
 /**
@@ -448,8 +651,8 @@ const STRIPE_STATUS: Record<string, string> = {
   uncollectible: "Written off in Stripe",
 };
 
-/** Where this invoice is in Stripe, with a way to open it there or share its payment page. */
-function StripeCard({ stripe }: { stripe: { stripe_id: string | null; origin: string; status: string; number: string | null; hosted_url: string | null; livemode: boolean } }) {
+/** Where this invoice is in Stripe, with a way to open it there or share its payment page. Autopay's are charged to the saved card or bank account. */
+function StripeCard({ stripe }: { stripe: { stripe_id: string | null; origin: string; status: string; number: string | null; hosted_url: string | null; livemode: boolean; collection: string } }) {
   const dashboard = `https://dashboard.stripe.com/${stripe.livemode ? "" : "test/"}invoices/${stripe.stripe_id}`;
   return (
     <div className="card card-pad stack-sm">
@@ -457,6 +660,7 @@ function StripeCard({ stripe }: { stripe: { stripe_id: string | null; origin: st
       <div className="totals">
         <div className="line"><span>{stripe.origin === "stripe" ? "Made in Stripe" : "Invoice"}</span><span>{stripe.number ?? "—"}</span></div>
         <div className="line"><span>Status</span><span>{STRIPE_STATUS[stripe.status] ?? stripe.status}</span></div>
+        {stripe.collection === "charge_automatically" && <div className="line"><span>Charged</span><span>Automatically</span></div>}
       </div>
       <div className="row wrap" style={{ gap: 6 }}>
         <a className="btn btn-sm" href={dashboard} target="_blank" rel="noreferrer">Open in Stripe <Icon name="external" size={14} /></a>
@@ -491,7 +695,11 @@ function NotesCard({ value, editable, onEdit, onUnchanged, onSave }: { value: st
   );
 }
 
-/** `bank` says a bank payment is on its way, so recording another is confirmed first (it isn't refused: it can bounce). */
+/**
+ * `bank` says a bank payment from the Pay link is on its way, so recording another is confirmed first
+ * (it isn't refused: it can bounce). Autopay's own is refused by the database until it clears or
+ * bounces, so Record payment waits for that instead.
+ */
 function PaymentDialog({ invoice, bank, onClose, onSaved }: { invoice: { id: string; client_id: string; balance: number; draft: boolean }; bank: string | null; onClose: () => void; onSaved: () => void }) {
   const session = useSession();
   const [amount, setAmount] = useState(invoice.balance > 0 ? invoice.balance.toFixed(2) : "");
@@ -611,6 +819,56 @@ function RefundDialog({ invoice, payment, left, onClose, onSaved }: { invoice: {
           <FormChecks />
           <Button onClick={onClose}>Cancel</Button>
           <Button type="submit" variant="primary" icon="undo" loading={save.isPending}>Record {value > 0 ? `${formatMoneyCents(value)} refund` : "refund"}</Button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+/**
+ * Refund a payment Stripe took, all of it or part, through Stripe: the server makes the refund and
+ * books it at once (Stripe's own report of it then finds it booked). `left` is what hasn't gone back
+ * yet, tip included. A refund puts the balance back up by what went back, so "Take it off the
+ * invoice too" writes that off, and nobody asks the client to pay again for what they were refunded.
+ * When other money is still owed on it too, nothing is written off, and the office is told how much
+ * is still asked for.
+ */
+function StripeRefundDialog({ payment, left, onClose, onSaved }: { payment: { id: string; method: string }; left: number; onClose: () => void; onSaved: () => void }) {
+  const [amount, setAmount] = useState(left.toFixed(2));
+  const [writeOff, setWriteOff] = useState(true);
+  const value = Number(amount);
+  const tooMuch = value > left + 0.005;
+  const save = useMutation({
+    // "Refund sent to Stripe", unless the note below says it all (stripeRefundToasts).
+    meta: { inline: true, success: (result: StripeRefundResult) => stripeRefundToasts(result, writeOff).success, tone: "invoice" },
+    mutationFn: async () => {
+      if (!(value > 0)) throw new Error("Enter an amount greater than zero.");
+      if (tooMuch) throw new Error(`That's more than the ${formatMoneyCents(left)} left to refund.`);
+      return api.post<StripeRefundResult>(`/payments/${payment.id}/refund`, { amount: Math.round(value * 100) / 100, write_off: writeOff });
+    },
+    onSuccess: (result) => {
+      // Ticked but not written off (other money is still owed), or not booked here yet.
+      const { note } = stripeRefundToasts(result, writeOff);
+      if (note) toast.info(note.title, note.description ? { description: note.description } : undefined);
+      onSaved();
+      onClose();
+    },
+  });
+  return (
+    <Dialog open onClose={onClose} title="Refund payment" description={`The money goes back to their ${payment.method === "ach" ? "bank account" : "card"}. Stripe keeps its fee.`}>
+      <form onSubmit={(e: FormEvent) => { e.preventDefault(); save.mutate(); }}>
+        <Field label="Amount" hint={`Up to ${formatMoneyCents(left)}`} requiredMessage="Enter the amount to refund." error={tooMuch ? `More than the ${formatMoneyCents(left)} left to refund.` : null}>
+          <span className="input-group"><span className="addon">$</span><input className="input" style={{ paddingLeft: 22 }} inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} aria-invalid={tooMuch || undefined} required /></span>
+        </Field>
+        <div className="stack-sm">
+          <label className="checkbox"><input type="checkbox" checked={writeOff} onChange={(e) => setWriteOff(e.target.checked)} /> Take it off the invoice too</label>
+          {!writeOff && <span className="muted small">The balance goes back up by the refund, and the client will be asked for it.</span>}
+        </div>
+        <FormError error={save.error} />
+        <div className="form-actions">
+          <FormChecks />
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="primary" icon="undo" loading={save.isPending}>{value > 0 ? `Refund ${formatMoneyCents(value)}` : "Refund"}</Button>
         </div>
       </form>
     </Dialog>

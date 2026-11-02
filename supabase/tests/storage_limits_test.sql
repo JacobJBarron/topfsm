@@ -96,8 +96,11 @@ select tsl.as_user(:'ann');
 select public.create_company('Summit Roofing', 'roofing') as co \gset
 insert into public.company_roles (company_id, name, base_role, permissions) values (:'co', 'Bookkeeper', 'admin', '{invoices,reports}') returning id as keeper \gset
 insert into public.company_roles (company_id, name, base_role, permissions) values (:'co', 'Roof boss', 'crew_lead', '{schedule}') returning id as foreman \gset
+-- Admin access is given through the server (the admin_grants migration).
+reset role;
 insert into public.memberships (company_id, user_id, role) values
   (:'co', :'ada', 'admin'), (:'co', :'ola', 'office'), (:'co', :'eve', 'estimator'), (:'co', :'cy', 'field_crew'), (:'co', :'kim', 'field_crew');
+set local role authenticated;
 insert into public.memberships (company_id, user_id, role, role_id) values (:'co', :'gus', 'admin', :'keeper'), (:'co', :'lou', 'crew_lead', :'foreman');
 insert into public.memberships (company_id, user_id, role, active) values (:'co', :'fay', 'field_crew', false);
 insert into public.clients (company_id, display_name) values (:'co', 'Ann Client') returning id as c1 \gset

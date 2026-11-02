@@ -231,3 +231,61 @@ describe("POST /api/auth/email-link in an instance without email", () => {
     expect(looked.some((u) => u.includes("/profiles"))).toBe(false);
   });
 });
+
+describe("the team's record of reset links and new spare keys", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const PAT = "11111111-1111-4111-8111-111111111111";
+  const SAM = "33333333-3333-4333-8333-333333333333";
+  const CO = "0b0a0000-0000-4000-8000-000000000001";
+  const part = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const token = `${part({ alg: "HS256", typ: "JWT" })}.${part({ sub: PAT, role: "authenticated", exp: Math.floor(Date.now() / 1000) + 3600 })}.sig`;
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "X-Company-Id": CO };
+
+  /** Pat owns the company and Sam works in it; activity rows are kept with the key that wrote them. */
+  function supabase() {
+    const activity: Array<{ key: string | null; row: Record<string, unknown> }> = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const key = new Headers(init?.headers).get("apikey");
+      if (url.includes("/rest/v1/activity")) {
+        activity.push({ key, row: JSON.parse(String(init?.body)) });
+        return new Response(null, { status: 201 });
+      }
+      if (url.endsWith("/auth/v1/user")) return Response.json({ id: PAT, aud: "authenticated" });
+      if (url.includes("/rpc/rate_limit_hit")) return Response.json(true);
+      if (url.includes("/rpc/spare_keys_replace")) return Response.json(8);
+      if (url.includes("/rest/v1/memberships") && url.includes(`user_id=eq.${SAM}`)) return Response.json([{ company_id: CO, role: "field_crew", active: true }]);
+      if (url.includes("/rest/v1/memberships")) return Response.json([{ company_id: CO, role: "owner", role_id: null, subcontractor_id: null }]);
+      if (url.includes("/rest/v1/profiles") && url.includes(`user_id=eq.${SAM}`)) return Response.json([{ email: "sam@example.com", full_name: "Sam Crew" }]);
+      if (url.includes("/rest/v1/profiles")) return Response.json([{ email: "pat@example.com", full_name: "Pat Owner" }]);
+      if (url.includes("/rest/v1/companies")) return Response.json([{ name: "Green Lawn", email: null }]);
+      if (url.includes("/rest/v1/notifications")) return new Response(null, { status: 201 });
+      if (url.includes("/rest/v1/integration")) return Response.json([]);
+      if (url.includes("/token?grant_type=password")) return Response.json({ access_token: "throwaway", refresh_token: "r", token_type: "bearer", expires_in: 3600, expires_at: 2_000_000_000, user: { id: PAT, aud: "authenticated" } });
+      if (url.includes("/logout")) return new Response(null, { status: 204 });
+      if (url.includes("/auth/v1/admin/users/")) return Response.json({ id: SAM, last_sign_in_at: "2026-10-01T00:00:00Z" });
+      if (url.includes("/auth/v1/admin/generate_link")) return Response.json({ id: SAM, hashed_token: "hash123", verification_type: "recovery" });
+      throw new Error(`unexpected ${url}`);
+    });
+    return activity;
+  }
+
+  // Signed-in people can't add to the activity themselves (20261018000100_audit_fixes.sql).
+  it("records a reset link as the server, with who made it", async () => {
+    const activity = supabase();
+    const res = await app.request(`/api/team/${SAM}/password-link`, { method: "POST", headers }, base);
+    expect(res.status).toBe(200);
+    expect(activity).toEqual([
+      { key: "sb_secret_test", row: { company_id: CO, actor_id: PAT, verb: "member.password_link", subject_type: "member", subject_id: SAM, summary: "Pat Owner made a password reset link for Sam Crew" } },
+    ]);
+  });
+
+  it("records new spare keys as the server, with who made them", async () => {
+    const activity = supabase();
+    const res = await app.request("/api/account/spare-keys", { method: "POST", headers, body: JSON.stringify({ password: "right" }) }, base);
+    expect(res.status).toBe(200);
+    expect(activity).toEqual([
+      { key: "sb_secret_test", row: { company_id: CO, actor_id: PAT, verb: "member.spare_keys", subject_type: "member", subject_id: PAT, summary: "Pat Owner made new spare keys" } },
+    ]);
+  });
+});

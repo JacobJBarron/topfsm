@@ -135,6 +135,10 @@ export interface QuoteView {
   preview?: boolean;
   home: string | null;
   company: HubCompany;
+  /** Offer "Approve and set up autopay" (work charged by the visit, the business takes autopay). Servers that don't send it don't offer it. */
+  autopay_offer?: boolean;
+  /** The business needs a card on file: signing goes straight on to adding one, with no Approve without it. */
+  card_required?: boolean;
   /** The estimate template (core documents.ts); read through templateSettings(). */
   template?: unknown;
   /** Null with a price range (it would say the price), and from servers before contracts. */
@@ -173,6 +177,52 @@ export interface QuoteView {
     lines: HubLine[];
   };
 }
+/**
+ * The client's autopay, for the home page's card and the autopay view (?view=autopay). Null when
+ * the business doesn't take autopay, unless the client has an agreement in force (then `available`
+ * is false).
+ *   off          not on autopay (or they turned it off: turning it back on takes Stripe's page again)
+ *   agree        a card is saved (just now, or brought in from Stripe) and waits for them to agree
+ *   active       on, and charged to `method`
+ *   paused       the office paused it
+ *   pending      on, with a bank account still being checked
+ *   needs_update on, but the card can't be charged (declined twice, removed, expired)
+ */
+export interface HubAutopay {
+  status: "off" | "agree" | "active" | "paused" | "pending" | "needs_update";
+  /** The card of the agreement in force, else the newest one saved. `label` is "Visa ending 4242", `exp` "08/28". */
+  method: { id: string; type: string; label: string; exp: string | null } | null;
+  /** The card came from the business's Stripe account: confirming it is one tap. */
+  imported: boolean;
+  /** When they agreed, while they're on it. */
+  since: string | null;
+  /** The words they agree to, then "We charge {timing}." under them. */
+  terms: string;
+  terms_version: string;
+  /** "at the end of the day of each visit" (core autopayTimingText). */
+  timing: string;
+  /** When the next charge goes, if one is waiting. */
+  next_charge: string | null;
+  /** What each visit costs, when they have one recurring job on autopay. */
+  per_visit: number | null;
+  /** Tax goes on top of `per_visit` (a taxable line, and a rate above 0). Servers that don't send it don't say. */
+  per_visit_taxed?: boolean;
+  /**
+   * False while the business can't take autopay (switched off, or its Stripe key can't): the
+   * agreement in force still shows, with Turn off, and nothing to set up or change. Servers that
+   * don't send it can take it.
+   */
+  available?: boolean;
+  /** The business needs a card on file from every client. Servers that don't send it don't. */
+  card_required?: boolean;
+}
+/** What autopay is doing on an invoice: being charged, on its way (a bank payment), paid, or couldn't be charged. */
+export interface HubInvoiceAutopay {
+  status: "charging" | "processing" | "paid" | "failed" | "needs_client";
+  /** "Visa ending 4242". */
+  method: string | null;
+  charged_at: string | null;
+}
 export interface InvoiceView {
   kind: "invoice";
   drawings?: HubDrawing[];
@@ -189,7 +239,16 @@ export interface InvoiceView {
   from_stripe?: boolean;
   /** It has its job's promo code on a line already, so no other code goes on it. Older servers leave it out. */
   promo_line?: boolean;
+  /** Whether a tip can be added (the business has tips on, and the invoice wasn't made in Stripe). Off, no tip choice is shown anywhere. */
   tips: boolean;
+  /** Servers that don't send these have no autopay: none of it shows. */
+  autopay?: HubInvoiceAutopay | null;
+  /** Offer "Paid. Pay automatically next time?" once it's paid. */
+  save_card?: boolean;
+  /** Offer a tip on the card the automatic charge was made to (only ever with `tips`). */
+  tip_after?: boolean;
+  /** The card the tip goes on, "Visa ending 4242". */
+  tip_method?: string | null;
   invoice: {
     id: string;
     number: number;
@@ -423,11 +482,78 @@ export function hubInvoiceContract(view: InvoiceView): QuoteContract | null {
   return { terms: c.terms, sections: c.sections.map((s) => ({ id: s.id, title: s.title, html: s.body, place: s.place, initials: false })), hash: null };
 }
 
-/** An invoice as its template document: what was billed, what's been paid and refunded, what's left, and its contract. */
+/**
+ * An invoice as its template document: what was billed, what's been paid and refunded, what's left,
+ * and its contract. Written off, nothing is left to ask the client for.
+ */
 export function invoiceDocument(view: InvoiceView): DocumentData {
   const tz = view.company.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-  return buildInvoiceDocument(view.invoice, { timeZone: tz, contract: hubInvoiceContract(view) });
+  const invoice = view.invoice.status === "written_off" ? { ...view.invoice, balance_due: 0 } : view.invoice;
+  return buildInvoiceDocument(invoice, { timeZone: tz, contract: hubInvoiceContract(view) });
 }
+
+// ---------------------------------------------------------------------------------------------
+// Tips and autopay on an invoice and the client's home
+// ---------------------------------------------------------------------------------------------
+
+/** The tip choices, as percents of what's tipped on: Pay's (with "No tip") and the one after an automatic charge. */
+export const TIP_PERCENTS = [10, 15, 20] as const;
+/** The smallest tip Stripe can charge to a saved card on its own (chargeTip refuses less). */
+export const TIP_MINIMUM = 0.5;
+
+/**
+ * The tip a tip block adds, in dollars: nothing while the business has tips off (`tips`, the
+ * server's tipsAllowed), whatever was chosen; else the percent chosen of `base` to the cent, or the
+ * amount typed for "Other". Never below nothing. Pay and the tip after an automatic charge both use
+ * it, so a tip can't reach the server from a page with tips off.
+ */
+export function hubTip({ tips, base, choice, custom }: { tips: boolean; base: number; choice: number | "custom"; custom: string }): number {
+  if (!tips) return 0;
+  if (choice === "custom") return Math.max(Math.round(Number(custom) * 100) / 100 || 0, 0);
+  return Math.max(Math.round(Number(base) * choice) / 100 || 0, 0);
+}
+
+/** "Oct 27": a day where the business is. */
+const shortDay = (at: string, timeZone: string) => new Date(at).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone });
+
+/**
+ * The line under an invoice's heading about its automatic charge: paid ("Paid automatically with
+ * Visa ending 4242 on Oct 27"), being charged, or a bank payment on its way. Null otherwise (a
+ * charge that failed is said by Pay, which stays). Paid only while nothing is owed (`balanceDue`):
+ * a refund leaves the charge paid, and the invoice owed again or written off.
+ */
+export function invoiceAutopayLine(autopay: HubInvoiceAutopay | null | undefined, timeZone: string, balanceDue: number): string | null {
+  if (!autopay) return null;
+  if (autopay.status === "paid") return Number(balanceDue) > 0 ? null : `Paid automatically${autopay.method ? ` with ${autopay.method}` : ""}${autopay.charged_at ? ` on ${shortDay(autopay.charged_at, timeZone)}` : ""}`;
+  if (autopay.status === "charging") return `Charging your ${autopay.method ?? "saved card"} now`;
+  if (autopay.status === "processing") return "Your bank payment is on its way. It usually takes a few business days to clear, and this page updates when it does.";
+  return null;
+}
+
+/** Beside Pay when the automatic charge didn't go through: why Pay is there. Null otherwise. */
+export function autopayPayNote(autopay: HubInvoiceAutopay | null | undefined): string | null {
+  if (autopay?.status === "failed") return `We couldn't charge your ${autopay.method ?? "saved card"}. We'll try again in a few days, or you can pay now.`;
+  if (autopay?.status === "needs_client") return `We couldn't charge your ${autopay.method ?? "saved card"} automatically. Pay below, or update your card.`;
+  return null;
+}
+
+/** An invoice on the client's home: what's owed, and what autopay is doing on it. Servers before autopay send no `autopay`. */
+export interface OwedInvoice {
+  status: string;
+  balance_due: number;
+  autopay?: HubInvoiceAutopay["status"] | null;
+}
+
+/**
+ * The invoices "Waiting on you" lists: owed, and not being charged to their card right now (or on
+ * its way from their bank). One whose automatic charge failed is still theirs to pay.
+ */
+export function waitingInvoices<T extends OwedInvoice>(invoices: readonly T[]): T[] {
+  return invoices.filter((i) => Number(i.balance_due) > 0 && i.status !== "paid" && i.autopay !== "charging" && i.autopay !== "processing");
+}
+
+/** Whether a failed automatic charge on this invoice asks the client to update their card. */
+export const needsNewCard = (invoice: Pick<OwedInvoice, "autopay">) => invoice.autopay === "failed" || invoice.autopay === "needs_client";
 
 // ---------------------------------------------------------------------------------------------
 // The price range page

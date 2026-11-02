@@ -469,6 +469,39 @@ describe("weak signal", () => {
   });
 });
 
+describe("when it was done", () => {
+  it("sends a Complete tapped with no signal, after the app was closed, dated when it was tapped", async () => {
+    vi.setSystemTime(new Date("2026-10-17T14:00:00.000Z"));
+    const before = newClient();
+    before.setMutationDefaults(["visit-status"], { mutationFn: setVisitStatus });
+    onlineManager.setOnline(false);
+    const stopBefore = startOfflineCache(before, "u12", true);
+    void tap(before, "visit-status", { companyId: "company-a", userId: "u12", visitId: "v1", jobId: null, status: "completed", at: new Date().toISOString(), clock: false });
+    await settle();
+    stopBefore();
+    before.clear();
+
+    // Signal again hours later, on a fresh start of the app.
+    const sent: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        if (init?.method === "PATCH") sent.push(JSON.parse(String(init.body)));
+        return new Response("{}");
+      }),
+    );
+    vi.setSystemTime(new Date("2026-10-17T20:00:00.000Z"));
+    const qc = newClient();
+    qc.setMutationDefaults(["visit-status"], { mutationFn: setVisitStatus });
+    onlineManager.setOnline(true);
+    const stop = startOfflineCache(qc, "u12", true);
+    await settle();
+    expect(sent).toEqual([{ status: "completed", forward_only: true, completed_at: "2026-10-17T14:00:00.000Z" }]);
+    expect(saved("u12")!.mutations).toHaveLength(0);
+    stop();
+  });
+});
+
 describe("company", () => {
   it("sends a field action as the company it was made in, even after switching company", async () => {
     const sentAs: Array<string | undefined> = [];

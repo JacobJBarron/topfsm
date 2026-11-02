@@ -432,8 +432,13 @@ marketing.get("/referrals/link/:id", requireUser, requireCompany(SALES), async (
   return c.json({ link: await clientLink(c.env, appUrl(c), { c: c.var.companyId, t: "refer", id: client.id }) });
 });
 
-/** The client's Hub home link: upcoming visits, open quotes, invoices and "request work". */
+/**
+ * The client's Hub home link: upcoming visits, open quotes, invoices and "request work". It's the
+ * office's copy (`via: "office"`): it works as the client's own, but can only say yes to a card
+ * saved on Stripe's page through an office copy, never one brought in from Stripe or one the client
+ * saved themselves, and can't add a tip to a saved card (lib/links.ts).
+ */
 marketing.get("/clients/:id/hub-link", requireUser, requireCompany(SALES), async (c) => {
   const client = must(await c.var.db.from("clients").select("id").eq("id", param(c, "id")).eq("company_id", c.var.companyId).maybeSingle(), "Client not found.");
-  return c.json({ link: await clientLink(c.env, appUrl(c), { c: c.var.companyId, t: "client", id: client.id }) });
+  return c.json({ link: await clientLink(c.env, appUrl(c), { c: c.var.companyId, t: "client", id: client.id, via: "office" }) });
 });

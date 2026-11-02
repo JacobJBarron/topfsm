@@ -12,7 +12,7 @@ import type { Env } from "../env";
 import { syncStripeInvoice } from "../integrations/stripe";
 import { firstName, isEmail, renderEmail } from "../lib/email";
 import { asJson, dbError, HttpError, must } from "../lib/http";
-import { clientLink } from "../lib/links";
+import { clientLinks, sentToClient } from "../lib/links";
 import { sendEmail, sendSms } from "../lib/notify";
 import { adminClient, type Db } from "../lib/supabase";
 import { companyAddress } from "./automations";
@@ -139,10 +139,17 @@ export async function keepDepositInCap(db: Db, companyId: string, quoteId: strin
   return lowered;
 }
 
-/** Email or text the client their link to a quote or invoice (or just make the link), and log it on their timeline. */
+/**
+ * Email or text the client their link to a quote or invoice (or just make the link), and log it on
+ * their timeline. Only an email or text to the client's own email or phone on file carries their
+ * own link (lib/links sentToClient); one typed to any other address carries the office's copy. What
+ * comes back (Copy link, the assistants' send_quote and send_invoice) and the copy on the timeline
+ * carry the office's copy too (lib/links clientLinks), so the person sending can't use it, or send
+ * it to themselves, to say yes to autopay or tip on the client's saved card for them.
+ */
 export async function deliver(s: SalesScope, kind: "quote" | "invoice", record: Deliverable, body: SendBody, defaults: DeliverDefaults = {}) {
   const company = must(await s.db.from("companies").select("name, email, phone, address, currency, settings").eq("id", s.companyId).maybeSingle());
-  const link = await clientLink(s.env, s.baseUrl, { c: s.companyId, t: kind, id: record.id });
+  const links = await clientLinks(s.env, s.baseUrl, { c: s.companyId, t: kind, id: record.id });
   const label = `${kind === "quote" ? "Quote" : "Invoice"} #${record.number}`;
   const amount = new Intl.NumberFormat("en-US", { style: "currency", currency: company.currency || "USD" }).format(Number(kind === "quote" ? record.total ?? 0 : record.balance_due ?? 0));
   const greeting = `Hi ${firstName(record.client?.display_name)},`;
@@ -150,13 +157,16 @@ export async function deliver(s: SalesScope, kind: "quote" | "invoice", record: 
     body.message?.trim() ||
     defaults.intro ||
     (kind === "quote" ? `Thanks for the opportunity. Here's your quote (${amount}). You can review the details, choose any options and approve it online:` : `Here's your invoice for ${amount}. You can view and pay it online:`);
-  const text = `${greeting}\n\n${intro}\n\n${link}\n\nThanks,\n${company.name}`;
+  const message = (link: string) => `${greeting}\n\n${intro}\n\n${link}\n\nThanks,\n${company.name}`;
+  // The client's own link only to their own email or phone on file; any other address gets the office's copy.
+  const linkFor = (channel: "email" | "sms", to: string) => (sentToClient(channel, to, record.client) ? links.own : links.office);
   let result: { sent: boolean; reason?: string; id?: string } = { sent: false, reason: "Link only" };
   if (body.channel === "email") {
     const to = body.to || record.client?.email;
     if (!to || !isEmail(to)) throw new HttpError(400, "Add a valid email address for this client first.");
     const subject = body.subject || defaults.subject || `${label} from ${company.name}`;
     const footer = [company.name, companyAddress(company.address as Record<string, string>), company.phone].filter(Boolean).join(" · ");
+    const text = message(linkFor("email", to));
     result = await sendEmail(s.env, { to, subject, ...renderEmail({ companyName: company.name, logo: logoImage(s.baseUrl, s.companyId, company.settings), text, footer }), replyTo: company.email ?? undefined, fromName: company.name }, s.companyId);
   } else if (body.channel === "sms") {
     const to = body.to || record.client?.phone;
@@ -164,7 +174,7 @@ export async function deliver(s: SalesScope, kind: "quote" | "invoice", record: 
     // A client who texted STOP isn't texted at their own phone, a quote or invoice included.
     const { data: client } = await s.db.from("clients").select("id, display_name, phone, sms_opt_out_at").eq("id", record.client_id).maybeSingle();
     if (client && textsOffTo(client, to)) throw new HttpError(400, textsOffRefusal(client.display_name));
-    result = await sendSms(s.env, { to, body: `${company.name}: ${intro} ${link}` });
+    result = await sendSms(s.env, { to, body: `${company.name}: ${intro} ${linkFor("sms", to)}` });
     if (client) await noteRefusedText(adminClient(s.env), client, to, result);
   }
   if (result.sent) {
@@ -173,13 +183,14 @@ export async function deliver(s: SalesScope, kind: "quote" | "invoice", record: 
       client_id: record.client_id,
       channel: body.channel,
       subject: body.channel === "email" ? body.subject || defaults.subject || label : label,
-      body: text,
+      // The office's copy of the link: anyone who reads the timeline can open it, but not as the client.
+      body: message(links.office),
       related_type: kind,
       related_id: record.id,
       external_id: result.id ?? null,
     });
   }
-  return { link, ...result };
+  return { link: links.office, ...result };
 }
 
 /** Start a draft quote from a request, carrying over the client, property and any measurement. */
@@ -283,11 +294,22 @@ export async function sendInvoice(s: SalesScope, id: string, body: SendBody) {
   return result;
 }
 
-/** One invoice per finished job (completed visits for per-visit jobs), and optionally email each. Each job succeeds or fails on its own. */
+/**
+ * One invoice per finished job (completed visits for per-visit jobs), and optionally email each. Each
+ * job succeeds or fails on its own. A job whose autopay charge is waiting is left to it: autopay
+ * bills and charges those visits itself (services/autopay.ts), and billing them here first would
+ * leave it nothing to charge.
+ */
 export async function invoiceJobs(s: SalesScope, jobIds: readonly string[], send: boolean) {
   const jobs = must(await s.db.from("jobs").select("id, number, title, kind, billing_mode").eq("company_id", s.companyId).in("id", [...jobIds]));
+  const { data: waiting } = await s.db.from("autopay_charges").select("job_id").eq("company_id", s.companyId).eq("status", "waiting").in("job_id", jobs.map((j) => j.id));
+  const autopay = new Set((waiting ?? []).map((row) => row.job_id));
   const results: Array<{ job_id: string; number: number | null; ok: boolean; invoice_id?: string; sent?: boolean; error?: string }> = [];
   for (const job of jobs) {
+    if (autopay.has(job.id)) {
+      results.push({ job_id: job.id, number: job.number, ok: false, error: "This job is charged automatically tonight." });
+      continue;
+    }
     const kind = job.billing_mode === "per_visit" || job.kind === "recurring" ? "visits" : "standard";
     const created = await s.db.rpc("create_invoice_for_job", { p_job: job.id, p_kind: kind });
     if (created.error) {
@@ -313,7 +335,10 @@ export async function invoiceJobs(s: SalesScope, jobIds: readonly string[], send
   return { results };
 }
 
-/** Friendly reminders for unpaid invoices, by email; not while a bank payment is on its way. */
+/**
+ * Friendly reminders for unpaid invoices, by email; not while a bank payment is on its way, nor
+ * while autopay is charging it or will try the card again (its own notice already went).
+ */
 export async function remindInvoices(s: SalesScope, invoiceIds: readonly string[]) {
   const company = must(await s.db.from("companies").select("name, currency").eq("id", s.companyId).maybeSingle());
   const invoices = must(
@@ -329,10 +354,21 @@ export async function remindInvoices(s: SalesScope, invoiceIds: readonly string[
   // Don't ask again while a bank payment is on its way.
   const { data: paying } = await s.db.from("stripe_invoices").select("invoice_id").eq("company_id", s.companyId).eq("status", "processing").in("invoice_id", invoices.map((i) => i.id));
   const processing = new Set((paying ?? []).map((row) => row.invoice_id));
+  const { data: charges } = await s.db
+    .from("autopay_charges")
+    .select("invoice_id, status")
+    .eq("company_id", s.companyId)
+    .in("status", ["charging", "processing", "failed"])
+    .in("invoice_id", invoices.map((i) => i.id));
+  const autopay = new Map((charges ?? []).map((row) => [row.invoice_id, row.status]));
   for (const invoice of invoices) {
     if (Number(invoice.balance_due) <= 0) continue;
-    if (processing.has(invoice.id)) {
+    if (processing.has(invoice.id) || autopay.get(invoice.id) === "processing") {
       skipped.push({ number: invoice.number, reason: "A bank payment is on its way" });
+      continue;
+    }
+    if (autopay.has(invoice.id)) {
+      skipped.push({ number: invoice.number, reason: autopay.get(invoice.id) === "charging" ? "It's being charged automatically" : "Autopay will try the card again" });
       continue;
     }
     const amount = new Intl.NumberFormat("en-US", { style: "currency", currency: company.currency || "USD" }).format(Number(invoice.balance_due));

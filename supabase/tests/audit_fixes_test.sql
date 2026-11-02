@@ -36,6 +36,8 @@ select set_config('request.jwt.claims', '{"sub": "b1000000-0000-0000-0000-000000
 select public.create_company('Juliet Lawn', 'general') as co \gset
 select id as foreman_role from public.company_roles where company_id = :'co' and name = 'Foreman' \gset
 select id as employee_role from public.company_roles where company_id = :'co' and name = 'Employee' \gset
+-- Admin access is given through the server (the admin_grants migration).
+reset role;
 insert into public.company_roles (company_id, name, base_role, permissions) values (:'co', 'HR admin', 'admin', '{team}') returning id as hr_role \gset
 insert into public.memberships (company_id, user_id, role, role_id, labor_rate) values
   (:'co', 'b1000000-0000-0000-0000-000000000002', 'admin', null, 30),
@@ -44,6 +46,7 @@ insert into public.memberships (company_id, user_id, role, role_id, labor_rate) 
   (:'co', 'b1000000-0000-0000-0000-000000000005', 'field_crew', :'employee_role', 21),
   (:'co', 'b1000000-0000-0000-0000-000000000006', 'estimator', null, null),
   (:'co', 'b1000000-0000-0000-0000-000000000007', 'admin', :'hr_role', null);
+set local role authenticated;
 insert into public.crews (company_id, name, lead_user_id) values (:'co', 'Mowing', 'b1000000-0000-0000-0000-000000000003') returning id as crew_a \gset
 insert into public.crews (company_id, name) values (:'co', 'Trees') returning id as crew_b \gset
 insert into public.crew_members (company_id, crew_id, user_id) values

@@ -1,8 +1,10 @@
 /**
  * The customer's account in the Client Hub: what's waiting on them first (quotes to approve, bills
- * to pay), then their next visit, quick actions, and history. Visits and "request work" are their
- * own views (?view=visits, ?view=request) so the back button works.
+ * to pay), then autopay and their next visit, quick actions, and history. Visits, "request work"
+ * and autopay are their own views (?view=visits, ?view=request, ?view=autopay) so the back button
+ * works.
  */
+import { autopayDueText } from "@crewtavo/core/autopay";
 import { friendOfferLine } from "@crewtavo/core/marketing";
 import { useMutation } from "@tanstack/react-query";
 import { useState, type FormEvent, type ReactNode } from "react";
@@ -13,6 +15,8 @@ import { Field, FormError } from "@/components/ui/Field";
 import { Icon, type IconName } from "@/components/ui/Icon";
 import { dateIn, formatDate, formatMoney, formatMoneyCents, formatTime } from "@/lib/format";
 import { toast } from "@/lib/toast";
+import { needsNewCard, waitingInvoices, type HubAutopay, type HubInvoiceAutopay } from "./document";
+import { AutopayView, CARD_REQUIRED, ON_HOLD_TEXT } from "./HubAutopay";
 
 export interface PortalVisit {
   id: string;
@@ -28,6 +32,10 @@ export interface PortalVisit {
 export interface ClientView {
   kind: "client";
   company: { name: string; phone: string | null; email: string | null; website: string | null; timezone?: string | null; branding?: { color?: string } | null };
+  /** The office's look at the page: it shows, and nothing on it can be done. */
+  preview?: boolean;
+  /** Their autopay. Null when the business doesn't take autopay; servers that don't send it have none. */
+  autopay?: HubAutopay | null;
   client: { name: string; first_name: string; properties: Array<{ id: string; line1: string; city: string | null }> };
   /**
    * A quote out as a price range has its range and no total: the client hasn't seen the exact price.
@@ -39,17 +47,19 @@ export interface ClientView {
     options?: { count: number; from: number } | null;
     valid_until: string | null; approved_at: string | null; link: string;
   }>;
-  invoices: Array<{ id: string; number: number; subject: string | null; status: string; total: number; balance_due: number; due_on: string | null; issued_on: string; link: string }>;
+  /** `autopay`: what the automatic charge is doing on it. Servers that don't send it have none. */
+  invoices: Array<{ id: string; number: number; subject: string | null; status: string; total: number; balance_due: number; due_on: string | null; issued_on: string; link: string; autopay?: HubInvoiceAutopay["status"] | null }>;
   visits: PortalVisit[];
   past_visits: PortalVisit[];
-  payments: Array<{ amount: number; tip_amount: number; method: string; received_at: string; invoice: number | null }>;
+  /** `auto`: charged automatically, to `card` ("Visa ending 4242"). Servers that don't send them have none. */
+  payments: Array<{ amount: number; tip_amount: number; method: string; received_at: string; invoice: number | null; auto?: boolean; card?: string | null }>;
   requests: Array<{ number: number; title: string; status: string; created_at: string }>;
   services: string[];
   /** What the friend gets (offer), what the client gets (rewards) and credit they've earned that isn't on an invoice yet. */
   refer: { link: string; offer: string | null; rewards?: string | null; credit_left?: number } | null;
 }
 
-type Fetch = <T>(path: string, body?: unknown, method?: "DELETE") => Promise<T>;
+export type Fetch = <T>(path: string, body?: unknown, method?: "DELETE") => Promise<T>;
 
 /** The company's time zone: times and dates in the Hub read as the company schedules them. */
 export const hubZone = (company: { timezone?: string | null }) => company.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -61,15 +71,19 @@ const when = (v: PortalVisit, tz: string) =>
   v.starts_at && v.ends_at ? `Arriving between ${formatTime(v.starts_at, tz)} and ${formatTime(v.ends_at, tz)}` : v.starts_at ? `Starting at ${formatTime(v.starts_at, tz)}` : "Time to be confirmed";
 const names = (crew: string[]) => (crew.length <= 1 ? crew[0] ?? "" : `${crew.slice(0, -1).join(", ")} and ${crew.at(-1)}`);
 
-export function ClientPortal({ token, data, hubFetch, onMessage }: { token: string; data: ClientView; hubFetch: Fetch; onMessage: (visit?: PortalVisit) => void }) {
+/** The views of the client's account, each its own ?view= so the back button works. */
+export type PortalView = "home" | "visits" | "request" | "autopay";
+
+export function ClientPortal({ token, data, hubFetch, onMessage, onChanged }: { token: string; data: ClientView; hubFetch: Fetch; onMessage: (visit?: PortalVisit) => void; onChanged: () => void }) {
   const [params, setParams] = useSearchParams();
   const view = params.get("view");
-  const go = (next: "home" | "visits" | "request") => {
+  const go = (next: PortalView) => {
     setParams(next === "home" ? {} : { view: next });
     window.scrollTo({ top: 0 });
   };
   if (view === "visits") return <Visits token={token} data={data} back={() => go("home")} onMessage={onMessage} />;
   if (view === "request") return <RequestWork token={token} data={data} hubFetch={hubFetch} back={() => go("home")} />;
+  if (view === "autopay") return <AutopayView token={token} data={data} hubFetch={hubFetch} back={() => go("home")} onChanged={onChanged} />;
   return <Home token={token} data={data} go={go} onMessage={onMessage} />;
 }
 
@@ -128,15 +142,22 @@ function VisitCard({ token, visit, tz, onMessage }: { token: string; visit: Port
   );
 }
 
-function Home({ token, data, go, onMessage }: { token: string; data: ClientView; go: (v: "visits" | "request") => void; onMessage: (visit?: PortalVisit) => void }) {
+function Home({ token, data, go, onMessage }: { token: string; data: ClientView; go: (v: PortalView) => void; onMessage: (visit?: PortalVisit) => void }) {
   // A range they've said yes to waits on the business (to book the visit), not on them.
   const waitingQuotes = data.quotes.filter((q) => (q.status === "sent" || q.status === "changes_requested") && !q.range?.accepted_at);
-  const owed = data.invoices.filter((i) => Number(i.balance_due) > 0 && i.status !== "paid");
+  // One being charged to their card (or on its way from their bank) waits on the card, not on them.
+  const owed = waitingInvoices(data.invoices);
+  // A business that needs a card on file: adding it (or agreeing to the one saved) is waiting on them too.
+  const cardStep = Boolean(data.autopay?.card_required && data.autopay.available !== false && (data.autopay.status === "off" || data.autopay.status === "agree"));
   const next = data.visits[0];
   const tz = hubZone(data.company);
   // `day` is the date where the company is: a payment at 8:30 PM on Oct 16 in New York is Oct 17 in UTC.
   const recent = [
-    ...data.payments.map((p) => ({ at: p.received_at, day: dateIn(p.received_at, tz), icon: "dollar" as IconName, tone: "good", title: p.invoice ? `Payment on invoice #${p.invoice}` : "Payment received", detail: `${formatMoneyCents(p.amount)} by ${METHOD[p.method] ?? "payment"}`, link: p.invoice ? data.invoices.find((i) => i.number === p.invoice)?.link : undefined })),
+    ...data.payments.map((p) => ({
+      at: p.received_at, day: dateIn(p.received_at, tz), icon: (p.auto ? "card" : "dollar") as IconName, tone: "good", title: p.invoice ? `Payment on invoice #${p.invoice}` : "Payment received",
+      detail: p.auto ? `${formatMoneyCents(p.amount)} charged automatically to ${p.card ?? "your card"}` : `${formatMoneyCents(p.amount)} by ${METHOD[p.method] ?? "payment"}`,
+      link: p.invoice ? data.invoices.find((i) => i.number === p.invoice)?.link : undefined,
+    })),
     ...data.past_visits.map((v) => ({ at: v.completed_at ?? `${v.scheduled_on}T12:00:00Z`, day: doneOn(v, tz), icon: "check" as IconName, tone: "good", title: `${v.title} done`, detail: v.crew.length ? `by ${names(v.crew)}` : "Visit complete", link: undefined })),
     ...data.quotes.filter((q) => q.approved_at).map((q) => ({ at: q.approved_at!, day: dateIn(q.approved_at!, tz), icon: "quote" as IconName, tone: "blue", title: `You approved quote #${q.number}`, detail: q.title, link: q.link })),
     ...data.quotes.filter((q) => q.range?.accepted_at).map((q) => ({ at: q.range!.accepted_at!, day: dateIn(q.range!.accepted_at!, tz), icon: "calendar" as IconName, tone: "blue", title: "You asked for a visit", detail: q.title, link: q.link })),
@@ -164,8 +185,8 @@ function Home({ token, data, go, onMessage }: { token: string; data: ClientView;
         )}
       </section>
 
-      <Section title={waitingQuotes.length || owed.length ? "Waiting on you" : "All caught up"}>
-        {waitingQuotes.length === 0 && owed.length === 0 && (
+      <Section title={waitingQuotes.length || owed.length || cardStep ? "Waiting on you" : "All caught up"}>
+        {waitingQuotes.length === 0 && owed.length === 0 && !cardStep && (
           <div className="hub-card hub-calm"><Icon name="check" size={20} />Nothing needs your attention right now.</div>
         )}
         {waitingQuotes.map((q) =>
@@ -206,10 +227,15 @@ function Home({ token, data, go, onMessage }: { token: string; data: ClientView;
               </span>
               <strong className="hub-amount">{formatMoneyCents(i.balance_due)}</strong>
             </div>
+            {needsNewCard(i) && <span className="hub-meta">We couldn't charge your card for this one.</span>}
             <a className="hub-btn hub-btn-dark" href={i.link}><Icon name="lock" size={16} />Pay {formatMoneyCents(i.balance_due)}</a>
+            {needsNewCard(i) && data.autopay && data.autopay.available !== false && <button type="button" className="hub-link" onClick={() => go("autopay")}>Update your card</button>}
           </article>
         ))}
+        {cardStep && <AutopayCard autopay={data.autopay!} timeZone={tz} go={go} />}
       </Section>
+
+      {data.autopay && !cardStep && <AutopayCard autopay={data.autopay} timeZone={tz} go={go} />}
 
       {next && (
         <Section title="Next visit" action={data.visits.length > 1 || data.past_visits.length ? <button type="button" className="hub-link" onClick={() => go("visits")}>All visits</button> : undefined}>
@@ -253,6 +279,72 @@ function Home({ token, data, go, onMessage }: { token: string; data: ClientView;
         </section>
       )}
     </>
+  );
+}
+
+/**
+ * Autopay on the client's home, between what's waiting on them and the next visit: on ("Paid
+ * automatically · Visa ending 4242", the next charge, Change card and Turn off), a step left or a
+ * state to know about, or, when they're not on it, a card that starts it (a step left to do, when the
+ * business needs a card on file). All lead to ?view=autopay.
+ * On hold while the business can't take autopay: only Turn off.
+ */
+function AutopayCard({ autopay, timeZone, go }: { autopay: HubAutopay; timeZone: string; go: (v: PortalView) => void }) {
+  const open = () => go("autopay");
+  const label = autopay.method?.label ?? "your card";
+  const onHold = autopay.available === false;
+  if (autopay.status === "active" && !onHold) {
+    return (
+      <article className="hub-card hub-autopay" aria-label="Autopay">
+        <div className="hub-autopay-body">
+          <span className="hub-icon-tile good"><Icon name="card" size={20} /></span>
+          <span className="grow stack-xs">
+            <strong className="hub-title">Paid automatically · {label}</strong>
+            <span className="hub-meta">{autopay.next_charge ? `Next charge ${autopayDueText(autopay.next_charge, timeZone)}` : `Charged ${autopay.timing}`}</span>
+          </span>
+        </div>
+        <div className="hub-card-actions">
+          <button type="button" onClick={open}><Icon name="card" size={16} />Change card</button>
+          <button type="button" onClick={open}><Icon name="x" size={16} />Turn off</button>
+        </div>
+      </article>
+    );
+  }
+  if (autopay.status === "off") {
+    return (
+      <article className="hub-card hub-todo" aria-label="Autopay">
+        <div className="hub-todo-head">
+          <span className="hub-icon-tile brand"><Icon name="card" size={20} /></span>
+          <span className="grow stack-xs">
+            <strong className="hub-title">{autopay.card_required ? "Finish setting up: add your card" : "Pay automatically after each visit"}</strong>
+            <span className="hub-meta">{autopay.card_required ? CARD_REQUIRED : `Save a card once, and we charge it ${autopay.timing}.`}</span>
+          </span>
+        </div>
+        <button type="button" className="hub-btn hub-btn-brand" onClick={open}>{autopay.card_required ? "Add your card" : "Pay automatically"}</button>
+      </article>
+    );
+  }
+  // A step left (agree), or a state to know about: one line, with what to do when there's something.
+  // Active gets here only on hold.
+  const state = onHold || autopay.status === "active" ? { tone: "amber", title: `Autopay is on hold · ${label}`, line: ON_HOLD_TEXT, action: "Turn off" } : {
+    agree: { tone: "brand", title: autopay.imported ? `We have your ${label} on file` : `${autopay.method?.label ?? "Your card"} is saved`, line: "Agree to the terms to start paying automatically.", action: "Finish setting up" },
+    pending: { tone: "amber", title: "Your bank account is being checked", line: "This takes a few days. Charges start once it's done.", action: null },
+    paused: { tone: "amber", title: "Autopay is paused", line: "Contact us to turn it back on.", action: null },
+    needs_update: { tone: "red", title: "Your card needs updating", line: `We couldn't charge ${label}. Until it's updated, invoices come to you to pay.`, action: "Update card" },
+  }[autopay.status];
+  return (
+    <article className="hub-card hub-autopay" aria-label="Autopay">
+      <div className="hub-autopay-body">
+        <span className={`hub-icon-tile ${state.tone}`}><Icon name="card" size={20} /></span>
+        <span className="grow stack-xs">
+          <strong className="hub-title">{state.title}</strong>
+          <span className="hub-meta">{state.line}</span>
+        </span>
+      </div>
+      <div className="hub-card-actions" data-count={1}>
+        <button type="button" onClick={open}>{state.action ?? "See autopay"}</button>
+      </div>
+    </article>
   );
 }
 

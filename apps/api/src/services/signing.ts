@@ -15,7 +15,7 @@ import { z } from "zod";
 import type { Env } from "../env";
 import { firstName, isEmail, renderEmail } from "../lib/email";
 import { asJson, dbError, HttpError, must } from "../lib/http";
-import { clientLink } from "../lib/links";
+import { clientLinks, sentToClient } from "../lib/links";
 import { reportError } from "../lib/monitoring";
 import { sendEmail, sendSms } from "../lib/notify";
 import { adminClient, type Db } from "../lib/supabase";
@@ -121,7 +121,7 @@ async function loadQuote(s: SigningScope, id: string) {
 type Quote = Awaited<ReturnType<typeof loadQuote>>;
 
 async function loadCompany(s: SigningScope) {
-  return must(await s.db.from("companies").select("name, email, phone, timezone, address, settings").eq("id", s.companyId).maybeSingle(), "Company not found.");
+  return must(await s.db.from("companies").select("name, email, phone, timezone, address, settings, trade_preset").eq("id", s.companyId).maybeSingle(), "Company not found.");
 }
 
 type Company = Awaited<ReturnType<typeof loadCompany>>;
@@ -157,7 +157,8 @@ export async function signQuote(s: SigningScope, id: string, body: SignBody) {
     loadOptions(s.db, s.companyId, id),
   ]);
   if (templates.error) throw dbError(templates.error);
-  const template = pickTemplate(templates.data ?? [], quote.template_id);
+  // The trade's starter terms when the business never saved its own, as the Hub and the printout show them.
+  const template = pickTemplate(templates.data ?? [], quote.template_id, company.trade_preset);
   const companySignature = body.company_signature ?? saved;
   if (!companySignature && template.company_signs) throw new HttpError(400, `Sign for ${company.name} too.`);
 
@@ -211,10 +212,11 @@ export async function signQuote(s: SigningScope, id: string, body: SignBody) {
   }
   if (body.save_signature && body.company_signature) await keepSignature(s, body.company_signature);
 
-  const link = await clientLink(s.env, s.baseUrl, { c: s.companyId, t: "quote", id }, COPY_DAYS);
-  if (!body.email_copy) return { status: "approved" as const, emailed: false, link };
-  const copy = await deliverCopy(s, quote, company, link, { channel: "email", to: body.to });
-  return { status: "approved" as const, emailed: copy.sent, ...(copy.sent ? {} : { email_reason: copy.reason }), link };
+  // The person signed in gets the office's copy of the link; only a copy that goes out to the client's own email is theirs.
+  const links = await clientLinks(s.env, s.baseUrl, { c: s.companyId, t: "quote", id }, COPY_DAYS);
+  if (!body.email_copy) return { status: "approved" as const, emailed: false, link: links.office };
+  const copy = await deliverCopy(s, quote, company, links, { channel: "email", to: body.to });
+  return { status: "approved" as const, emailed: copy.sent, ...(copy.sent ? {} : { email_reason: copy.reason }), link: links.office };
 }
 
 /** Signs for the business on a quote that's already signed (online, say), with a drawn or saved signature. */
@@ -243,34 +245,42 @@ export async function countersignQuote(s: SigningScope, id: string, body: Counte
   return { ok: true as const };
 }
 
-/** Emails or texts the client their signed estimate: a link that works for a year. */
+/**
+ * Emails or texts the client their signed estimate: a link that works for a year. The person
+ * sending it gets the office's copy of the link back (lib/links clientLinks).
+ */
 export async function sendSignedCopy(s: SigningScope, id: string, body: CopyBody) {
   const quote = await loadQuote(s, id);
   if (!SIGNED.includes(quote.status)) throw new HttpError(409, "This estimate isn't signed yet.");
   const company = await loadCompany(s);
-  const link = await clientLink(s.env, s.baseUrl, { c: s.companyId, t: "quote", id }, COPY_DAYS);
-  const result = await deliverCopy(s, quote, company, link, body);
-  return { sent: result.sent, ...(result.sent ? {} : { reason: result.reason }), link };
+  const links = await clientLinks(s.env, s.baseUrl, { c: s.companyId, t: "quote", id }, COPY_DAYS);
+  const result = await deliverCopy(s, quote, company, links, body);
+  return { sent: result.sent, ...(result.sent ? {} : { reason: result.reason }), link: links.office };
 }
 
 /**
  * The signed copy itself. Problems a person can fix (no email on file, email not set up) come back
  * as a reason instead of an error, so the estimate stays signed and the screen can say what to do.
+ * An email or text to the client's own email or phone on file carries their own link (`links.own`;
+ * lib/links sentToClient); one typed to any other address, and the copy kept on their timeline,
+ * carry the office's (`links.office`).
  */
-async function deliverCopy(s: SigningScope, quote: Quote, company: Company, link: string, body: CopyBody): Promise<{ sent: boolean; reason?: string }> {
+async function deliverCopy(s: SigningScope, quote: Quote, company: Company, links: { own: string; office: string }, body: CopyBody): Promise<{ sent: boolean; reason?: string }> {
   const client = quote.client as { display_name: string; email: string | null; phone: string | null } | null;
   const who = client?.display_name || "this client";
   const intro = `Here's your signed estimate from ${company.name}. You can view, print or save it any time:`;
-  const text = `Hi ${firstName(client?.display_name)},\n\n${intro}\n\n${link}\n\nThanks,\n${company.name}`;
+  const email = (link: string) => `Hi ${firstName(client?.display_name)},\n\n${intro}\n\n${link}\n\nThanks,\n${company.name}`;
+  const sms = (link: string) => `${company.name}: Here's your signed estimate. You can view, print or save it any time: ${link}`;
+  const linkFor = (channel: "email" | "sms", to: string) => (sentToClient(channel, to, client) ? links.own : links.office);
   const subject = `Your signed estimate from ${company.name}`;
   let result: { sent: boolean; reason?: string; id?: string };
-  let sentText = text;
   try {
     if (body.channel === "email") {
       const to = body.to || client?.email;
       if (!to) return { sent: false, reason: `Add an email address for ${who} first.` };
       if (!isEmail(to)) return { sent: false, reason: "That email address doesn't look right." };
       const footer = [company.name, companyAddress(company.address as Record<string, string>), company.phone].filter(Boolean).join(" · ");
+      const text = email(linkFor("email", to));
       result = await sendEmail(
         s.env,
         { to, subject, ...renderEmail({ companyName: company.name, logo: logoImage(s.baseUrl, s.companyId, company.settings), text, footer }), replyTo: company.email ?? undefined, fromName: company.name },
@@ -282,8 +292,7 @@ async function deliverCopy(s: SigningScope, quote: Quote, company: Company, link
       // Not to their own phone after they texted STOP; another number is the office's to text.
       const { data: texted } = await s.db.from("clients").select("id, phone, sms_opt_out_at").eq("id", quote.client_id).maybeSingle();
       if (texted && textsOffTo(texted, to)) return { sent: false, reason: textsOffRefusal(who) };
-      sentText = `${company.name}: Here's your signed estimate. You can view, print or save it any time: ${link}`;
-      result = await sendSms(s.env, { to, body: sentText });
+      result = await sendSms(s.env, { to, body: sms(linkFor("sms", to)) });
       if (texted) await noteRefusedText(adminClient(s.env), texted, to, result);
     }
   } catch (error) {
@@ -297,7 +306,7 @@ async function deliverCopy(s: SigningScope, quote: Quote, company: Company, link
       client_id: quote.client_id,
       channel: body.channel,
       subject: body.channel === "email" ? subject : `Signed estimate #${quote.number}`,
-      body: sentText,
+      body: body.channel === "email" ? email(links.office) : sms(links.office),
       related_type: "quote",
       related_id: quote.id,
       external_id: result.id ?? null,

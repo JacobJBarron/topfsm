@@ -7,18 +7,18 @@
  * Each is recorded in the company's activity.
  */
 import { ADMINS, canMakeResetLink, isRole } from "@crewtavo/core";
-import { createClient } from "@supabase/supabase-js";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, Env } from "../env";
-import { emailAuthLink, requireCompany, requireUser } from "../lib/auth";
+import { confirmAdminGrant, confirmPassword, emailAuthLink, passwordIn, requireCompany, requireUser } from "../lib/auth";
 import { safeEqual } from "../lib/crypto";
 import { renderEmail } from "../lib/email";
 import { appUrl, HttpError, must, readJson, uuid } from "../lib/http";
 import { allow } from "../lib/limit";
 import { emailReady, sendEmail } from "../lib/notify";
 import { accountCanEmail, accountForEmail, recoverySetting, replaceSpareKeys, spareKeyHash, usedCodeName } from "../lib/recovery";
-import { adminClient, publishableKey } from "../lib/supabase";
+import { adminClient } from "../lib/supabase";
+import { adminAccess } from "../services/team";
 import { clientIp } from "../lib/visitor";
 
 export const recovery = new Hono<AppEnv>();
@@ -45,7 +45,7 @@ recovery.post("/team/:userId/password-link", requireUser, requireCompany(ADMINS,
   if (!(await allow(c.env, `password-link:${userId}`, 10, 3600))) throw new HttpError(429, "Too many reset links. Wait a while and try again.");
 
   const admin = adminClient(c.env);
-  const memberships = must(await admin.from("memberships").select("company_id, role, active").eq("user_id", targetId));
+  const memberships = must(await admin.from("memberships").select("company_id, role, role_id, active").eq("user_id", targetId));
   const here = memberships.find((m) => m.company_id === companyId);
   if (!here?.active || !isRole(here.role)) throw new HttpError(404, "That person isn't on your team.");
   if (here.role === "subcontractor") throw new HttpError(400, "A sub signs in with a link from their page under Subs.");
@@ -56,6 +56,8 @@ recovery.post("/team/:userId/password-link", requireUser, requireCompany(ADMINS,
   if (memberships.some((m) => m.company_id !== companyId)) {
     throw new HttpError(403, "This person also uses Crewtavo with another business, so they need to reset their password themselves.");
   }
+  // A way into an account with admin-level access asks for the password, as giving that access does.
+  if (await adminAccess(admin, companyId, here.role, here.role_id)) await confirmAdminGrant(c, await passwordIn(c));
 
   const [target, requester, company] = await Promise.all([
     admin.from("profiles").select("email, full_name").eq("user_id", targetId).maybeSingle(),
@@ -71,7 +73,7 @@ recovery.post("/team/:userId/password-link", requireUser, requireCompany(ADMINS,
   const link = await resetLink(c.env, appUrl(c), email, targetId);
 
   // On record for the team, and the person hears about it, so a link nobody asked for gets noticed.
-  await c.var.db.from("activity").insert({ company_id: companyId, verb: "member.password_link", subject_type: "member", subject_id: targetId, summary: `${requesterName} made a password reset link for ${targetName}` });
+  await admin.from("activity").insert({ company_id: companyId, actor_id: userId, verb: "member.password_link", subject_type: "member", subject_id: targetId, summary: `${requesterName} made a password reset link for ${targetName}` });
   await admin.from("notifications").insert({
     company_id: companyId,
     user_id: targetId,
@@ -176,22 +178,14 @@ recovery.get("/account/spare-keys", requireUser, async (c) => {
 recovery.post("/account/spare-keys", requireUser, async (c) => {
   const body = await readJson(c, z.object({ password: z.string().min(1).max(200) }));
   const { userId } = c.var;
-  if (!(await allow(c.env, `spare-keys:${userId}`, 5, 3600))) throw new HttpError(429, "Too many tries. Wait an hour and try again.");
   const admin = adminClient(c.env);
   const { data: owner } = await admin.from("memberships").select("company_id").eq("user_id", userId).eq("role", "owner").eq("active", true).limit(1);
   if (!owner?.length) throw new HttpError(403, "Spare keys are for the owner. Anyone else can ask the owner or an admin for a reset link.");
-
-  const { data: profile } = await admin.from("profiles").select("email, full_name").eq("user_id", userId).maybeSingle();
-  if (!profile?.email) throw new HttpError(400, "Your account has no email address.");
-  // Check the password with a throwaway sign-in, then end that session right away.
-  const check = createClient(c.env.SUPABASE_URL, publishableKey(c.env), { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
-  const { error: wrong } = await check.auth.signInWithPassword({ email: profile.email, password: body.password });
-  if (wrong) throw new HttpError(400, "That password isn't right.");
-  await check.auth.signOut({ scope: "local" }).catch(() => undefined);
+  const profile = await confirmPassword(c, body.password, "spare-keys");
 
   const keys = await replaceSpareKeys(c.env, userId);
   for (const m of owner) {
-    await c.var.db.from("activity").insert({ company_id: m.company_id, verb: "member.spare_keys", subject_type: "member", subject_id: userId, summary: `${profile.full_name || profile.email} made new spare keys` });
+    await admin.from("activity").insert({ company_id: m.company_id, actor_id: userId, verb: "member.spare_keys", subject_type: "member", subject_id: userId, summary: `${profile.full_name || profile.email} made new spare keys` });
   }
   return c.json({ keys });
 });

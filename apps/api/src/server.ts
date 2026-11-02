@@ -81,10 +81,17 @@ server.use("*", async (c, next) => {
 });
 
 // The web app: fingerprinted assets cache forever; everything else falls back to index.html.
+// Its pages can't be shown inside another site, so a signed-in screen (Apps → Stripe, say) can't
+// be dressed up to trick a click. Booking forms are left out: businesses put them on their own
+// websites (features/booking/embed.ts), and they're public anyway. The API has its own headers (app.ts).
 const indexPath = join(staticDir, "index.html");
 const indexHtml = existsSync(indexPath) ? readFileSync(indexPath, "utf8") : null;
 server.use("*", async (c, next) => {
   await next();
+  if (c.res.headers.get("content-type")?.includes("text/html") && !c.req.path.startsWith("/book/")) {
+    c.res.headers.set("X-Frame-Options", "SAMEORIGIN");
+    c.res.headers.set("Content-Security-Policy", "frame-ancestors 'self'; object-src 'none'; base-uri 'self'");
+  }
   if (c.res.status !== 200) return;
   if (c.req.path.startsWith("/assets/")) c.res.headers.set("Cache-Control", "public, max-age=31536000, immutable");
   else if (c.res.headers.get("content-type")?.includes("text/html")) c.res.headers.set("Cache-Control", "no-cache");

@@ -37,6 +37,8 @@ begin;
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub": "b6000000-0000-0000-0000-000000000001", "role": "authenticated"}', true);
 select public.create_company('Lima Lawn', 'general') as lima \gset
+-- Admin access is given through the server (the admin_grants migration).
+reset role;
 insert into public.company_roles (company_id, name, base_role, permissions) values (:'lima', 'HR admin', 'admin', '{team}') returning id as hr_role \gset
 insert into public.company_roles (company_id, name, base_role, permissions) values (:'lima', 'Kit lead', 'crew_lead', '{equipment}') returning id as kit_role \gset
 insert into public.memberships (company_id, user_id, role, role_id) values
@@ -47,6 +49,7 @@ insert into public.memberships (company_id, user_id, role, role_id) values
   (:'lima', 'b6000000-0000-0000-0000-000000000007', 'field_crew', null),
   (:'lima', 'b6000000-0000-0000-0000-000000000008', 'field_crew', null),
   (:'lima', 'b6000000-0000-0000-0000-000000000009', 'field_crew', null);
+set local role authenticated;
 update public.memberships set active = false where company_id = :'lima' and user_id = 'b6000000-0000-0000-0000-000000000005';
 insert into public.crews (company_id, name, lead_user_id) values (:'lima', 'Mowing', 'b6000000-0000-0000-0000-000000000006') returning id as crew1 \gset
 insert into public.crews (company_id, name) values (:'lima', 'Trees') returning id as crew2 \gset

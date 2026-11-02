@@ -45,9 +45,23 @@ export function bankPaymentNote(bank: { amount_due: number; processing_at?: stri
   if (bank.left) {
     return `A bank payment of ${amount} was still clearing in the Stripe account Crewtavo used before, so it won't show up here on its own. Check it in that Stripe account, and record it here once it clears.`;
   }
-  const started = bank.processing_at ? ` (started ${new Date(bank.processing_at).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone })})` : "";
-  return `A bank payment of ${amount} for this invoice is on its way through Stripe${started}. It usually clears in a few business days and shows up here when it does. If you record another payment, the client may end up paying twice.`;
+  return `A bank payment of ${amount} for this invoice is on its way through Stripe${started(bank.processing_at, timeZone)}. It usually clears in a few business days and shows up here when it does. If you record another payment, the client may end up paying twice.`;
 }
+
+/**
+ * What the office reads while autopay's own bank payment for the invoice is on its way (its charge
+ * is 'processing'), beside a Record payment that waits until then. A payment recorded meanwhile
+ * could have the client pay twice, so the database refuses one until the bank payment clears or
+ * bounces. `bank` is the charge's Stripe invoice once that says so, for how much and since when.
+ */
+export function autopayBankNote(card: string, bank: { amount_due: number; processing_at?: string | null } | null, timeZone: string): string {
+  const amount = bank ? ` of ${formatMoneyCents(bank.amount_due)}` : "";
+  return `A bank payment${amount} from ${card} is on its way through Stripe${started(bank?.processing_at, timeZone)}. It usually clears in a few business days and shows up here when it does. Record any other payment once it clears or bounces.`;
+}
+
+/** " (started Oct 3)", the day where the company is, or nothing when it isn't known. */
+const started = (at: string | null | undefined, timeZone: string) =>
+  at ? ` (started ${new Date(at).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone })})` : "";
 
 /**
  * How a payment's amount reads in the invoice's payments. One that's only a tip (the client's

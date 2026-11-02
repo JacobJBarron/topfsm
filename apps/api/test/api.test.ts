@@ -10,7 +10,7 @@ import { friendlyIssue } from "../src/lib/http";
 import { cronMatches } from "../src/lib/cron";
 import { buildCalendar } from "../src/lib/ics";
 import { allow, allowStrict } from "../src/lib/limit";
-import { clientLink, readClientLink } from "../src/lib/links";
+import { clientLink, clientLinks, readClientLink, sentToClient } from "../src/lib/links";
 import { buildMime } from "../src/lib/smtp";
 import { twilioSignature } from "../src/routes/messages";
 import { verifyStripeSignature } from "../src/services/stripe";
@@ -130,6 +130,11 @@ describe("routes", () => {
     for (const tasks of Object.values(CRON_TASKS)) for (const task of tasks) expect(TASKS).toContain(task);
   });
 
+  it("runs autopay every 5 minutes, with the outbox that sends its receipts", () => {
+    expect(TASKS).toContain("autopay");
+    expect(CRON_TASKS["*/5 * * * *"]).toEqual(["outbox", "autopay"]);
+  });
+
   it("rejects expired client links", async () => {
     const res = await request("/api/hub/not-a-real-token");
     expect(res.status).toBe(404);
@@ -241,6 +246,40 @@ describe("client links by kind", () => {
     expect(refer.startsWith("https://ops.example.com/refer/")).toBe(true);
     const preview = await clientLink(env, "https://ops.example.com", { c: "co", t: "quote", id: "q-1", pv: 1 });
     expect(await readClientLink(env, preview.split("/hub/")[1])).toMatchObject({ t: "quote", pv: 1 });
+  });
+
+  it("keeps whether the office copied a link, and leaves the client's own links without it", async () => {
+    const copied = await clientLink(env, "https://ops.example.com", { c: "co", t: "client", id: "client-1", via: "office" });
+    expect(await readClientLink(env, copied.split("/hub/")[1])).toMatchObject({ t: "client", id: "client-1", via: "office" });
+    const own = await clientLink(env, "https://ops.example.com", { c: "co", t: "client", id: "client-1" });
+    expect((await readClientLink(env, own.split("/hub/")[1]))?.via).toBeUndefined();
+  });
+
+  it("marks only the client's own of a pair as theirs (own: 1), never the office's copy", async () => {
+    const links = await clientLinks(env, "https://ops.example.com", { c: "co", t: "invoice", id: "invoice-1" });
+    const own = await readClientLink(env, links.own.split("/hub/")[1]!);
+    expect(own).toMatchObject({ c: "co", t: "invoice", id: "invoice-1", own: 1 });
+    expect(own).not.toHaveProperty("via");
+    const office = await readClientLink(env, links.office.split("/hub/")[1]!);
+    expect(office).toMatchObject({ t: "invoice", id: "invoice-1", via: "office" });
+    expect(office).not.toHaveProperty("own");
+  });
+
+  it("knows a send to the client's own email or phone from one typed to anyone else", () => {
+    const client = { email: " Dana@Example.com ", phone: "(540) 555-0142" };
+    expect(sentToClient("email", "dana@example.com", client)).toBe(true);
+    expect(sentToClient("email", "  DANA@EXAMPLE.COM", client)).toBe(true);
+    expect(sentToClient("email", "dana.work@example.com", client)).toBe(false);
+    expect(sentToClient("email", "estimator@peak.example", client)).toBe(false);
+    expect(sentToClient("sms", "540-555-0142", client)).toBe(true);
+    expect(sentToClient("sms", "+1 540 555 0142", client)).toBe(true);
+    expect(sentToClient("sms", "15405550142", client)).toBe(true);
+    expect(sentToClient("sms", "540-555-0199", client)).toBe(false);
+    // An email isn't a phone, nothing on file matches nothing, and there's no client to match.
+    expect(sentToClient("sms", "dana@example.com", client)).toBe(false);
+    expect(sentToClient("email", "", { email: null, phone: null })).toBe(false);
+    expect(sentToClient("sms", "", { email: null, phone: "" })).toBe(false);
+    expect(sentToClient("email", "dana@example.com", null)).toBe(false);
   });
 
   it("won't accept one kind of link where another is expected", async () => {
@@ -394,6 +433,18 @@ describe("email rendering", () => {
     expect(plain.html).toContain('href="https://acme.example/book"');
     expect(plain.html).not.toContain("<img");
     expect(plain.text).toBe("Book at https://acme.example/book.");
+  });
+
+  it("names autopay's buttons for what they do: a tip on the invoice, or the client's autopay page", () => {
+    const { html } = renderEmail({
+      companyName: "Radford Lawn Care",
+      text: "Add a tip for the crew?\n\nhttps://ops.example.com/hub/inv?tip=1\n\nChange your card:\n\nhttps://ops.example.com/hub/home?view=autopay\n\nhttps://ops.example.com/hub/inv?tip=10",
+    });
+    expect(html).toContain('href="https://ops.example.com/hub/inv?tip=1" style="display:inline-block;background:#3b7d23;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:8px">Add a tip</a>');
+    expect(html).toContain(">Manage autopay</a>");
+    // Only exactly tip=1.
+    expect(html).toContain('href="https://ops.example.com/hub/inv?tip=10" style="display:inline-block;background:#3b7d23;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:8px">View online</a>');
+    expect(renderEmail({ companyName: "Radford Lawn Care", text: "https://ops.example.com/hub/home?session=1&view=autopay" }).html).toContain(">Manage autopay</a>");
   });
 
   it("shows a one-time code large, on its own, and leaves the plain text as it is", () => {

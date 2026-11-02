@@ -111,7 +111,7 @@ function tooMany(ms: number, msg = "Too many wrong attempts for this account. Wa
 }
 
 /** The body as text, or null once it passes `max` bytes (without reading the rest). */
-async function readUpTo(request: Request, max: number): Promise<string | null> {
+export async function readUpTo(request: Request, max: number): Promise<string | null> {
   if (!request.body) return "";
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];

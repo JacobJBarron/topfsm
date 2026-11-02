@@ -18,6 +18,10 @@ begin
   begin execute p_sql; exception when others then raise notice 'ok - % (%)', p_what, sqlerrm; return; end;
   raise exception 'FAIL (expected an error): %', p_what;
 end $$;
+-- What the server does once the signed-in person's password checks out (the admin_grants migration).
+create function t41.password_ok(p_company uuid, p_target uuid) returns void language sql security definer set search_path = '' as $$
+  select public.admin_grant_allow(auth.uid(), p_company, p_target)
+$$;
 grant execute on all functions in schema t41 to authenticated, service_role;
 
 insert into auth.users (id, email, raw_user_meta_data) values
@@ -41,6 +45,8 @@ select public.create_company('Lima Landscaping', 'general') as co \gset
 select id as gm_role from public.company_roles where company_id = :'co' and name = 'General manager' \gset
 select id as foreman_role from public.company_roles where company_id = :'co' and name = 'Foreman' \gset
 select id as employee_role from public.company_roles where company_id = :'co' and name = 'Employee' \gset
+-- Admin access is given through the server (the admin_grants migration).
+reset role;
 insert into public.company_roles (company_id, name, base_role, permissions) values (:'co', 'HR admin', 'admin', '{team}') returning id as hr_role \gset
 insert into public.memberships (company_id, user_id, role, role_id, active) values
   (:'co', 'f4100000-0000-0000-0000-000000000002', 'admin', :'hr_role', true),
@@ -52,6 +58,7 @@ insert into public.memberships (company_id, user_id, role, role_id, active) valu
   (:'co', 'f4100000-0000-0000-0000-000000000008', 'estimator', null, true),
   (:'co', 'f4100000-0000-0000-0000-000000000009', 'office', null, true),
   (:'co', 'f4100000-0000-0000-0000-000000000011', 'admin', null, false);
+set local role authenticated;
 insert into public.crews (company_id, name, lead_user_id) values (:'co', 'Planting', 'f4100000-0000-0000-0000-000000000006') returning id as crew \gset
 insert into public.crew_members (company_id, crew_id, user_id) values (:'co', :'crew', 'f4100000-0000-0000-0000-000000000007');
 insert into public.clients (company_id, display_name) values (:'co', 'Birch Lane') returning id as client \gset
@@ -85,7 +92,10 @@ select t41.check((select role_id from public.memberships where company_id = :'co
 insert into public.memberships (company_id, user_id, role, role_id, active) values (:'co', 'f4100000-0000-0000-0000-000000000003', 'field_crew', null, true)
   on conflict (company_id, user_id) do update set role = excluded.role, role_id = excluded.role_id, active = excluded.active;
 select t41.check((select role from public.memberships where company_id = :'co' and user_id = 'f4100000-0000-0000-0000-000000000003') = 'field_crew', 'and re-invite someone as field crew');
-insert into public.company_roles (company_id, name, base_role, permissions) values (:'co', 'Front desk', 'admin', '{team}') returning id as desk_role \gset
+-- (Admin access goes through the server, which asks for their password first.)
+select t41.password_ok(:'co', 'f41000d0-0000-4000-8000-000000000001');
+insert into public.company_roles (id, company_id, name, base_role, permissions) values ('f41000d0-0000-4000-8000-000000000001', :'co', 'Front desk', 'admin', '{team}') returning id as desk_role \gset
+select t41.password_ok(:'co', 'f4100000-0000-0000-0000-000000000003');
 update public.memberships set role_id = :'desk_role' where company_id = :'co' and user_id = 'f4100000-0000-0000-0000-000000000003';
 select t41.check((select role from public.memberships where company_id = :'co' and user_id = 'f4100000-0000-0000-0000-000000000003') = 'admin', 'and give a role with only the areas they have, at their level');
 update public.company_roles set name = 'Crew foreman' where id = :'foreman_role';
@@ -98,6 +108,7 @@ begin;
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub": "f4100000-0000-0000-0000-000000000002", "role": "authenticated"}', true);
 select public.create_company('Hal on the Side', 'general') as side \gset
+select t41.password_ok(:'side', 'f4100000-0000-0000-0000-000000000012');
 insert into public.memberships (company_id, user_id, role) values (:'side', 'f4100000-0000-0000-0000-000000000012', 'admin');
 select t41.expect_error(format('update public.memberships set company_id = %L where company_id = %L and user_id = %L', :'co', :'side', 'f4100000-0000-0000-0000-000000000012'), 'or move a membership in from another business');
 rollback;
@@ -109,6 +120,7 @@ select set_config('request.jwt.claims', '{"sub": "f4100000-0000-0000-0000-000000
 select t41.expect_error(format('update public.memberships set role = %L, role_id = null where company_id = %L and user_id = %L', 'admin', :'co', 'f4100000-0000-0000-0000-000000000003'), 'a general manager can''t make someone a plain admin (it includes apps)');
 update public.memberships set role = 'office', role_id = null where company_id = :'co' and user_id = 'f4100000-0000-0000-0000-000000000003';
 select t41.check((select role from public.memberships where company_id = :'co' and user_id = 'f4100000-0000-0000-0000-000000000003') = 'office', 'but makes them office');
+select t41.password_ok(:'co', 'f4100000-0000-0000-0000-000000000003');
 update public.memberships set role_id = :'gm_role' where company_id = :'co' and user_id = 'f4100000-0000-0000-0000-000000000003';
 select t41.check((select role_id from public.memberships where company_id = :'co' and user_id = 'f4100000-0000-0000-0000-000000000003') = :'gm_role', 'or a general manager like them');
 rollback;
@@ -117,6 +129,7 @@ rollback;
 begin;
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub": "f4100000-0000-0000-0000-000000000005", "role": "authenticated"}', true);
+select t41.password_ok(:'co', 'f4100000-0000-0000-0000-000000000010');
 update public.memberships set role = 'admin', role_id = null where company_id = :'co' and user_id = 'f4100000-0000-0000-0000-000000000010';
 select t41.check((select role from public.memberships where company_id = :'co' and user_id = 'f4100000-0000-0000-0000-000000000010') = 'admin', 'a plain admin makes someone admin');
 delete from public.company_roles where id = :'desk_role';

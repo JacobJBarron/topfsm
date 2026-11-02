@@ -6,7 +6,8 @@
  *             agreement on the business's paper (initialing the sections that ask), then sign; or
  *             ask for changes. A roof estimate sent as a price range asks "Yes, send someone out"
  *             instead; a signed one shows the signed estimate itself
- *   invoice - view and pay (with an optional tip)
+ *   invoice - view and pay (with an optional tip, only while the business has tips on); once
+ *             paid, "Pay automatically next time?" and, after an automatic charge, a tip on that card
  * Quotes and invoices print as the business's estimate template. Add ?print=1 to print or save a PDF.
  */
 import { greetingName } from "@crewtavo/core/automations";
@@ -41,7 +42,9 @@ import { ApiError } from "@/lib/api";
 import { dateIn, formatDate, formatMoney, formatMoneyCents, todayIn } from "@/lib/format";
 import { sanitizeContractHtml } from "@/lib/html";
 import { ClientPortal, hubZone, MessageDialog, type ClientView, type PortalVisit } from "./ClientPortal";
+import { CARD_REQUIRED } from "./HubAutopay";
 import {
+  autopayPayNote,
   contrastOnWhite,
   credentialLine,
   depositToBook,
@@ -54,7 +57,9 @@ import {
   hubLetterhead,
   hubSteps,
   hubTemplate,
+  hubTip,
   hubTotals,
+  invoiceAutopayLine,
   invoiceDocument,
   isRoofJob,
   keepPicks,
@@ -73,6 +78,8 @@ import {
   rangeWords,
   reviewChange,
   roofTiles,
+  TIP_MINIMUM,
+  TIP_PERCENTS,
   trustBadges,
   unpickedGroup,
   websiteHref,
@@ -260,7 +267,7 @@ export function HubPage() {
             {home && <a className="hub-back no-print" href={home}><Icon name="chevronLeft" size={16} />Your account</a>}
             {d.kind === "quote" && <QuoteHub token={token} data={d} onChanged={() => view.refetch()} printing={printable} onPrint={print} />}
             {d.kind === "invoice" && <InvoiceHub token={token} data={d} onChanged={() => view.refetch()} printing={printable} />}
-            {d.kind === "client" && <ClientPortal token={token} data={d} hubFetch={hubFetch} onMessage={(visit) => setMessaging({ visit })} />}
+            {d.kind === "client" && <ClientPortal token={token} data={d} hubFetch={hubFetch} onMessage={(visit) => setMessaging({ visit })} onChanged={() => view.refetch()} />}
             <footer className="public-foot hub-foot">
               <span><Icon name="lock" size={12} /> Private link{clientName ? ` for ${clientName}` : ""}. Keep it to yourself.</span>
               <span className="hub-powered">Powered by <BrandMark size={13} /> <strong>Crewtavo</strong></span>
@@ -725,6 +732,25 @@ function BadgeIcon({ kind }: { kind: TrustBadge["kind"] }) {
 }
 
 /**
+ * Work charged by the visit, signed: "Pay automatically after each visit", which goes to the
+ * client's autopay page to save a card. When the business needs a card on file, a step left to do.
+ */
+function AutopayOffer({ home, required }: { home: string; required: boolean }) {
+  return (
+    <section className="hub-card hub-todo no-print" aria-label="Autopay">
+      <div className="hub-todo-head">
+        <span className="hub-icon-tile brand"><Icon name="card" size={20} /></span>
+        <span className="grow stack-xs">
+          <strong className="hub-title">{required ? "Finish setting up: add your card" : "Pay automatically after each visit"}</strong>
+          <span className="hub-meta">{required ? CARD_REQUIRED : "Save a card once, and you won't have to pay each invoice."}</span>
+        </span>
+      </div>
+      <a className="hub-btn hub-btn-brand" href={`${home}?view=autopay`}>{required ? "Add your card" : "Set up autopay"}</a>
+    </section>
+  );
+}
+
+/**
  * A signed (or approved) quote: the signed estimate itself, on the business's template, to keep or
  * print, with the contract as it was signed (its sections, their initials and the option chosen).
  */
@@ -744,6 +770,7 @@ function SignedQuote({ token, data, printing, onPrint }: { token: string; data: 
       >
         Thank you. {data.company.name} will be in touch to schedule the work.{Number(q.deposit_amount) > 0 ? " You'll receive an invoice for the deposit." : ""}
       </Done>
+      {data.autopay_offer && data.home && <AutopayOffer home={data.home} required={data.card_required === true} />}
       <section className="hub-document" aria-label={`${signed ? "Signed estimate" : "Estimate"} #${q.number}`}>
         <DocumentSheet {...doc} headingLevel={3} />
       </section>
@@ -813,6 +840,8 @@ function OpenQuote({ token, data, onChanged, printing }: { token: string; data: 
   const choice = offers ? hubChoice(data, optionId) : null;
   const agreeKey = `${optionId ?? ""}|${totals.total}|${contract?.hash ?? ""}`;
   const agree = agreed === agreeKey;
+  // Everything signing needs: the box ticked, their name, their signature and every initial asked for.
+  const ready = agree && name.trim().length >= 2 && Boolean(signature) && missing.length === 0;
   const signing = current !== "choose";
   const doc = useMemo(
     () => ({
@@ -826,9 +855,10 @@ function OpenQuote({ token, data, onChanged, printing }: { token: string; data: 
   // Until an option with a price is picked there's no copy to sign, so the page prints as it is (the options side by side).
   const printable = !offers || Boolean(optionId);
 
+  // `withAutopay`: "Approve and set up autopay" was pressed, so it goes on to saving a card.
   const approve = useMutation({
     meta: { inline: true },
-    mutationFn: () =>
+    mutationFn: (_withAutopay: boolean) =>
       hubFetch(`${token}/approve`, {
         name: name.trim(),
         selected_line_ids: chosen,
@@ -838,7 +868,10 @@ function OpenQuote({ token, data, onChanged, printing }: { token: string; data: 
         ...(contract?.hash ? { sections_hash: contract.hash } : {}),
         ...(initials && asking.length ? { initials } : {}),
       }),
-    onSuccess: onChanged,
+    onSuccess: (_result, withAutopay) => {
+      if (withAutopay && data.home) window.location.assign(`${data.home}?view=autopay`);
+      else onChanged();
+    },
     // The quote changed since the page loaded (the price, the options or the terms), or it's been
     // answered: load it as it is now, and look it over again from the first step, which says why.
     onError: (error) => {
@@ -1043,7 +1076,14 @@ function OpenQuote({ token, data, onChanged, printing }: { token: string; data: 
               {data.preview ? (
                 <div className="callout callout-info"><Icon name="eye" size={20} /><div className="grow">Preview: your client signs here.</div></div>
               ) : (
-                <form className="stack-sm" onSubmit={(e: FormEvent) => { e.preventDefault(); approve.mutate(); }}>
+                <form
+                  className="stack-sm"
+                  onSubmit={(e: FormEvent) => {
+                    e.preventDefault();
+                    // Which button sent it: Enter in a field is the first, Approve.
+                    approve.mutate((e.nativeEvent as SubmitEvent).submitter?.dataset.autopay === "1");
+                  }}
+                >
                   <Field label="Your full name" requiredMessage="Enter your full name, as you'd sign it."><input className="input" value={name} onChange={(e) => setName(e.target.value)} required minLength={2} maxLength={120} autoComplete="name" /></Field>
                   <div className="field">
                     <span>Your signature</span>
@@ -1061,7 +1101,21 @@ function OpenQuote({ token, data, onChanged, printing }: { token: string; data: 
                   {approve.error instanceof ApiError && approve.error.status === 400 && steps[0] !== "sign" && (
                     <Button icon="refresh" style={{ justifySelf: "start" }} onClick={() => goTo(steps[0]!)}>Look it over again</Button>
                   )}
-                  <Button type="submit" variant="primary" size="lg" icon="check" loading={approve.isPending} disabled={!agree || name.trim().length < 2 || !signature || missing.length > 0}>{q.change_order_for ? "Approve change order" : "Approve quote"}</Button>
+                  {data.card_required ? (
+                    // The business needs a card on file: approving always goes on to adding one.
+                    <>
+                      <div className="callout callout-info"><Icon name="card" size={20} /><div className="grow">A card on file is required for service. After you sign, you'll add yours on Stripe's secure page.</div></div>
+                      <Button type="submit" variant="primary" size="lg" icon="card" data-autopay="1" loading={approve.isPending} disabled={!ready || approve.isPending}>Approve and add your card</Button>
+                    </>
+                  ) : data.autopay_offer ? (
+                    // Work charged by the visit: approving can go straight on to saving a card for it.
+                    <div className="hub-step-actions">
+                      <Button type="submit" variant="primary" size="lg" icon="check" loading={approve.isPending && !approve.variables} disabled={!ready || approve.isPending}>{q.change_order_for ? "Approve change order" : "Approve quote"}</Button>
+                      <Button type="submit" data-autopay="1" size="lg" icon="card" loading={approve.isPending && approve.variables === true} disabled={!ready || approve.isPending}>Approve and set up autopay</Button>
+                    </div>
+                  ) : (
+                    <Button type="submit" variant="primary" size="lg" icon="check" loading={approve.isPending} disabled={!ready}>{q.change_order_for ? "Approve change order" : "Approve quote"}</Button>
+                  )}
                 </form>
               )}
             </section>
@@ -1257,21 +1311,97 @@ function TermsToRead({ contract }: { contract: QuoteContract }) {
   );
 }
 
+/**
+ * The tip choices, shown only while the business has tips on: percents of what's tipped on (0 is
+ * "No tip", on Pay), or "Other" with an amount.
+ */
+function TipChoices({ percents, choice, onChoice, custom, onCustom }: {
+  percents: readonly number[];
+  choice: number | "custom" | null;
+  onChoice: (choice: number | "custom") => void;
+  custom: string;
+  onCustom: (value: string) => void;
+}) {
+  return (
+    <>
+      <div className="segmented" role="group" aria-label="Tip">
+        {percents.map((pct) => (
+          <button key={pct} type="button" aria-pressed={choice === pct} onClick={() => onChoice(pct)}>{pct ? `${pct}%` : "No tip"}</button>
+        ))}
+        <button type="button" aria-pressed={choice === "custom"} onClick={() => onChoice("custom")}>Other</button>
+      </div>
+      {choice === "custom" && (
+        <span className="input-group" style={{ maxWidth: 180 }}><span className="addon">$</span><input className="input" style={{ paddingLeft: 22 }} inputMode="decimal" aria-label="Tip amount" value={custom} onChange={(e) => onCustom(e.target.value.replace(/[^0-9.]/g, ""))} autoFocus /></span>
+      )}
+    </>
+  );
+}
+
+/**
+ * An invoice: what was billed and what's owed, and Pay (with a tip while the business has tips on).
+ * With autopay: whether it was paid automatically or is being charged now (no Pay then), Pay with a
+ * way to update the card when the charge didn't go through, and once it's paid, a tip on the card
+ * the charge was made to (from the receipt's link, ?tip=1) or, near the top, "Paid. Pay
+ * automatically next time?". Paying by hand ends on Stripe's own page, which doesn't come back here,
+ * so the offer is there whenever the client opens the paid invoice again. Written off: the office
+ * chose not to collect what's left, so it isn't asked for.
+ * Every tip is the server's to allow: with tips off, `data.tips` is false and no tip choice shows.
+ */
 function InvoiceHub({ token, data, onChanged, printing }: { token: string; data: InvoiceView; onChanged: () => void; printing: boolean }) {
   const inv = data.invoice;
   const [params] = useSearchParams();
-  const balance = Number(inv.balance_due);
-  const promoCanChange = !data.preview && !data.from_stripe && !data.processing && balance > 0 && inv.payments.length === 0;
+  const writtenOff = inv.status === "written_off";
+  // What's asked for: nothing once it's written off, whatever balance it was left with.
+  const balance = writtenOff ? 0 : Number(inv.balance_due);
+  const autopay = data.autopay ?? null;
+  const tz = hubZone(data.company);
+  const promoCanChange = !data.preview && !data.from_stripe && !data.processing && balance > 0 && inv.payments.length === 0 && autopay?.status !== "charging";
+  // Pay's tip: a percent of what's owed, or an amount (hubTip: nothing while tips are off).
   const [tipChoice, setTipChoice] = useState<number | "custom">(0);
   const [customTip, setCustomTip] = useState("");
-  const tip = !data.tips ? 0 : tipChoice === "custom" ? Math.max(Math.round(Number(customTip) * 100) / 100 || 0, 0) : Math.round(balance * tipChoice) / 100;
+  const tip = hubTip({ tips: data.tips, base: balance, choice: tipChoice, custom: customTip });
   const pay = useMutation({
     mutationFn: () => hubFetch<{ url: string }>(`${token}/pay`, { tip }),
     onSuccess: (res) => window.location.assign(res.url),
+    // Tips turned off, or the card being charged, since the page loaded: show it as it is now.
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) onChanged();
+    },
   });
-  const tz = hubZone(data.company);
+  // The tip after an automatic charge: a percent of the invoice's total, on the card that paid it.
+  const [afterChoice, setAfterChoice] = useState<number | "custom" | null>(null);
+  const [afterCustom, setAfterCustom] = useState("");
+  const afterTip = hubTip({ tips: data.tips, base: Number(inv.total), choice: afterChoice ?? 0, custom: afterCustom });
+  const addTip = useMutation({
+    meta: { inline: true },
+    mutationFn: () => hubFetch<{ status: "paid"; tip: number }>(`${token}/tip`, { tip: afterTip }),
+    onSuccess: onChanged,
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) onChanged();
+    },
+  });
+  // "Pay automatically next time?": Stripe's page to save a card, which comes back to their autopay page.
+  const saveCard = useMutation({
+    meta: { inline: true },
+    mutationFn: () => hubFetch<{ url: string }>(`${token}/autopay/setup`, {}),
+    onSuccess: (res) => window.location.assign(res.url),
+  });
+  // Paid by hand, with nothing saved for autopay yet (the server's save_card).
+  const offerSave = balance <= 0 && !writtenOff && Boolean(data.save_card) && !data.preview;
+  const tipAfter = balance <= 0 && data.tips && Boolean(data.tip_after) && !addTip.isSuccess;
+  // From the receipt's "Add a tip for the crew?" link (?tip=1): straight to the tip. With tips off there's none to go to.
+  const tipSection = useRef<HTMLElement>(null);
+  const askedTip = params.get("tip") === "1";
+  useEffect(() => {
+    if (!askedTip || !tipAfter) return;
+    tipSection.current?.scrollIntoView({ block: "center" });
+    tipSection.current?.focus({ preventScroll: true });
+  }, [askedTip, tipAfter]);
   // Late the day after it's due where the company is (the same day the invoice turns overdue).
   const late = inv.due_on && balance > 0 && inv.due_on < todayIn(tz);
+  const autopayLine = invoiceAutopayLine(autopay, tz, Number(inv.balance_due));
+  // Not while a bank payment is on its way: it settles the invoice or bounces, and nothing is tried again meanwhile.
+  const payNote = balance > 0 && !data.processing ? autopayPayNote(autopay) : null;
   // The invoice as it prints, with its contract (filled in by the server).
   const contract = hubInvoiceContract(data);
   const doc = { template: contractTemplate(hubTemplate(data), contract), company: hubLetterhead(data.company), data: invoiceDocument(data) };
@@ -1279,10 +1409,18 @@ function InvoiceHub({ token, data, onChanged, printing }: { token: string; data:
     <>
       <section className="card card-pad stack-sm">
         <span className="muted">Invoice #{inv.number}{inv.client ? ` for ${inv.client.display_name}` : ""}{inv.subject ? ` · ${inv.subject}` : ""}</span>
-        <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: "var(--tracking-display)" }}>{balance > 0 ? `${formatMoneyCents(balance)} due` : "Paid in full"}</h1>
+        <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: "var(--tracking-display)" }}>{balance > 0 ? `${formatMoneyCents(balance)} due` : writtenOff ? "Nothing due" : "Paid in full"}</h1>
         <span className={late ? "text-danger strong" : "muted"}>Issued {formatDate(inv.issued_on)}{inv.due_on ? ` · due ${formatDate(inv.due_on)}` : " · due on receipt"}</span>
+        {autopayLine && <span className="muted" role={autopay?.status === "paid" ? undefined : "status"}>{autopayLine}</span>}
       </section>
-      {params.get("paid") === "1" && <Done title="Thank you">Your payment is processing. You'll get a receipt by email.</Done>}
+      {offerSave && (
+        <section className="card card-pad stack-sm no-print" aria-labelledby="hub-save-card">
+          <strong id="hub-save-card">Paid. Pay automatically next time?</strong>
+          <span className="muted">Save a card once, and we charge it after each visit. You'll get a receipt each time.</span>
+          <span><Button variant="primary" icon="card" loading={saveCard.isPending} onClick={() => saveCard.mutate()}>Save a card</Button></span>
+          <FormError error={saveCard.error} />
+        </section>
+      )}
       <HubDrawings token={token} drawings={data.drawings} />
       <section className="card">
         {inv.lines.map((l, i) => (
@@ -1301,7 +1439,7 @@ function InvoiceHub({ token, data, onChanged, printing }: { token: string; data:
             token={token}
             promo={inv.promo}
             discount={Math.min(Number(inv.discount_amount), Math.max(Number(inv.subtotal), 0))}
-            // Not while a bank payment clears: the client is paying what Stripe asked for (the server says so too).
+            // Not while a bank payment clears or the card is being charged: the client is paying what Stripe asked for (the server says so too).
             canChange={promoCanChange}
             // One code to an invoice: its job's code is on a line already.
             canAdd={promoCanChange && !data.promo_line}
@@ -1326,23 +1464,28 @@ function InvoiceHub({ token, data, onChanged, printing }: { token: string; data:
         <DocumentSheet {...doc} />
       </section>
       {contract && <TermsToRead contract={contract} />}
-      {balance > 0 && !data.preview && (
+      {payNote && !data.preview && (
+        <div className="callout callout-warning no-print">
+          <Icon name="card" size={20} />
+          <div className="grow">
+            {payNote}
+            {data.home && <> <a href={`${data.home}?view=autopay`}>Update your card</a></>}
+          </div>
+        </div>
+      )}
+      {/* Being charged to their card right now: no Pay, which could charge them twice. */}
+      {balance > 0 && !data.preview && autopay?.status !== "charging" && (
         data.processing ? (
-          <div className="card card-pad muted no-print" role="status">Your bank payment is on its way. It usually takes a few business days to clear, and this page updates when it does.</div>
+          // A bank payment from autopay says so under the heading already.
+          autopay?.status === "processing" ? null : (
+            <div className="card card-pad muted no-print" role="status">Your bank payment is on its way. It usually takes a few business days to clear, and this page updates when it does.</div>
+          )
         ) : data.can_pay ? (
           <div className="stack no-print">
             {data.tips && (
               <section className="card card-pad stack-sm">
                 <strong>Add a tip for the crew?</strong>
-                <div className="segmented" role="group" aria-label="Tip">
-                  {[0, 10, 15, 20].map((pct) => (
-                    <button key={pct} type="button" aria-pressed={tipChoice === pct} onClick={() => setTipChoice(pct)}>{pct ? `${pct}%` : "No tip"}</button>
-                  ))}
-                  <button type="button" aria-pressed={tipChoice === "custom"} onClick={() => setTipChoice("custom")}>Other</button>
-                </div>
-                {tipChoice === "custom" && (
-                  <span className="input-group" style={{ maxWidth: 180 }}><span className="addon">$</span><input className="input" style={{ paddingLeft: 22 }} inputMode="decimal" aria-label="Tip amount" value={customTip} onChange={(e) => setCustomTip(e.target.value.replace(/[^0-9.]/g, ""))} autoFocus /></span>
-                )}
+                <TipChoices percents={[0, ...TIP_PERCENTS]} choice={tipChoice} onChoice={setTipChoice} custom={customTip} onCustom={setCustomTip} />
                 {tip > 0 && <span className="muted small">{formatMoneyCents(tip)} tip. Thank you.</span>}
               </section>
             )}
@@ -1353,6 +1496,19 @@ function InvoiceHub({ token, data, onChanged, printing }: { token: string; data:
         )
       )}
       <FormError error={pay.error} />
+      {tipAfter && (
+        <section ref={tipSection} tabIndex={-1} className="card card-pad stack-sm no-print" aria-labelledby="hub-tip-after">
+          <strong id="hub-tip-after">Add a tip for the crew?</strong>
+          <TipChoices percents={TIP_PERCENTS} choice={afterChoice} onChoice={setAfterChoice} custom={afterCustom} onCustom={setAfterCustom} />
+          {afterTip > 0 && afterTip < TIP_MINIMUM && <span className="muted small">A tip has to be at least {formatMoneyCents(TIP_MINIMUM)}.</span>}
+          {afterTip > Number(inv.total) && <span className="muted small">A tip can be up to the invoice total.</span>}
+          <Button variant="primary" icon="card" wrap loading={addTip.isPending} disabled={afterTip < TIP_MINIMUM || afterTip > Number(inv.total)} onClick={() => addTip.mutate()} style={{ justifySelf: "start" }}>
+            {afterTip > 0 ? `Add a ${formatMoneyCents(afterTip)} tip to your ${data.tip_method ?? "card"}` : `Add a tip to your ${data.tip_method ?? "card"}`}
+          </Button>
+        </section>
+      )}
+      {addTip.isSuccess && <Done title="Thank you">Your {formatMoneyCents(addTip.data.tip)} tip is on its way to the crew.</Done>}
+      <FormError error={addTip.error} />
       {/* What prints: the invoice on the business's template. */}
       {printing && <PrintableDocument {...doc} />}
     </>

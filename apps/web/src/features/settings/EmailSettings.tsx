@@ -2,7 +2,8 @@
  * Settings → Email: send quotes, invoices, reminders, invites and team notifications from the
  * company's own address. Resend comes first (it works on every Railway plan) with a step-by-step
  * guide; Gmail, Zoho and the other mailboxes take an app password and need no DNS changes. Crewtavo
- * signs in and sends a test before saving.
+ * signs in and sends a test before saving. Connecting, changing or disconnecting it asks for the
+ * person's own password, since the owners hear about Stripe changes by this email.
  */
 import { emailDomain, isPersonalMailDomain, MAIL_PRESETS, mailPreset, type MailPreset, type MailStep } from "@crewtavo/core/email";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -15,7 +16,7 @@ import resendLogo from "@/assets/apps/resend.svg";
 import yahooLogo from "@/assets/apps/yahoo.svg";
 import zohoLogo from "@/assets/apps/zoho.svg";
 import { Button } from "@/components/ui/Button";
-import { confirm } from "@/components/ui/Confirm";
+import { Dialog } from "@/components/ui/Dialog";
 import { Field, FormChecks, FormError } from "@/components/ui/Field";
 import { Icon } from "@/components/ui/Icon";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -25,6 +26,7 @@ import { api } from "@/lib/api";
 import { timeAgo } from "@/lib/format";
 import { useSession } from "@/lib/session";
 import { toast } from "@/lib/toast";
+import { PASSWORD_HINT } from "../apps/catalog";
 import styles from "./EmailSettings.module.css";
 
 interface Mailbox {
@@ -84,10 +86,14 @@ export function EmailSettings() {
       queryClient.invalidateQueries({ queryKey: key });
     },
   });
+  const [askDisconnect, setAskDisconnect] = useState(false);
   const disconnect = useMutation({
-    meta: { success: "Email disconnected" },
-    mutationFn: () => api.delete("/email"),
-    onSuccess: refresh,
+    meta: { success: "Email disconnected", inline: true },
+    mutationFn: (password: string) => api.delete("/email", undefined, { current_password: password }),
+    onSuccess: () => {
+      setAskDisconnect(false);
+      refresh();
+    },
   });
 
   if (state.error) return <div className="card"><ErrorState error={state.error} onRetry={() => state.refetch()} /></div>;
@@ -137,16 +143,20 @@ export function EmailSettings() {
             <Button icon="send" loading={test.isPending} onClick={() => test.mutate()}>Send me a test</Button>
             <Button icon="edit" onClick={() => setEditing(true)}>{mailbox.status === "error" ? "Connect again" : "Change"}</Button>
             <span style={{ flex: 1 }} />
-            <Button
-              variant="ghost"
-              loading={disconnect.isPending}
-              onClick={async () => {
-                if (await confirm({ title: "Disconnect email?", body: fallback === "server" ? "Emails will go out from the address whoever installed Crewtavo set up." : "Quotes, invoices and invites won't be emailed until you connect a mailbox again. You can still copy their links.", confirmLabel: "Disconnect", danger: true })) disconnect.mutate();
-              }}
-            >
-              Disconnect
-            </Button>
+            <Button variant="ghost" loading={disconnect.isPending} onClick={() => setAskDisconnect(true)}>Disconnect</Button>
           </div>
+          {askDisconnect && (
+            <DisconnectWithPassword
+              body={fallback === "server" ? "Emails will go out from the address whoever installed Crewtavo set up." : "Quotes, invoices and invites won't be emailed until you connect a mailbox again. You can still copy their links."}
+              busy={disconnect.isPending}
+              error={disconnect.error}
+              onDisconnect={(password) => disconnect.mutate(password)}
+              onClose={() => {
+                setAskDisconnect(false);
+                disconnect.reset();
+              }}
+            />
+          )}
         </div>
       ) : (
         <ConnectForm existing={mailbox} onRailway={onRailway} onCancel={mailbox ? () => setEditing(false) : undefined} onSaved={() => { setEditing(false); refresh(); }} />
@@ -161,6 +171,33 @@ export function EmailSettings() {
         </div>
       )}
     </div>
+  );
+}
+
+/** Disconnect's question, with the person's password; it's cleared once sent, and a wrong one says so here. */
+function DisconnectWithPassword({ body, busy, error, onDisconnect, onClose }: { body: string; busy: boolean; error: unknown; onDisconnect: (password: string) => void; onClose: () => void }) {
+  const [password, setPassword] = useState("");
+  return (
+    <Dialog open onClose={onClose} title="Disconnect email?" size="sm">
+      <form
+        className="stack-sm"
+        onSubmit={(e: FormEvent) => {
+          e.preventDefault();
+          onDisconnect(password);
+          setPassword("");
+        }}
+      >
+        <div className="muted" style={{ marginTop: -6 }}>{body}</div>
+        <Field label="Your Crewtavo password" hint={PASSWORD_HINT}>
+          <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" maxLength={200} required autoFocus />
+        </Field>
+        <FormError error={error} />
+        <div className="form-actions">
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="danger-solid" loading={busy}>Disconnect</Button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 
@@ -193,6 +230,8 @@ function ConnectForm({ existing, onRailway, onSaved, onCancel }: { existing: Mai
   const [security, setSecurity] = useState<"tls" | "starttls" | "">(existing?.security ?? "");
   const [username, setUsername] = useState(existing?.username ?? "");
   const [advanced, setAdvanced] = useState(false);
+  // The person's own Crewtavo password, which saving asks for; cleared once sent.
+  const [currentPassword, setCurrentPassword] = useState("");
   const keepsPassword = Boolean(existing && existing.preset === presetId);
   const resend = preset?.kind === "resend";
 
@@ -218,11 +257,13 @@ function ConnectForm({ existing, onRailway, onSaved, onCancel }: { existing: Mai
         ...(preset?.kind === "resend"
           ? { api_key: password.trim() || undefined }
           : { password: password || undefined, host: host.trim() || undefined, port: port ? Number(port) : undefined, security: security || undefined, username: username.trim() || undefined }),
+        current_password: currentPassword,
       }),
     onSuccess: (r) => {
       toast.success("Email connected", { description: r.test_sent_to ? `We sent a test email to ${r.test_sent_to}.` : undefined });
       onSaved();
     },
+    onSettled: () => setCurrentPassword(""),
   });
 
   // Catch the two usual Resend slips before sending: a key copied only partly, and a Gmail-style address.
@@ -321,6 +362,10 @@ function ConnectForm({ existing, onRailway, onSaved, onCancel }: { existing: Mai
               )}
             </>
           )}
+
+          <Field label="Your Crewtavo password" hint={PASSWORD_HINT}>
+            <input className="input" type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required maxLength={200} autoComplete="current-password" />
+          </Field>
 
           <FormError error={save.error} />
           <div className="form-actions">

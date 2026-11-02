@@ -1,3 +1,4 @@
+import { autopayAllowed, autopayDueText, autopaySettings, methodLabel, type AutopaySettings } from "@crewtavo/core/autopay";
 import type { TablesUpdate } from "@crewtavo/core/database";
 import { askRefusal, marketingOn } from "@crewtavo/core/marketing";
 import { contractDiscountNote } from "@crewtavo/core/promos";
@@ -40,6 +41,14 @@ import { askToastKind, type AskResult } from "../marketing/askForm";
 /** The sections a job only shows once it uses them, offered under its line items until then. */
 type Extra = "materials" | "expenses" | "pay";
 
+/** When a one-off job's finished work is charged, in the words of Mark work complete's question. */
+function chargedWhen(s: Pick<AutopaySettings, "timing" | "days">): string {
+  if (s.timing === "now") return "right away";
+  if (s.timing !== "days") return "at the end of the day";
+  const days = s.days ?? 1;
+  return `${days} ${days === 1 ? "day" : "days"} after the work is marked complete`;
+}
+
 export function JobPage() {
   const { id = "" } = useParams();
   const session = useSession();
@@ -69,6 +78,9 @@ export function JobPage() {
   const canSell = hasRole(session, "admin", "office", "estimator") && can(session, "sales");
   const canDispatch = useSchedulingRights().canDispatch;
   const today = todayIn(session.company.timezone);
+  // Autopay is the office's with the invoices area, once the company has it on (Settings → Payments).
+  const autopay = autopaySettings(session.company.settings, session.company.trade_preset);
+  const autopayOn = seesInvoices && autopay.enabled;
   // The same queries the sections use, to know which ones this job has anything in.
   const materialRows = useJobMaterials(id);
   const expenseRows = useJobExpenses(id, seesCosts);
@@ -90,6 +102,35 @@ export function JobPage() {
   });
   const j = job.data;
   useDocumentTitle(j ? `Job #${j.number}` : "Job");
+  const clientId = j?.client?.id ?? null;
+  // Whether the client can be charged now (an agreement in force, not paused, its card active: the
+  // rule private.autopay_ready keeps), and the charge waiting for this job's finished work.
+  const jobAutopay = useQuery({
+    queryKey: ["job", id, "autopay"],
+    enabled: autopayOn && Boolean(clientId),
+    queryFn: async () => {
+      const db = supabase();
+      const [agreements, waiting] = await Promise.all([
+        db.from("autopay_authorizations").select("payment_method_id, paused_at").eq("client_id", clientId!).is("revoked_at", null).limit(1),
+        db.from("autopay_charges").select("id, due_at").eq("job_id", id).eq("status", "waiting").is("invoice_id", null).order("due_at").limit(1),
+      ]);
+      const live = unwrap(agreements)[0] ?? null;
+      const method = live?.payment_method_id
+        ? unwrap(await db.from("client_payment_methods").select("type, brand, last4, bank_name, wallet, status").eq("id", live.payment_method_id).limit(1))[0] ?? null
+        : null;
+      return {
+        agreed: Boolean(live),
+        // A card they agreed to that can be charged, or a bank account being checked.
+        onFile: method?.status === "active" || method?.status === "pending",
+        paused: Boolean(live?.paused_at),
+        // A bank account still being checked: not a card to update.
+        checking: method?.status === "pending",
+        ready: Boolean(live && !live.paused_at && method?.status === "active"),
+        card: method ? methodLabel(method) : null,
+        waiting: unwrap(waiting)[0] ?? null,
+      };
+    },
+  });
   useRememberRecent(session.company.id, j ? { kind: "job", id: j.id, title: j.title, subtitle: `Job #${j.number} · ${j.client?.display_name ?? ""}`, path: `/jobs/${j.id}` } : null);
 
   const invoices = useQuery({
@@ -124,6 +165,23 @@ export function JobPage() {
     meta: { success: (_: unknown, p: TablesUpdate<"jobs">) => (p.status === "requires_invoicing" ? "Job marked complete" : p.status === "archived" ? "Job archived" : p.status === "active" ? "Job reopened" : p.status === "completed" ? "Job closed" : "Job saved"), tone: "job" },
     mutationFn: async (patch: TablesUpdate<"jobs">) => unwrap(await supabase().from("jobs").update(patch).eq("id", id)),
     onSuccess: refresh,
+  });
+  // The switch moves the moment it's flipped, and back if the database refuses it (no toast: the switch shows it).
+  const setAutopay = useMutation({
+    mutationFn: async (on: boolean) => unwrap(await supabase().from("jobs").update({ autopay: on }).eq("id", id)),
+    onMutate: async (on) => {
+      await queryClient.cancelQueries({ queryKey: ["job", id], exact: true });
+      const before = queryClient.getQueryData<typeof job.data>(["job", id]);
+      queryClient.setQueryData<typeof job.data>(["job", id], (old) => old && { ...old, autopay: on });
+      return { before };
+    },
+    onError: (_error, _on, context) => {
+      if (context?.before) queryClient.setQueryData(["job", id], context.before);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["job", id] });
+      if (clientId) queryClient.invalidateQueries({ queryKey: ["client", clientId, "autopay"] });
+    },
   });
   const completeVisit = useMutation({
     meta: { success: "Visit completed", tone: "job" },
@@ -171,6 +229,25 @@ export function JobPage() {
   // who opted out or is archived. Marketing uninstalled, nobody's asked.
   const ready = { email: session.config.features.email, sms: session.config.features.sms };
   const reviewBy = j.client ? (["email", "sms"] as const).find((channel) => !askRefusal(j.client!, channel, ready)) ?? null : null;
+  // A charge is already waiting for this job's finished work: it bills itself, so nobody invoices it by hand.
+  const charging = autopayOn && j.autopay && jobAutopay.data?.waiting ? jobAutopay.data.waiting : null;
+  const autopayHint = !autopayAllowed(j.kind, j.billing_mode)
+    ? "Autopay works with recurring jobs billed per visit, or one-off jobs billed when the work is done."
+    : jobAutopay.data && !jobAutopay.data.ready && j.client
+      ? jobAutopay.data.paused ? `Autopay is paused for ${j.client.display_name}.`
+        : jobAutopay.data.checking ? `Charges start once ${j.client.display_name}'s bank account is checked.`
+          : jobAutopay.data.agreed ? `${j.client.display_name}'s card needs updating before it's charged.`
+            : `Charges start once ${j.client.display_name} agrees to autopay.`
+      : null;
+  /** Mark work complete: on an autopay job the office is told first that it's charged on its own. */
+  const markComplete = async () => {
+    const a = jobAutopay.data;
+    if (autopayOn && j.autopay && a?.ready && j.client) {
+      const ok = await confirm({ title: "Mark work complete?", body: `${j.client.display_name}'s ${a.card ?? "saved card"} is charged automatically ${chargedWhen(autopay)}.`, confirmLabel: "Mark complete" });
+      if (!ok) return;
+    }
+    update.mutate({ status: "requires_invoicing" });
+  };
   const newVisit = (): VisitInput => ({ job_id: j.id, property_id: j.property?.id ?? null, title: j.title, crew_id: j.default_crew_id, kind: "job", context: { label: `Job #${j.number} · ${j.client?.display_name ?? ""}`, to: `/jobs/${j.id}` } });
 
   // Materials, expenses and sub pay take no room until they have something (or failed to load, to
@@ -201,8 +278,8 @@ export function JobPage() {
         title={j.title}
         actions={
           <>
-            {seesInvoices && j.status !== "archived" && <Button icon="invoice" variant={j.status === "requires_invoicing" ? "primary" : "secondary"} onClick={() => setDialog("invoice")}>Create invoice</Button>}
-            {canSell && j.status === "active" && j.kind === "one_off" && <Button variant="primary" icon="check" loading={update.isPending} onClick={() => update.mutate({ status: "requires_invoicing" })}>Mark work complete</Button>}
+            {seesInvoices && j.status !== "archived" && <Button icon="invoice" variant={j.status === "requires_invoicing" && !charging ? "primary" : "secondary"} onClick={() => setDialog("invoice")}>Create invoice</Button>}
+            {canSell && j.status === "active" && j.kind === "one_off" && <Button variant="primary" icon="check" loading={update.isPending} onClick={markComplete}>Mark work complete</Button>}
             {canSell && (
               <Menu
                 items={[
@@ -237,15 +314,20 @@ export function JobPage() {
         <EntityStatus kind="job" status={j.status} />
         {j.client && <Link to={`/clients/${j.client.id}`}>{j.client.display_name}</Link>}
         {j.kind === "recurring" && <span className="muted">{j.recurrence_rule ? repeatText(j.recurrence_rule) : "Recurring"}</span>}
+        {/* Every client needs a card on file, and this one has none they agreed to that can be charged. */}
+        {autopay.card_required && jobAutopay.data && !jobAutopay.data.onFile && !["completed", "archived"].includes(j.status) && <span className="chip chip-amber"><Icon name="card" size={12} />Card not set up</span>}
       </div>
 
       {/* Requires invoicing needs no banner: the pill says so and Create invoice is the page's green button. */}
-      {uninvoiced > 0 && seesInvoices && j.status === "active" && j.billing_mode === "per_visit" && (
+      {uninvoiced > 0 && seesInvoices && j.status === "active" && j.billing_mode === "per_visit" && !charging && (
         <div className="callout callout-info">
           <Icon name="invoice" size={20} />
           <div className="grow">{uninvoiced} completed {uninvoiced === 1 ? "visit is" : "visits are"} ready to invoice.</div>
           <Button size="sm" onClick={() => setDialog("invoice")}>Invoice visits</Button>
         </div>
+      )}
+      {charging && j.status !== "archived" && (
+        <div className="muted small row" style={{ gap: 6 }}><Icon name="card" size={14} />Charged automatically {autopayDueText(charging.due_at, session.company.timezone)}.</div>
       )}
 
       <div className="two-col">
@@ -385,6 +467,18 @@ export function JobPage() {
                 </>
               )}
               <dt>Billing</dt><dd>{statusLabel(j.billing_mode)}</dd>
+              {autopayOn && j.client && (
+                <>
+                  <dt>Autopay</dt>
+                  <dd>
+                    <label className="switch-row" style={{ fontWeight: 400 }}>
+                      <input type="checkbox" className="switch" checked={j.autopay} disabled={!autopayAllowed(j.kind, j.billing_mode) || j.status === "archived"} onChange={(e) => setAutopay.mutate(e.target.checked)} />
+                      Charge their saved card
+                    </label>
+                    {autopayHint && <span className="muted small" style={{ display: "block" }}>{autopayHint}</span>}
+                  </dd>
+                </>
+              )}
               {j.kind === "recurring" && <><dt>Repeats</dt><dd>{j.recurrence_rule ? repeatText(j.recurrence_rule) : "—"}{j.starts_on ? `, from ${formatDate(j.starts_on)}` : ""}{j.ends_on ? ` to ${formatDate(j.ends_on)}` : ""}</dd></>}
               {j.crew && <><dt>Crew</dt><dd>{j.crew.name}</dd></>}
               {j.po_number && <><dt>PO</dt><dd>{j.po_number}</dd></>}

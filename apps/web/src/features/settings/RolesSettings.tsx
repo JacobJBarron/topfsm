@@ -2,7 +2,7 @@
  * Roles: name a role, pick its access level, and choose which areas it includes. Owners also give a
  * role, or a built-in level, a storage limit for everyone with it (Settings → Storage has the rest).
  */
-import { LEVEL_PERMISSIONS, LEVEL_SUMMARY, PERMISSIONS, ROLE_LABELS, STAFF, type Permission, type Role } from "@crewtavo/core/roles";
+import { adminLevel, LEVEL_PERMISSIONS, LEVEL_SUMMARY, PERMISSIONS, ROLE_LABELS, STAFF, type Permission, type Role } from "@crewtavo/core/roles";
 import { formatBytes } from "@crewtavo/core/storage";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState, type FormEvent } from "react";
@@ -19,6 +19,7 @@ import { useSession } from "@/lib/session";
 import { useCompanyRoles, type CompanyRole } from "./roles";
 import { gbField, parseGb, refreshStorage, setAllowance, setsAllowances, useStorageOverview } from "./storage";
 import { AllowanceDialog, GbInput } from "./StorageSettings";
+import { YourPassword } from "./TeamSettings";
 
 // The team's levels. A custom role is never a sub's (the database refuses it).
 const LEVELS = STAFF.filter((r) => r !== "owner");
@@ -123,7 +124,7 @@ export function RolesSettings() {
  * A role's name, level and areas. `storage` (owners only) adds its storage limit: the role's limit
  * now, saved with the role (null: none).
  */
-function RoleDialog({ role, existing, storage, onClose }: { role: CompanyRole | null; existing: CompanyRole[]; storage: { limit: number | null } | null; onClose: () => void }) {
+export function RoleDialog({ role, existing, storage, onClose }: { role: CompanyRole | null; existing: CompanyRole[]; storage: { limit: number | null } | null; onClose: () => void }) {
   const session = useSession();
   const queryClient = useQueryClient();
   const [name, setName] = useState(role?.name ?? "");
@@ -135,10 +136,14 @@ function RoleDialog({ role, existing, storage, onClose }: { role: CompanyRole | 
   // A new role saved before its storage limit failed: trying again saves that role, not another.
   const created = useRef<string | null>(null);
   const allowed = LEVEL_PERMISSIONS[level];
+  const kept = perms.filter((p) => allowed.includes(p));
+  // Saving admin access the role didn't have takes your password (POST and PUT /api/team/roles check it).
+  const grants = adminLevel(level, kept) && !(role && adminLevel(role.base_role, role.permissions));
+  const [password, setPassword] = useState("");
 
   const save = useMutation({
     meta: { inline: true, success: role ? "Role saved" : "Role created" },
-    mutationFn: async () => {
+    mutationFn: async (current_password: string) => {
       const clean = name.trim();
       if (!clean) throw new Error("Give the role a name.");
       const id = role?.id ?? created.current;
@@ -150,10 +155,10 @@ function RoleDialog({ role, existing, storage, onClose }: { role: CompanyRole | 
         if (parsed && "problem" in parsed) throw new Error(`Storage limit: ${parsed.problem}`);
         limit = parsed ? parsed.bytes : null;
       }
-      const row = { name: clean, base_role: level, permissions: perms.filter((p) => allowed.includes(p)) };
+      const row = { name: clean, base_role: level, permissions: kept, current_password: current_password || undefined };
       let saved = id;
-      if (saved) unwrap(await supabase().from("company_roles").update(row).eq("id", saved));
-      else saved = created.current = unwrap(await supabase().from("company_roles").insert({ ...row, company_id: session.company.id }).select("id").single()).id;
+      if (saved) await api.put(`/team/roles/${saved}`, row);
+      else saved = created.current = (await api.post<{ id: string }>("/team/roles", row)).id;
       if (storage && limit !== undefined && gbField(limit) !== gbField(storage.limit)) await setAllowance(session.company.id, { role: saved! }, limit);
     },
     onSuccess: () => {
@@ -172,7 +177,7 @@ function RoleDialog({ role, existing, storage, onClose }: { role: CompanyRole | 
 
   return (
     <Dialog open onClose={onClose} title={role ? `Edit ${role.name}` : "New role"}>
-      <form onSubmit={(e: FormEvent) => { e.preventDefault(); save.mutate(); }}>
+      <form onSubmit={(e: FormEvent) => { e.preventDefault(); save.mutate(grants ? password : ""); setPassword(""); }}>
         <Field label="Name" requiredMessage="Give the role a name."><input className="input" value={name} onChange={(e) => { setName(e.target.value); save.reset(); }} maxLength={60} placeholder="e.g. Foreman" required autoFocus /></Field>
         <Field label="Access level" hint={LEVEL_SUMMARY[level]}>
           <select className="select" value={level} onChange={(e) => changeLevel(e.target.value as Role)}>
@@ -199,6 +204,7 @@ function RoleDialog({ role, existing, storage, onClose }: { role: CompanyRole | 
             <GbInput value={size} placeholder="No limit" onChange={(v) => { setTyped(v); save.reset(); }} />
           </Field>
         )}
+        {grants && <YourPassword value={password} onChange={setPassword} />}
         <FormError error={save.error} />
         <div className="form-actions">
           <FormChecks />

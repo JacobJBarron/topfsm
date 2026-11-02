@@ -231,6 +231,8 @@ const SUB_ROUTES = new Set([
   // The owner's spare keys: the person's own account; anyone but an owner is refused inside.
   "GET /api/account/spare-keys",
   "POST /api/account/spare-keys",
+  // Their own password (Settings → Profile), for a sub on their own account.
+  "POST /api/account/password",
 ]);
 
 /**
@@ -260,7 +262,8 @@ const NOT_SIGNED_IN_ROUTES = [
   "GET /api/public/paperwork/:token", "POST /api/public/paperwork/:token/uploads", "POST /api/public/paperwork/:token/files",
   "GET /api/hub/:token", "POST /api/hub/:token/approve", "POST /api/hub/:token/request-changes", "POST /api/hub/:token/accept-range", "POST /api/hub/:token/promo",
   "DELETE /api/hub/:token/promo", "POST /api/hub/:token/pay", "POST /api/hub/:token/message", "GET /api/hub/:token/drawings/:file", "GET /api/hub/:token/visits/:file",
-  "POST /api/hub/:token/request", "POST /api/public/forms/:company/:form/promo", "GET /api/public/forms/:company/:form", "POST /api/public/forms/:company/:form",
+  "POST /api/hub/:token/request", "POST /api/hub/:token/autopay/setup", "POST /api/hub/:token/autopay/finish", "POST /api/hub/:token/autopay/confirm",
+  "POST /api/hub/:token/autopay/off", "POST /api/hub/:token/tip", "POST /api/public/forms/:company/:form/promo", "GET /api/public/forms/:company/:form", "POST /api/public/forms/:company/:form",
   "POST /api/public/forms/:company/:form/files", "GET /api/public/logo/:company/:file", "GET /api/public/letterhead/:company/:file",
   "GET /api/public/package/:company/:file", "GET /api/public/service/:company/:file", "GET /api/public/unsubscribe/:token", "POST /api/public/unsubscribe/:token",
   "GET /api/public/r/:token", "GET /api/public/refer/:token", "POST /api/public/refer/:token",
@@ -391,6 +394,17 @@ describe("the API, for a sub", () => {
       expect(res.status, JSON.stringify(change)).toBe(403);
     }
     expect(world.tables.visits[0]).toMatchObject({ title: "Tear off", status: "en_route" });
+  });
+
+  it("lets a sub's Complete tapped offline carry the time it was tapped", async () => {
+    const world = withAl();
+    world.tables.visits = [{ id: VISIT, company_id: CO, title: "Tear off", status: "in_progress", completed_at: null }];
+    serve(world);
+    const at = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    const res = await as(AL, `/visits/${VISIT}`, { method: "PATCH", body: { status: "completed", forward_only: true, completed_at: at } });
+    expect(res.status).toBe(200);
+    // Sent on to the database, whose guard on subs' visits (private.visit_sub_guard) has the last word.
+    expect(world.tables.visits[0]).toMatchObject({ status: "completed", completed_at: at });
   });
 
   it("only changes their own photo", async () => {

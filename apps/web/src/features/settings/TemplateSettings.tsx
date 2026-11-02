@@ -8,8 +8,7 @@
  * never saved a template prints with the built-in one, and its first save keeps it as "Standard".
  */
 import {
-  DEFAULT_TEMPLATE,
-  DEFAULT_TERMS,
+  defaultTerms,
   documentColor,
   HEADER_STYLES,
   ownLetterhead,
@@ -75,7 +74,9 @@ function TemplateEditor({ row, rows, onSelect }: { row: TemplateRow | null; rows
   const isAdmin = hasRole(session, "admin");
   const queryClient = useQueryClient();
   const letterhead = useLetterhead();
-  const saved = useMemo(() => (row ? templateSettings(row.settings) : DEFAULT_TEMPLATE), [row]);
+  // A business that never saved a template starts from the built-in look, with its trade's starter terms.
+  const trade = company.trade_preset;
+  const saved = useMemo(() => templateSettings(row?.settings, trade), [row, trade]);
   const [t, setT] = useState<Template>(saved);
   const [open, setOpen] = useState<Record<SectionId, boolean>>({ letterhead: true, details: true, contract: false, signatures: true, footer: false });
   const [previewing, setPreviewing] = useState<"estimate" | "invoice">("estimate");
@@ -100,7 +101,7 @@ function TemplateEditor({ row, rows, onSelect }: { row: TemplateRow | null; rows
     // template then, so a toast says it instead.
     meta: { inline: true, success: (r: { first: boolean }) => (r.first ? "Template saved" : null) },
     mutationFn: async () => {
-      const settings = templateSettings(t);
+      const settings = templateSettings(t, trade);
       if (row) {
         unwrap(await supabase().from("document_templates").update({ settings: settings as never }).eq("id", row.id));
         return { id: row.id, settings, first: false };
@@ -360,8 +361,8 @@ function TemplateEditor({ row, rows, onSelect }: { row: TemplateRow | null; rows
             <Field label="Printed above the signatures" hint="Payment, changes and your warranty, in plain words. Each line prints on its own line.">
               <textarea className="textarea" rows={7} value={t.terms} maxLength={TEMPLATE_LIMITS.terms} onChange={(e) => set("terms", e.target.value)} />
             </Field>
-            {t.terms.trim() !== DEFAULT_TERMS && (
-              <Button size="sm" variant="ghost" icon="undo" style={{ justifySelf: "start" }} onClick={() => set("terms", DEFAULT_TERMS)}>Use the suggested wording</Button>
+            {t.terms.trim() !== defaultTerms(trade) && (
+              <Button size="sm" variant="ghost" icon="undo" style={{ justifySelf: "start" }} onClick={() => set("terms", defaultTerms(trade))}>Use the suggested wording</Button>
             )}
             {library.isPending ? (
               <div className={styles.group} aria-hidden="true"><Skeleton width="45%" /><Skeleton width="80%" /><Skeleton width="70%" /></div>

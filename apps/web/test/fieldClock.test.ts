@@ -10,11 +10,12 @@ import { beforeEach, expect, it, vi } from "vitest";
 // and time_entries rows as the database holds them.
 const STEPS: Record<string, number> = { unscheduled: 0, scheduled: 0, en_route: 1, in_progress: 2, completed: 3 };
 type Entry = { id: number; user_id: string; visit_id: string | null; started_at: string; ended_at: string | null };
-const server = { status: "scheduled", entries: [] as Entry[], refuseTime: false };
+const server = { status: "scheduled", entries: [] as Entry[], refuseTime: false, sent: [] as object[] };
 
 vi.mock("../src/lib/api", () => {
   const api = {
     patch: async (_path: string, body: { status: string; forward_only?: boolean }) => {
+      server.sent.push(body);
       if (body.forward_only && (server.status === "cancelled" || (STEPS[server.status] ?? 0) > (STEPS[body.status] ?? 0))) return { status: server.status, skipped: true };
       server.status = body.status;
       return { status: server.status };
@@ -58,6 +59,7 @@ beforeEach(() => {
   server.status = "scheduled";
   server.entries = [];
   server.refuseTime = false;
+  server.sent = [];
 });
 
 it("clocks a crewmate in and out even when the visit was finished before their taps arrived", async () => {
@@ -153,3 +155,17 @@ it("moves a sub's visit along when the office turned their clock off after the p
   await expect(tap("alice", "in_progress", "2026-10-17T13:05:00Z")).rejects.toThrow(/row-level security/);
 });
 
+
+it("dates a Complete by when it was tapped, so one sent after a spell without signal isn't dated when it went out", async () => {
+  await tap("alice", "en_route", "2026-10-17T12:50:00Z");
+  await tap("alice", "in_progress", "2026-10-17T13:00:00Z");
+  await tap("alice", "completed", "2026-10-17T16:00:00Z");
+  // A sub without a clock is dated the same way: the date is the visit's, not their time.
+  await tap("sub", "completed", "2026-10-17T16:05:00Z", undefined, false);
+  expect(server.sent).toEqual([
+    { status: "en_route", forward_only: true },
+    { status: "in_progress", forward_only: true },
+    { status: "completed", forward_only: true, completed_at: "2026-10-17T16:00:00Z" },
+    { status: "completed", forward_only: true, completed_at: "2026-10-17T16:05:00Z" },
+  ]);
+});

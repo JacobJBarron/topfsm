@@ -50,11 +50,14 @@ select t3.expect_error(format('insert into public.company_roles (company_id, nam
 select t3.expect_error(format('insert into public.company_roles (company_id, name, base_role) values (%L, %L, %L)', :'co', ' general MANAGER ', 'office'), 'role names are unique');
 
 -- role says "field_crew" but the custom role decides the level.
+-- Admin access is given through the server (the admin_grants migration).
+reset role;
 insert into public.memberships (company_id, user_id, role, role_id) values
   (:'co', 'd0000000-0000-0000-0000-000000000002', 'field_crew', :'gm_role'),
   (:'co', 'd0000000-0000-0000-0000-000000000003', 'field_crew', :'ops_role'),
   (:'co', 'd0000000-0000-0000-0000-000000000004', 'field_crew', :'foreman_role'),
   (:'co', 'd0000000-0000-0000-0000-000000000005', 'admin', :'worker_role');
+set local role authenticated;
 select t3.check((select role from public.memberships where user_id = 'd0000000-0000-0000-0000-000000000002') = 'admin', 'a custom role sets the access level (general manager is admin)');
 select t3.check((select role from public.memberships where user_id = 'd0000000-0000-0000-0000-000000000005') = 'field_crew', 'a custom role overrides the level it was saved with');
 

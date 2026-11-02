@@ -1,5 +1,5 @@
 /** Company roles (custom + built-in) for pickers: one value per choice, "role:<id>" or "level:<access level>". */
-import { ROLE_LABELS, STAFF, type Permission, type Role } from "@crewtavo/core/roles";
+import { adminLevel, ROLE_LABELS, STAFF, type Permission, type Role } from "@crewtavo/core/roles";
 import { useQuery } from "@tanstack/react-query";
 import { supabase, unwrap } from "@/lib/api";
 import { useSession } from "@/lib/session";
@@ -33,6 +33,18 @@ export const choiceFor = (member: { role: Role; role_id?: string | null }) => (m
 export function patchFor(choice: string): { role_id: string | null; role?: Role } {
   if (choice.startsWith("role:")) return { role_id: choice.slice(5) };
   return { role_id: null, role: choice.slice(6) as Role };
+}
+
+/** What a choice gives, as the API takes it (PATCH /api/team/:id/access, POST /api/team/invite): the level and the custom role. */
+export function accessFor(choice: string, roles: CompanyRole[] | undefined): { role: Role; role_id: string | null } {
+  const patch = patchFor(choice);
+  return { role: patch.role ?? roles?.find((r) => r.id === patch.role_id)?.base_role ?? "field_crew", role_id: patch.role_id };
+}
+
+/** Whether a choice gives admin-level access (adminLevel), which asks for the giver's own password. The API checks it too. */
+export function givesAdmin(choice: string, roles: CompanyRole[] | undefined): boolean {
+  const { role, role_id } = accessFor(choice, roles);
+  return adminLevel(role, roles?.find((r) => r.id === role_id)?.permissions ?? null);
 }
 
 export function roleName(member: { role: Role; role_id?: string | null }, roles: CompanyRole[] | undefined): string {

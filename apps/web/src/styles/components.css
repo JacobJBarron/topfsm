@@ -55,6 +55,10 @@ label.btn:focus-within { box-shadow: var(--ring); }
 .btn-sm { height: var(--control-sm); padding: 0 10px; font-size: var(--fs-13); gap: 6px; }
 .btn-lg { height: var(--control-lg); padding: 0 20px; font-size: var(--fs-16); }
 .btn-block { width: 100%; }
+/* A long label (Button's wrap, for ones that name the card): two lines inside the card rather than past a phone's edge. */
+.btn-wrap { white-space: normal; text-wrap: balance; text-align: center; line-height: 1.25; height: auto; min-height: var(--control); max-width: 100%; min-width: 0; padding-block: 8px; }
+.btn-sm.btn-wrap { min-height: var(--control-sm); padding-block: 5px; }
+.btn-lg.btn-wrap { min-height: var(--control-lg); padding-block: 10px; }
 .btn-icon { width: var(--control); padding: 0; }
 .btn-icon.btn-sm { width: var(--control-sm); }
 .btn-icon.btn-lg { width: var(--control-lg); }

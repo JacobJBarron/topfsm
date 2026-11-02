@@ -26,8 +26,15 @@ export interface AppRow {
   /** Calendar apps: how many calendars were added from this app, and how many have a problem. */
   calendars?: number;
   calendar_errors?: number;
-  /** Stripe only, once it's set up: the company's own key or the server's, and the last import. */
-  stripe?: { own: boolean; webhook: boolean; livemode: boolean; import: StripeImport | null };
+  /**
+   * Stripe only, once it's set up: the company's own key or the server's, and the last import.
+   * autopay and refunds: the company's own key can save and charge cards, and make refunds (false
+   * on the server's key, and on a key made before autopay that needs updating). full_key: the
+   * company's own key is a full secret key, which can also make payouts.
+   */
+  stripe?: { own: boolean; webhook: boolean; livemode: boolean; autopay: boolean; refunds: boolean; full_key: boolean; import: StripeImport | null };
+  /** Stripe only: whether the owners are emailed about Stripe changes (no company email or server sender: the bell only). */
+  owners_emailed?: boolean;
   /** QuickBooks and Zoho Books: the company can sign in with its own app there (AppKeysCard). */
   takes_app_keys?: boolean;
   /** That app's keys, once saved (never the secret). Meta's Configuration ID too, if there is one. */
@@ -101,8 +108,35 @@ export interface StripeImport {
   started_at: string;
   finished_at?: string;
   error?: string;
-  counts: { invoices: number; payments: number; clients: number; payouts: number };
+  /** Why the saved cards didn't come in, when that pass failed but the rest of the import finished. */
+  cards_error?: string;
+  /**
+   * cards: clients whose card saved in Stripe came in (an import on a key that can save cards).
+   * cards_unmatched: Stripe customers with a card who matched no one client. Older imports have neither.
+   */
+  counts: { invoices: number; payments: number; clients: number; payouts: number; cards?: number; cards_unmatched?: number };
 }
+
+/**
+ * What Crewtavo's Stripe key may do: add its webhook, customers and invoices (with their items),
+ * read payments, fees, deposits and the account's name, and for autopay save cards and bank
+ * accounts (Checkout in setup mode), charge them and refund payments. Stripe's create-key form sets
+ * these from its link (each name is a row there; balance transactions come under Balance). Stripe
+ * doesn't document that, so the names have to be checked on Stripe's form whenever this list
+ * changes; if one stops working, people still land on the form.
+ */
+export const STRIPE_KEY_PERMISSIONS = [
+  "webhook_write", "customer_write", "invoice_write", "charge_read", "balance_read", "balance_transaction_source_read", "payout_read", "connected_account_read",
+  "setup_intent_write", "payment_method_write", "payment_intent_write", "checkout_session_write", "refund_write",
+];
+/** Under the password that changing Stripe or the company's email asks for: someone who signs in with Google or a link may have none yet. */
+export const PASSWORD_HINT = "To make sure it's you. No password yet? Set one under Settings → Profile.";
+
+/** Stripe's create-key form with the permissions above already set. */
+export const STRIPE_NEW_KEY = `https://dashboard.stripe.com/apikeys/create?name=Crewtavo&${STRIPE_KEY_PERMISSIONS.map((p) => `permissions%5B%5D=rak_${p}`).join("&")}`;
+
+/** A live full secret key, which can do anything in the Stripe account, payouts included: warned about, but taken. */
+export const isFullSecretKey = (key: string) => key.trim().startsWith("sk_live_");
 
 /** An import that hasn't reported in this long died with its server (IMPORT_STALE_MS on the API). */
 export const importRunning = (state: StripeImport | null | undefined) => state?.status === "running" && Date.now() - Date.parse(state.started_at) < 30 * 60_000;
@@ -549,6 +583,7 @@ export const APP_INFO: Record<string, AppInfo> = {
       "Add customers, invoices and invoice items, and void invoices it made",
       "Read invoices, payments, refunds, disputes and deposits",
       "Add one webhook to your account so payments show up right away",
+      "Save cards for clients who agree, charge them, and refund payments",
     ],
     connectsWith: "Key from Stripe",
     website: "https://stripe.com/",

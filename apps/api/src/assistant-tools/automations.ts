@@ -24,7 +24,10 @@ import { changed, companyArg, one, roleAllows, rows, tool, type ToolContext } fr
 
 const COLUMNS = "id, name, description, trigger, delay_minutes, conditions, actions, enabled, run_count, last_run_at";
 
-/** Rules about subs' offers (their prices) are for people with the Subcontractors area, as on the rule screen. */
+/**
+ * Rules about subs' offers (their prices) are for people with the Subcontractors area, and rules about
+ * autopay (clients' cards) for people with the invoices area, as on the rule screen.
+ */
 const mayUse = (ctx: ToolContext, verb: string) => triggerAllowed(verb, (area) => roleAllows(ctx, undefined, area));
 
 const condition = z.object({
@@ -45,6 +48,7 @@ const action = z.discriminatedUnion("type", [
   z.object({ type: z.literal("request_review"), channel: z.enum(["email", "sms", "both"]) }),
   z.object({ type: z.literal("request_referral") }),
   z.object({ type: z.literal("update_status"), status: z.string().max(40) }),
+  z.object({ type: z.literal("invite_autopay"), channel: z.enum(["email", "sms"]) }),
 ]);
 
 export const automationTools = {
@@ -59,7 +63,7 @@ export const automationTools = {
         ...(actions ? { only_actions: actions } : {}),
         ...(variables ? { extra_tokens: variables.map((v) => ({ token: `{{${v.token}}}`, label: v.label, ...(v.officeOnly ? { not_in_tasks: true } : {}) })) } : {}),
         ...(hides ? { not_tokens: hides.map((t) => `{{${t}}}`) } : {}),
-        // Who can be told about it: a sub's offer, only the office.
+        // Who can be told about it: a sub's offer or autopay, only the office.
         ...(notifyRoles ? { only_notify_roles: notifyRoles } : {}),
       })),
       conditions: CONDITION_FIELDS.map(({ field, label, ops, subjects, choices }) => ({ field, label, ops, records: subjects, choices })),
@@ -94,7 +98,13 @@ export const automationTools = {
     area: "automations",
     run: async (ctx, a) => {
       const trigger = triggerDef(a.trigger)!;
-      if (!mayUse(ctx, trigger.verb)) throw new Error("Rules about subs' job offers need the Subcontractors area. Ask an owner or admin.");
+      if (!mayUse(ctx, trigger.verb)) {
+        throw new Error(
+          trigger.area === "invoices"
+            ? "Rules about autopay need the Invoices and payments area. Ask an owner or admin."
+            : "Rules about subs' job offers need the Subcontractors area. Ask an owner or admin.",
+        );
+      }
       const rule = { name: a.name.trim(), trigger: a.trigger, delay_minutes: trigger.delayable ? a.delay_minutes : 0, conditions: a.conditions as Condition[], actions: a.actions as Action[] };
       const fields = new Set(fieldsFor(trigger.subject).map((f) => f.field));
       const types = new Set(actionsForTrigger(trigger.verb).map((t) => t.type));

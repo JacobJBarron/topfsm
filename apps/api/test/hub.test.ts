@@ -1,10 +1,13 @@
 import { contractValues, resolveSections, sectionsHash } from "@crewtavo/core/contracts";
-import { templateSettings } from "@crewtavo/core/documents";
+import { TRADE_TERMS, templateSettings } from "@crewtavo/core/documents";
 import { snapshotLines } from "@crewtavo/core/estimates";
 import { chosenTotals } from "@crewtavo/core/money";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env";
-import { clientLink } from "../src/lib/links";
+import { encryptJson } from "../src/lib/crypto";
+import { HttpError } from "../src/lib/http";
+import { clientLink, readClientLink } from "../src/lib/links";
+import { StripeError } from "../src/services/stripe";
 import { drawnPng } from "./fixtures/drawn";
 
 // A stand-in for the service-role client the Client Hub uses: tables of rows that the usual filters
@@ -119,10 +122,33 @@ vi.mock("../src/lib/supabase", () => {
   const admin = client();
   return { userClient: () => admin, adminClient: () => admin, publishableKey: () => "key" };
 });
+// The autopay facts and actions (services/autopay.ts) run as they are, unless a test says what one
+// answers (mockResolvedValueOnce): then the test sees what the Hub's routes hold to themselves,
+// whatever the autopay facts say. Stripe's Pay page answers with a link, and says what tip it got.
+vi.mock("../src/services/autopay", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/autopay")>();
+  return {
+    ...real,
+    hubAutopay: vi.fn(real.hubAutopay),
+    hubInvoiceAutopay: vi.fn(real.hubInvoiceAutopay),
+    autopayOffered: vi.fn(real.autopayOffered),
+    startAutopaySetup: vi.fn(real.startAutopaySetup),
+    finishAutopaySetup: vi.fn(real.finishAutopaySetup),
+    confirmAutopay: vi.fn(real.confirmAutopay),
+    turnOffAutopay: vi.fn(real.turnOffAutopay),
+    tipOnSavedCard: vi.fn(real.tipOnSavedCard),
+  };
+});
+vi.mock("../src/integrations/stripe", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/integrations/stripe")>()),
+  stripeCheckout: vi.fn(async () => "https://invoice.stripe.test/i/pay"),
+}));
 const { app } = await import("../src/app");
 const { addressLines, publicApproval, rangeDetails } = await import("../src/routes/public");
 const { loadContext } = await import("../src/services/automations");
 const { adminClient } = await import("../src/lib/supabase");
+const autopay = await import("../src/services/autopay");
+const { stripeCheckout } = await import("../src/integrations/stripe");
 
 const env = {
   SUPABASE_URL: "https://example.supabase.co",
@@ -141,8 +167,12 @@ const TEMPLATE = "00000000-0000-4000-8000-0000000000d6";
 const PNG = drawnPng(600, 180, "Dana");
 const S = { roof: "s-roof", tear: "s-tear", edge: "s-edge", deck: "s-deck", chimney: "s-chimney", cricket: "s-cricket", vent: "s-vent", boot: "s-boot" };
 
-const tokenFor = async (link: { t: "quote" | "invoice" | "client"; id: string; pv?: 1 }) => (await clientLink(env, "https://ops.example.com", { c: ROOFER, ...link })).split("/hub/")[1]!;
-const hub = async (link: { t: "quote" | "invoice" | "client"; id: string; pv?: 1 }, path = "", body?: unknown) =>
+// The client's own link as an email or text to them carries it (own: 1), unless it's a preview, the
+// office's copy (via), or `old`: a link minted before the client's own were marked.
+type HubLink = { t: "quote" | "invoice" | "client"; id: string; pv?: 1; via?: "office"; old?: true };
+const tokenFor = async ({ old, ...link }: HubLink) =>
+  (await clientLink(env, "https://ops.example.com", { c: ROOFER, ...(old || link.pv || link.via ? {} : { own: 1 as const }), ...link })).split("/hub/")[1]!;
+const hub = async (link: HubLink, path = "", body?: unknown) =>
   app.request(`/api/hub/${await tokenFor(link)}${path}`, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": "203.0.113.7" }, body: JSON.stringify(body) }, env);
 
 const line = (id: string, service_id: string | null, name: string, values: Row = {}) => ({
@@ -210,6 +240,9 @@ afterEach(() => {
   state.streamed = {};
   state.rpcs = {};
   state.calls = [];
+  // Back to the real autopay code (and Stripe's link), with any answer a test set and not used gone.
+  vi.resetAllMocks();
+  vi.restoreAllMocks();
 });
 
 describe("a price range in the Client Hub", () => {
@@ -1305,5 +1338,636 @@ describe("an invoice's {Option} and {Warranty} in the Client Hub", () => {
     // A job that didn't come from an estimate has neither.
     state.tables.invoices = [invoice(null)];
     expect(await printed()).toBe("<p>: </p>");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Autopay and tips (docs/autopay-plan.md). Tips follow one rule, held to on the server: the business
+// has them on (settings.hub_tips, Settings → Company) and the invoice wasn't made in Stripe. Off,
+// no page offers a tip, and no request adds one.
+// ---------------------------------------------------------------------------------------------
+
+const MOW = "00000000-0000-4000-8000-0000000000f1";
+const CARD = "00000000-0000-4000-8000-0000000000f2";
+const CHARGED_AT = "2026-10-27T23:10:00Z";
+
+/** A lawn company's weekly mow for the client, invoice #2 for $45, with tips on or off. */
+function mowed(invoice: Row = {}, { tips = false }: { tips?: boolean } = {}) {
+  roofer();
+  const company = state.tables.companies![0]!;
+  Object.assign(company, { name: "Radford Lawn Care", trade_preset: "lawn_exterior", settings: { ...(company.settings as Row), hub_tips: tips } });
+  state.tables.invoices = [{
+    id: MOW, company_id: ROOFER, number: 2, status: "sent", subject: "Weekly mow", notes: null, issued_on: "2026-10-27", due_on: "2026-11-10",
+    subtotal: 45, discount_amount: 0, tax_amount: 0, total: 45, retainage_amount: 0, amount_paid: 0, balance_due: 45, client_id: CLIENT, promo: null,
+    client: { display_name: "Pat Lee", billing_address: {} }, job: { property: null, quote: null },
+    lines: [{ name: "Weekly mow", description: null, quantity: 1, unit: "visit", unit_price: 45, sort: 1 }], payments: [],
+    ...invoice,
+  }];
+}
+/** The mow, paid by the automatic charge to the client's Visa. */
+const paidMow = (tips: boolean) => mowed({ status: "paid", amount_paid: 45, balance_due: 0 }, { tips });
+/** What services/autopay.ts would say about an invoice its charge paid, with a tip on offer. */
+const paidAutomatically = {
+  autopay: { status: "paid" as const, method: "Visa ending 4242", charged_at: CHARGED_AT }, save_card: false, tip_after: true, tip_method: "Visa ending 4242",
+};
+const invoicePage = async (link: Partial<HubLink> = {}, search = "") => (await hub({ t: "invoice", id: MOW, ...link }, search)).json();
+const stripeCalls = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.filter(([url]) => String(url instanceof Request ? url.url : url).includes("stripe.com"));
+
+// The tips-off rows of docs/autopay-plan.md's contract (5.4), one each: the user's own test of the
+// feature is turning tips off in Settings → Company and seeing the Client Hub follow.
+describe("with tips turned off in Settings → Company", () => {
+  it("an invoice says it takes no tip, and an invoice made in Stripe never does", async () => {
+    mowed();
+    expect((await invoicePage()).tips).toBe(false);
+    // Made in Stripe: paid exactly as Stripe billed it, with tips on or off.
+    mowed({}, { tips: true });
+    state.tables.stripe_invoices = [{ company_id: ROOFER, invoice_id: MOW, origin: "stripe", status: "open", livemode: false, detached_at: null }];
+    expect((await invoicePage()).tips).toBe(false);
+  });
+
+  it("no tip is offered after an automatic charge to the card, whatever the autopay facts say", async () => {
+    paidMow(false);
+    vi.mocked(autopay.hubInvoiceAutopay).mockResolvedValueOnce(paidAutomatically);
+    const page = await invoicePage({}, "?tip=1");
+    expect(page).toMatchObject({ tips: false, tip_after: false, tip_method: null, autopay: paidAutomatically.autopay });
+    // The autopay facts are worked out knowing tips are off.
+    expect(vi.mocked(autopay.hubInvoiceAutopay).mock.calls[0]![4]).toEqual({ tips: false, preview: false, imported: false, trust: "client" });
+  });
+
+  it("Pay with a tip is turned down before anything reaches Stripe", async () => {
+    mowed();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    for (const tip of [15, 0.5, 6.75]) {
+      const res = await hub({ t: "invoice", id: MOW }, "/pay", { tip });
+      expect(res.status, String(tip)).toBe(409);
+      expect((await res.json()).error).toBe("Tips aren't offered here anymore. Check the amount and pay again.");
+    }
+    expect(stripeCheckout).not.toHaveBeenCalled();
+    expect(stripeCalls(fetchSpy)).toEqual([]);
+  });
+
+  it("Pay without a tip pays the balance", async () => {
+    mowed();
+    const res = await hub({ t: "invoice", id: MOW }, "/pay", { tip: 0 });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ url: "https://invoice.stripe.test/i/pay" });
+    expect(vi.mocked(stripeCheckout).mock.calls[0]!.slice(2)).toEqual([ROOFER, MOW, 0]);
+    // Nothing sent is no tip either.
+    expect((await hub({ t: "invoice", id: MOW }, "/pay", {})).status).toBe(200);
+    expect(vi.mocked(stripeCheckout).mock.calls[1]![4]).toBe(0);
+  });
+
+  it("a Stripe invoice the client made with a tip before is replaced by Pay without one", async () => {
+    // Made from the Pay screen with a $6.75 tip while tips were on, still open on Stripe's page.
+    mowed();
+    state.tables.stripe_invoices = [{ company_id: ROOFER, invoice_id: MOW, origin: "crewtavo", purpose: "invoice", status: "open", livemode: false, detached_at: null, amount_due: 51.75, tip_amount: 6.75 }];
+    // The page loaded before tips went off asks for the tip again: turned down.
+    expect((await hub({ t: "invoice", id: MOW }, "/pay", { tip: 6.75 })).status).toBe(409);
+    expect(stripeCheckout).not.toHaveBeenCalled();
+    // Loaded again, it pays the balance: stripeCheckout replaces the tipped one (integrations/stripe.ts).
+    expect((await hub({ t: "invoice", id: MOW }, "/pay", { tip: 0 })).status).toBe(200);
+    expect(vi.mocked(stripeCheckout).mock.calls[0]![4]).toBe(0);
+  });
+
+  it("a tip on the saved card is turned down before any Stripe call", async () => {
+    paidMow(false);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const res = await hub({ t: "invoice", id: MOW }, "/tip", { tip: 6.75 });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe("Tips are turned off.");
+    expect(autopay.tipOnSavedCard).not.toHaveBeenCalled();
+    expect(stripeCalls(fetchSpy)).toEqual([]);
+
+    // On an invoice made in Stripe, with tips on: the same.
+    paidMow(true);
+    state.tables.stripe_invoices = [{ company_id: ROOFER, invoice_id: MOW, origin: "stripe", status: "paid", livemode: false, detached_at: null }];
+    expect((await hub({ t: "invoice", id: MOW }, "/tip", { tip: 6.75 })).status).toBe(409);
+    expect(autopay.tipOnSavedCard).not.toHaveBeenCalled();
+    expect(stripeCalls(fetchSpy)).toEqual([]);
+  });
+
+  it("turning them off reaches a page already open: its next request is turned down", async () => {
+    // Loaded with tips on, the tip after the charge is offered.
+    paidMow(true);
+    vi.mocked(autopay.hubInvoiceAutopay).mockResolvedValueOnce(paidAutomatically);
+    expect((await invoicePage()).tip_after).toBe(true);
+    // The office turns tips off; the client taps the tip they chose on the page as it was.
+    state.tables.companies![0]!.settings = { ...(state.tables.companies![0]!.settings as Row), hub_tips: false };
+    expect((await hub({ t: "invoice", id: MOW }, "/tip", { tip: 6.75 })).status).toBe(409);
+    expect(autopay.tipOnSavedCard).not.toHaveBeenCalled();
+  });
+
+  it("a business that never turned them on has them off too, on every page and request", async () => {
+    paidMow(false);
+    const settings = { ...(state.tables.companies![0]!.settings as Row) };
+    delete settings.hub_tips;
+    state.tables.companies![0]!.settings = settings;
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    vi.mocked(autopay.hubInvoiceAutopay).mockResolvedValueOnce(paidAutomatically);
+    expect(await invoicePage({}, "?tip=1")).toMatchObject({ tips: false, tip_after: false, tip_method: null });
+    expect((await hub({ t: "invoice", id: MOW }, "/tip", { tip: 6.75 })).status).toBe(409);
+    mowed();
+    state.tables.companies![0]!.settings = settings;
+    expect((await invoicePage()).tips).toBe(false);
+    expect((await hub({ t: "invoice", id: MOW }, "/pay", { tip: 6.75 })).status).toBe(409);
+    expect((await hub({ t: "invoice", id: MOW }, "/pay", { tip: 0 })).status).toBe(200);
+    expect(vi.mocked(stripeCheckout).mock.calls.map((call) => call[4])).toEqual([0]);
+    expect(autopay.tipOnSavedCard).not.toHaveBeenCalled();
+    expect(stripeCalls(fetchSpy)).toEqual([]);
+  });
+});
+
+describe("with tips turned on", () => {
+  it("an invoice takes a tip", async () => {
+    mowed({}, { tips: true });
+    expect((await invoicePage()).tips).toBe(true);
+  });
+
+  it("Pay adds the tip chosen", async () => {
+    mowed({}, { tips: true });
+    expect((await hub({ t: "invoice", id: MOW }, "/pay", { tip: 6.75 })).status).toBe(200);
+    expect(vi.mocked(stripeCheckout).mock.calls[0]![4]).toBe(675);
+  });
+
+  it("a tip is offered after an automatic charge, from the client's own link only", async () => {
+    paidMow(true);
+    vi.mocked(autopay.hubInvoiceAutopay).mockResolvedValueOnce(paidAutomatically);
+    expect(await invoicePage()).toMatchObject({ tips: true, tip_after: true, tip_method: "Visa ending 4242" });
+
+    // A copy of the link the office made: none, whatever the autopay facts say, and none can be added.
+    vi.mocked(autopay.hubInvoiceAutopay).mockResolvedValueOnce(paidAutomatically);
+    expect(await invoicePage({ via: "office" })).toMatchObject({ tips: true, tip_after: false, tip_method: null });
+    expect(vi.mocked(autopay.hubInvoiceAutopay).mock.calls[1]![4]).toMatchObject({ trust: "office" });
+    const res = await hub({ t: "invoice", id: MOW, via: "office" }, "/tip", { tip: 6.75 });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe("Tips are added from the client's own link.");
+    // A link from before the client's own were marked (one kept on the timeline, say): none either.
+    vi.mocked(autopay.hubInvoiceAutopay).mockResolvedValueOnce(paidAutomatically);
+    expect(await invoicePage({ old: true })).toMatchObject({ tips: true, tip_after: false, tip_method: null });
+    expect(vi.mocked(autopay.hubInvoiceAutopay).mock.calls[2]![4]).toMatchObject({ trust: "legacy" });
+    const old = await hub({ t: "invoice", id: MOW, old: true }, "/tip", { tip: 6.75 });
+    expect(old.status).toBe(403);
+    expect((await old.json()).error).toBe("Tips are added from the client's own link.");
+    // Nor on a preview.
+    vi.mocked(autopay.hubInvoiceAutopay).mockResolvedValueOnce(paidAutomatically);
+    expect(await invoicePage({ pv: 1 })).toMatchObject({ tip_after: false });
+    expect(autopay.tipOnSavedCard).not.toHaveBeenCalled();
+  });
+
+  it("the tip goes to the card that paid, with who asked for it", async () => {
+    paidMow(true);
+    vi.mocked(autopay.tipOnSavedCard).mockResolvedValueOnce({ status: "paid", tip: 6.75 });
+    const res = await app.request(
+      `/api/hub/${await tokenFor({ t: "invoice", id: MOW })}/tip`,
+      { method: "POST", headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (iPhone)" }, body: JSON.stringify({ tip: 6.75 }) },
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "paid", tip: 6.75 });
+    expect(vi.mocked(autopay.tipOnSavedCard).mock.calls[0]![2]).toEqual({ companyId: ROOFER, invoiceId: MOW, tip: 6.75, ip: expect.any(String), userAgent: "Mozilla/5.0 (iPhone)" });
+    // A declined card stays a 402, so the page says so.
+    vi.mocked(autopay.tipOnSavedCard).mockRejectedValueOnce(new HttpError(402, "Your card was declined, so the tip wasn't added."));
+    expect((await hub({ t: "invoice", id: MOW }, "/tip", { tip: 5 })).status).toBe(402);
+    // Nothing, a negative amount, or too much isn't a tip.
+    for (const tip of [0, -5, 20_000]) expect((await hub({ t: "invoice", id: MOW }, "/tip", { tip })).status, String(tip)).toBe(400);
+    // Only on an invoice's own link.
+    expect((await hub({ t: "client", id: CLIENT }, "/tip", { tip: 5 })).status).toBe(400);
+  });
+});
+
+describe("paying an invoice in the Client Hub", () => {
+  it("waits while the saved card is being charged for it, and the code can't change then", async () => {
+    mowed({}, { tips: true });
+    state.tables.autopay_charges = [{ id: "ch-1", company_id: ROOFER, client_id: CLIENT, invoice_id: MOW, status: "charging" }];
+    const pay = await hub({ t: "invoice", id: MOW }, "/pay", { tip: 0 });
+    expect(pay.status).toBe(409);
+    expect((await pay.json()).error).toBe("This invoice is being charged to your saved card right now.");
+    expect(stripeCheckout).not.toHaveBeenCalled();
+
+    state.rpcs.apply_promo_code = () => ({ data: { total: 40 }, error: null });
+    state.rpcs.remove_promo_code = () => ({ data: null, error: null });
+    const promo = await hub({ t: "invoice", id: MOW }, "/promo", { code: "SPRING" });
+    expect(promo.status).toBe(409);
+    expect((await promo.json()).error).toBe("This invoice is being charged to your saved card right now.");
+    const removed = await app.request(`/api/hub/${await tokenFor({ t: "invoice", id: MOW })}/promo`, { method: "DELETE" }, env);
+    expect(removed.status).toBe(409);
+    expect(state.calls.some((c) => c.name === "apply_promo_code" || c.name === "remove_promo_code")).toBe(false);
+
+    // Charged (or called off), it's the usual invoice again.
+    state.tables.autopay_charges![0]!.status = "failed";
+    expect((await hub({ t: "invoice", id: MOW }, "/pay", { tip: 0 })).status).toBe(200);
+    expect((await hub({ t: "invoice", id: MOW }, "/promo", { code: "SPRING" })).status).toBe(200);
+  });
+
+  it("hides Pay while the card is being charged", async () => {
+    mowed();
+    const shared = env as Env & { STRIPE_SECRET_KEY?: string };
+    shared.STRIPE_SECRET_KEY = "sk_test_shared";
+    try {
+      expect((await invoicePage()).can_pay).toBe(true);
+      vi.mocked(autopay.hubInvoiceAutopay).mockResolvedValueOnce({ autopay: { status: "charging", method: "Visa ending 4242", charged_at: null }, save_card: false, tip_after: false, tip_method: null });
+      expect(await invoicePage()).toMatchObject({ can_pay: false, autopay: { status: "charging" } });
+      vi.mocked(autopay.hubInvoiceAutopay).mockResolvedValueOnce({ autopay: { status: "failed", method: "Visa ending 4242", charged_at: null }, save_card: false, tip_after: false, tip_method: null });
+      expect(await invoicePage()).toMatchObject({ can_pay: true, autopay: { status: "failed" } });
+      // Refunded and taken off the invoice too: still a balance, but the office chose not to collect it.
+      mowed({ status: "written_off", amount_paid: 0, balance_due: 45 });
+      expect(await invoicePage()).toMatchObject({ can_pay: false, invoice: { status: "written_off", balance_due: 45 } });
+    } finally {
+      delete shared.STRIPE_SECRET_KEY;
+    }
+  });
+
+  it("offers to save the card after paying, never on a preview", async () => {
+    mowed({ status: "paid", amount_paid: 45, balance_due: 0 });
+    vi.mocked(autopay.hubInvoiceAutopay).mockResolvedValue({ autopay: null, save_card: true, tip_after: false, tip_method: null });
+    expect((await invoicePage()).save_card).toBe(true);
+    const preview = await invoicePage({ pv: 1 });
+    expect(preview).toMatchObject({ save_card: false, tip_after: false, home: null });
+    expect(vi.mocked(autopay.hubInvoiceAutopay).mock.calls[1]![4]).toMatchObject({ preview: true });
+  });
+});
+
+describe("autopay on the client's home page", () => {
+  it("is null when the business doesn't take autopay", async () => {
+    const home = await (await hub({ t: "client", id: CLIENT })).json();
+    expect(home.autopay).toBeNull();
+    expect(home.preview).toBe(false);
+  });
+
+  it("sends the autopay card as services/autopay.ts has it, for the link it was opened from", async () => {
+    const card = {
+      status: "active" as const, method: { id: CARD, type: "card", label: "Visa ending 4242", exp: "08/28" }, imported: false, since: "2026-10-31T14:05:09Z",
+      terms: "We charge the card on file after each visit is done.", terms_version: "2026-10-31T14:05:09", timing: "at the end of the day of each visit",
+      next_charge: "2026-11-01T05:00:00Z", per_visit: 45, per_visit_taxed: false, available: true, card_required: false,
+    };
+    vi.mocked(autopay.hubAutopay).mockResolvedValueOnce(card);
+    expect((await (await hub({ t: "client", id: CLIENT })).json()).autopay).toEqual(card);
+    expect(vi.mocked(autopay.hubAutopay).mock.calls[0]!.slice(2)).toEqual([ROOFER, CLIENT, { trust: "client" }]);
+    await hub({ t: "client", id: CLIENT, via: "office" });
+    expect(vi.mocked(autopay.hubAutopay).mock.calls[1]![4]).toEqual({ trust: "office" });
+    // A link from before the client's own were marked is its own kind for saying yes to a card.
+    await hub({ t: "client", id: CLIENT, old: true });
+    expect(vi.mocked(autopay.hubAutopay).mock.calls[2]![4]).toEqual({ trust: "legacy" });
+  });
+
+  it("says which invoices are charged automatically, and which payments were", async () => {
+    mowed({ status: "paid", amount_paid: 45, balance_due: 0 });
+    const visa = { type: "card", brand: "visa", last4: "4242", bank_name: null, wallet: null };
+    state.tables.invoices!.push(
+      { ...state.tables.invoices![0]!, id: "inv-3", number: 3, status: "sent", balance_due: 45, issued_on: "2026-11-03" },
+      { ...state.tables.invoices![0]!, id: "inv-4", number: 4, status: "sent", balance_due: 45, issued_on: "2026-11-10" },
+      { ...state.tables.invoices![0]!, id: "inv-5", number: 5, status: "overdue", balance_due: 45, issued_on: "2026-11-17" },
+    );
+    state.tables.autopay_charges = [
+      { company_id: ROOFER, client_id: CLIENT, invoice_id: MOW, status: "paid", method: visa },
+      { company_id: ROOFER, client_id: CLIENT, invoice_id: "inv-3", status: "charging", method: visa },
+      { company_id: ROOFER, client_id: CLIENT, invoice_id: "inv-4", status: "failed", failures: 1, method: visa },
+      // Called off: the invoice is owed the usual way, and nothing says autopay.
+      { company_id: ROOFER, client_id: CLIENT, invoice_id: "inv-5", status: "called_off", method: visa },
+    ];
+    state.tables.payments = [
+      { company_id: ROOFER, client_id: CLIENT, amount: 45, tip_amount: 0, method: "card", received_at: "2026-10-27T23:10:00Z", invoice_id: MOW, processor: "stripe", invoice: { number: 2 } },
+      // A check on another invoice.
+      { company_id: ROOFER, client_id: CLIENT, amount: 30, tip_amount: 0, method: "check", received_at: "2026-10-20T15:00:00Z", invoice_id: "inv-5", processor: null, invoice: { number: 5 } },
+    ];
+    const home = await (await hub({ t: "client", id: CLIENT })).json();
+    expect(home.invoices.map((i: { number: number; autopay: string | null }) => [i.number, i.autopay])).toEqual([[2, "paid"], [3, "charging"], [4, "failed"], [5, null]]);
+    // The failed one, then paid by bank on Stripe's page: on its way, not waiting on the client
+    // (a bank payment in a Stripe account Crewtavo has left is the office's to follow).
+    state.tables.stripe_invoices = [{ company_id: ROOFER, invoice_id: "inv-4", purpose: "invoice", status: "processing", detached_at: null }];
+    const paying = await (await hub({ t: "client", id: CLIENT })).json();
+    expect(paying.invoices.map((i: { number: number; autopay: string | null }) => [i.number, i.autopay])).toEqual([[2, "paid"], [3, "charging"], [4, "processing"], [5, null]]);
+    state.tables.stripe_invoices = [{ company_id: ROOFER, invoice_id: "inv-4", purpose: "invoice", status: "processing", detached_at: "2026-11-04T00:00:00Z" }];
+    expect((await (await hub({ t: "client", id: CLIENT })).json()).invoices[2].autopay).toBe("failed");
+    // Moved back to be tried on a card the client agreed to since (no failures on it): shown as one waiting, so not at all.
+    state.tables.stripe_invoices = [];
+    state.tables.autopay_charges[2]!.failures = 0;
+    expect((await (await hub({ t: "client", id: CLIENT })).json()).invoices[2].autopay).toBeNull();
+    expect(home.payments).toEqual([
+      { amount: 45, tip_amount: 0, method: "card", received_at: "2026-10-27T23:10:00Z", invoice: 2, auto: true, card: "Visa ending 4242" },
+      { amount: 30, tip_amount: 0, method: "check", received_at: "2026-10-20T15:00:00Z", invoice: 5, auto: false, card: null },
+    ]);
+    // Nothing about the payment's processor or the charges' ids goes out.
+    expect(JSON.stringify(home)).not.toMatch(/processor|invoice_id/);
+  });
+});
+
+describe("a copy of the client's link the office made", () => {
+  it("stays one in every link the Hub makes from it, and the client's own stays theirs", async () => {
+    mowed();
+    const via = async (url: string) => (await readClientLink(env, url.split("/hub/")[1]!))?.via;
+    const office = await (await hub({ t: "client", id: CLIENT, via: "office" })).json();
+    expect(await via(office.invoices[0].link)).toBe("office");
+    expect(await via(office.quotes[0].link)).toBe("office");
+    expect(await via((await invoicePage({ via: "office" })).home)).toBe("office");
+
+    const own = await (await hub({ t: "client", id: CLIENT })).json();
+    expect(await via(own.invoices[0].link)).toBeUndefined();
+    expect(await via((await invoicePage()).home)).toBeUndefined();
+  });
+
+  it("keeps the client's own mark on the links the Hub makes from their own, and never adds it to one without", async () => {
+    mowed();
+    const payload = (url: string) => readClientLink(env, url.split("/hub/")[1]!);
+    const own = await (await hub({ t: "client", id: CLIENT })).json();
+    expect(await payload(own.invoices[0].link)).toMatchObject({ t: "invoice", own: 1 });
+    expect(await payload(own.quotes[0].link)).toMatchObject({ t: "quote", own: 1 });
+    expect(await payload((await invoicePage()).home)).toMatchObject({ t: "client", own: 1 });
+    // From a link minted before the mark: neither the client's own mark nor the office's.
+    const old = await (await hub({ t: "client", id: CLIENT, old: true })).json();
+    for (const url of [old.invoices[0].link, old.quotes[0].link, (await invoicePage({ old: true })).home]) {
+      const link = await payload(url);
+      expect(link?.own).toBeUndefined();
+      expect(link?.via).toBeUndefined();
+    }
+    // The office's copy never gets it.
+    expect((await payload((await invoicePage({ via: "office" })).home))?.own).toBeUndefined();
+  });
+});
+
+describe("loading a Hub page", () => {
+  it("never asks Stripe anything", async () => {
+    mowed({}, { tips: true });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    for (const link of [{ t: "client" as const, id: CLIENT }, { t: "invoice" as const, id: MOW }, { t: "quote" as const, id: QUOTE }]) {
+      expect((await hub(link)).status, link.t).toBe(200);
+    }
+    expect(stripeCalls(fetchSpy)).toEqual([]);
+  });
+});
+
+describe("approving a quote for work charged by the visit", () => {
+  // A weekly mow, priced per visit, sent at its exact price.
+  function weekly(quote: Row = {}) {
+    roofer({ range_low: null, range_high: null, range_sent_at: null, title: "Weekly mowing", total: 45, subtotal: 45, roof_package_id: null, template_id: null, ...quote });
+    Object.assign(state.tables.companies![0]!, { trade_preset: "lawn_exterior" });
+    state.tables.document_templates = [];
+    state.tables.quote_line_items = [line("m1", null, "Weekly mow", { unit: "visit", unit_price: 45, sort: 1 })];
+  }
+
+  it("offers \"Approve and set up autopay\" when the business takes autopay and the client isn't on it", async () => {
+    weekly();
+    vi.mocked(autopay.autopayOffered).mockResolvedValue(true);
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).autopay_offer).toBe(true);
+    expect(vi.mocked(autopay.autopayOffered).mock.calls[0]!.slice(2)).toEqual([ROOFER, CLIENT]);
+    vi.mocked(autopay.autopayOffered).mockResolvedValue(false);
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).autopay_offer).toBe(false);
+  });
+
+  it("doesn't offer it on a preview, a price range, a change order or work not charged by the visit", async () => {
+    vi.mocked(autopay.autopayOffered).mockResolvedValue(true);
+    weekly();
+    expect((await (await hub({ t: "quote", id: QUOTE, pv: 1 })).json()).autopay_offer).toBe(false);
+    weekly({ range_low: 40, range_high: 60, range_sent_at: "2026-10-22T15:00:00Z" });
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).autopay_offer).toBe(false);
+    weekly({ change_order_for: "q-original" });
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).autopay_offer).toBe(false);
+    weekly();
+    state.tables.quote_line_items = [line("m1", null, "Spring cleanup", { unit: "ea", unit_price: 300, sort: 1 })];
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).autopay_offer).toBe(false);
+    expect(autopay.autopayOffered).not.toHaveBeenCalled();
+  });
+
+  it("asks for a card on any quote when the business needs one on file, and never sends its autopay settings", async () => {
+    vi.mocked(autopay.autopayOffered).mockResolvedValue(true);
+    weekly();
+    let body = await (await hub({ t: "quote", id: QUOTE })).json();
+    expect(body).toMatchObject({ autopay_offer: true, card_required: false });
+    const settings = state.tables.companies![0]!.settings as Row;
+    state.tables.companies![0]!.settings = { ...settings, autopay: { enabled: true, card_required: true, terms: "Charged after each mow." } };
+    body = await (await hub({ t: "quote", id: QUOTE })).json();
+    expect(body).toMatchObject({ autopay_offer: true, card_required: true });
+    expect(JSON.stringify(body)).not.toContain("Charged after each mow.");
+    // A one-off job, not charged by the visit, asks too.
+    state.tables.quote_line_items = [line("m1", null, "Spring cleanup", { unit: "ea", unit_price: 300, sort: 1 })];
+    expect((await (await hub({ t: "quote", id: QUOTE })).json())).toMatchObject({ autopay_offer: true, card_required: true });
+    // Not when the client is on autopay already (or the business can't take it), a preview, a price range or a change order.
+    vi.mocked(autopay.autopayOffered).mockResolvedValue(false);
+    expect((await (await hub({ t: "quote", id: QUOTE })).json())).toMatchObject({ autopay_offer: false, card_required: false });
+    vi.mocked(autopay.autopayOffered).mockResolvedValue(true);
+    expect((await (await hub({ t: "quote", id: QUOTE, pv: 1 })).json()).card_required).toBe(false);
+    weekly({ change_order_for: "q-original" });
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).card_required).toBe(false);
+    weekly({ range_low: 40, range_high: 60, range_sent_at: "2026-10-22T15:00:00Z" });
+    expect((await (await hub({ t: "quote", id: QUOTE })).json()).card_required ?? false).toBe(false);
+  });
+
+  it("prints and keeps the lawn starter terms when the business never wrote its own", async () => {
+    weekly();
+    const view = await (await hub({ t: "quote", id: QUOTE })).json();
+    expect(view.template.terms).toBe(TRADE_TERMS.lawn_exterior);
+    state.rpcs.approve_hub_quote = () => ({ data: true, error: null });
+    const res = await hub({ t: "quote", id: QUOTE }, "/approve", { name: "Pat Lee", signature: PNG, ...(await picked(null, [])) });
+    expect(res.status).toBe(200);
+    expect(((approvalArgs().p_approval as Row).template as Row).terms).toBe(TRADE_TERMS.lawn_exterior);
+    // The invoice prints them too.
+    mowed();
+    state.tables.document_templates = [];
+    expect((await invoicePage()).template.terms).toBe(TRADE_TERMS.lawn_exterior);
+  });
+});
+
+describe("setting up autopay from the Client Hub", () => {
+  const post = (link: HubLink, path: string, body: unknown, headers: Record<string, string> = {}) =>
+    tokenFor(link).then((token) => app.request(`/api/hub/${token}${path}`, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) }, env));
+  const agreement = { payment_method_id: CARD, terms_version: "2026-10-31T14:05:09", agreed: true };
+
+  it("sends the client of whichever link it came from to Stripe's page, which comes back to their home", async () => {
+    mowed();
+    vi.mocked(autopay.startAutopaySetup).mockResolvedValue({ url: "https://checkout.stripe.test/c/setup" });
+    const res = await post({ t: "invoice", id: MOW }, "/autopay/setup", {});
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ url: "https://checkout.stripe.test/c/setup" });
+    const input = vi.mocked(autopay.startAutopaySetup).mock.calls[0]![2];
+    expect(input).toMatchObject({ companyId: ROOFER, clientId: CLIENT, trust: "client" });
+    const home = await readClientLink(env, input.home.split("/hub/")[1]!);
+    expect(home).toMatchObject({ c: ROOFER, t: "client", id: CLIENT, own: 1 });
+    expect(home?.via).toBeUndefined();
+    // From an office copy, it comes back to an office copy, and the card is saved as one saved through it.
+    await post({ t: "client", id: CLIENT, via: "office" }, "/autopay/setup", {});
+    const office = vi.mocked(autopay.startAutopaySetup).mock.calls[1]![2];
+    expect(office.trust).toBe("office");
+    expect((await readClientLink(env, office.home.split("/hub/")[1]!))?.via).toBe("office");
+    // From a link minted before the mark it still works, and the card is saved as that link can say yes to it.
+    const res2 = await post({ t: "client", id: CLIENT, old: true }, "/autopay/setup", {});
+    expect(res2.status).toBe(200);
+    const old = vi.mocked(autopay.startAutopaySetup).mock.calls[2]![2];
+    expect(old.trust).toBe("legacy");
+    const oldHome = await readClientLink(env, old.home.split("/hub/")[1]!);
+    expect(oldHome?.own).toBeUndefined();
+    expect(oldHome?.via).toBeUndefined();
+  });
+
+  it("says saving cards isn't working when Stripe doesn't answer", async () => {
+    vi.mocked(autopay.startAutopaySetup).mockRejectedValueOnce(new StripeError("Stripe is down", 500));
+    const res = await post({ t: "client", id: CLIENT }, "/autopay/setup", {});
+    expect(res.status).toBe(502);
+    expect((await res.json()).error).toBe("Saving cards isn't working right now. Try again in a few minutes.");
+  });
+
+  it("finishes a setup from Stripe's page, by its session only", async () => {
+    vi.mocked(autopay.finishAutopaySetup).mockResolvedValueOnce({ status: "agree", method: { id: CARD, label: "Visa ending 4242", type: "card", exp: "08/28" } });
+    const res = await post({ t: "client", id: CLIENT }, "/autopay/finish", { session_id: "cs_test_a1B2c3" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: "agree", method: { label: "Visa ending 4242" } });
+    expect(vi.mocked(autopay.finishAutopaySetup).mock.calls[0]![2]).toEqual({ companyId: ROOFER, clientId: CLIENT, sessionId: "cs_test_a1B2c3" });
+    for (const session_id of ["pi_123", "cs_../../x", ""]) expect((await post({ t: "client", id: CLIENT }, "/autopay/finish", { session_id })).status, session_id).toBe(400);
+  });
+
+  it("keeps the agreement with the link it was made on, the browser and who the link was for", async () => {
+    vi.mocked(autopay.confirmAutopay).mockResolvedValue({ status: "active", method: "Visa ending 4242" });
+    const res = await post({ t: "quote", id: QUOTE }, "/autopay/confirm", agreement, { "User-Agent": "Mozilla/5.0 (iPhone)" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "active", method: "Visa ending 4242" });
+    expect(vi.mocked(autopay.confirmAutopay).mock.calls[0]![2]).toEqual({
+      companyId: ROOFER, clientId: CLIENT, paymentMethodId: CARD, termsVersion: "2026-10-31T14:05:09", ip: expect.any(String), userAgent: "Mozilla/5.0 (iPhone)", linkKind: "quote", via: "client", trust: "client",
+    });
+    await post({ t: "client", id: CLIENT, via: "office" }, "/autopay/confirm", agreement);
+    expect(vi.mocked(autopay.confirmAutopay).mock.calls[1]![2]).toMatchObject({ linkKind: "client", via: "office", trust: "office" });
+    // A link from before the mark is kept as the client's, but is its own kind for which card it can say yes to.
+    await post({ t: "client", id: CLIENT, old: true }, "/autopay/confirm", agreement);
+    expect(vi.mocked(autopay.confirmAutopay).mock.calls[2]![2]).toMatchObject({ linkKind: "client", via: "client", trust: "legacy" });
+    // Only with the box ticked, for a card's id and the terms' version.
+    for (const body of [{ ...agreement, agreed: false }, { ...agreement, payment_method_id: "pm_123" }, { ...agreement, terms_version: "" }]) {
+      expect((await post({ t: "client", id: CLIENT }, "/autopay/confirm", body)).status).toBe(400);
+    }
+    expect(autopay.confirmAutopay).toHaveBeenCalledTimes(3);
+  });
+
+  it("turns autopay off as the client, from any of their links", async () => {
+    mowed();
+    vi.mocked(autopay.turnOffAutopay).mockResolvedValue(undefined);
+    // From the invoice's link, it's the invoice's client whose autopay goes off.
+    const off = await post({ t: "invoice", id: MOW }, "/autopay/off", {});
+    expect(off.status).toBe(200);
+    expect(await off.json()).toEqual({ ok: true });
+    expect(vi.mocked(autopay.turnOffAutopay).mock.calls[0]![1]).toEqual({ companyId: ROOFER, clientId: CLIENT, via: "client", userId: null });
+    // An office copy of the link is still the client turning it off (it's how offices send the Hub).
+    await post({ t: "client", id: CLIENT, via: "office" }, "/autopay/off", {});
+    expect(vi.mocked(autopay.turnOffAutopay).mock.calls[1]![1]).toMatchObject({ via: "client" });
+    // A link to an invoice that's gone turns nothing off.
+    state.tables.invoices = [];
+    expect((await post({ t: "invoice", id: MOW }, "/autopay/off", {})).status).toBe(404);
+    expect(autopay.turnOffAutopay).toHaveBeenCalledTimes(2);
+  });
+
+  it("does nothing from a preview", async () => {
+    mowed({}, { tips: true });
+    for (const [path, body] of [["/autopay/setup", {}], ["/autopay/finish", { session_id: "cs_test_1" }], ["/autopay/confirm", agreement], ["/autopay/off", {}]] as const) {
+      for (const link of [{ t: "quote" as const, id: QUOTE, pv: 1 as const }, { t: "invoice" as const, id: MOW, pv: 1 as const }]) {
+        const res = await post(link, path, body);
+        expect(res.status, `${link.t} ${path}`).toBe(400);
+        expect((await res.json()).error).toBe("Autopay can't be set up from a preview.");
+      }
+    }
+    const tip = await post({ t: "invoice", id: MOW, pv: 1 }, "/tip", { tip: 5 });
+    expect(tip.status).toBe(400);
+    expect((await tip.json()).error).toBe("Tips can't be added from a preview.");
+    for (const fn of [autopay.startAutopaySetup, autopay.finishAutopaySetup, autopay.confirmAutopay, autopay.turnOffAutopay, autopay.tipOnSavedCard]) expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("counts tries against the visitor and the client, and answers 429 past them", async () => {
+    mowed({ status: "paid", amount_paid: 45, balance_due: 0 }, { tips: true });
+    vi.mocked(autopay.startAutopaySetup).mockResolvedValue({ url: "https://checkout.stripe.test/c/setup" });
+    await post({ t: "client", id: CLIENT }, "/autopay/setup", {});
+    const keys = state.calls.filter((c) => c.name === "rate_limit_hit").map((c) => [c.args.p_key, c.args.p_max, c.args.p_window_seconds]);
+    expect(keys).toEqual([["autopay:ip:unknown", 10, 600], [`autopay:client:${CLIENT}`, 5, 600]]);
+
+    state.calls = [];
+    vi.mocked(autopay.tipOnSavedCard).mockResolvedValue({ status: "paid", tip: 5 });
+    await post({ t: "invoice", id: MOW }, "/tip", { tip: 5 });
+    expect(state.calls.filter((c) => c.name === "rate_limit_hit").map((c) => [c.args.p_key, c.args.p_max, c.args.p_window_seconds])).toEqual([["tip:ip:unknown", 10, 600], [`tip:invoice:${MOW}`, 3, 3600]]);
+
+    state.rpcs.rate_limit_hit = () => ({ data: false, error: null });
+    vi.mocked(autopay.startAutopaySetup).mockClear();
+    vi.mocked(autopay.tipOnSavedCard).mockClear();
+    for (const [link, path, body] of [
+      [{ t: "client", id: CLIENT }, "/autopay/setup", {}],
+      [{ t: "client", id: CLIENT }, "/autopay/finish", { session_id: "cs_test_1" }],
+      [{ t: "client", id: CLIENT }, "/autopay/confirm", agreement],
+      [{ t: "client", id: CLIENT }, "/autopay/off", {}],
+      [{ t: "invoice", id: MOW }, "/tip", { tip: 5 }],
+    ] as Array<[HubLink, string, unknown]>) {
+      const res = await post(link, path, body);
+      expect(res.status, path).toBe(429);
+      expect((await res.json()).error).toBe("Too many tries. Wait a few minutes and try again.");
+    }
+    for (const fn of [autopay.startAutopaySetup, autopay.finishAutopaySetup, autopay.confirmAutopay, autopay.turnOffAutopay, autopay.tipOnSavedCard]) expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+// The same pages with the real autopay facts (services/autopay.ts) worked out from the saved cards,
+// agreements and charges, for a business with its own Stripe key that can save cards.
+describe("autopay facts from the business's saved cards and agreements", () => {
+  const AGREEMENT = "00000000-0000-4000-8000-0000000000f3";
+  const visa = {
+    id: CARD, company_id: ROOFER, client_id: CLIENT, stripe_payment_method_id: "pm_visa", stripe_customer_id: "cus_pat", stripe_account: "acct_radford", livemode: false,
+    type: "card", brand: "visa", wallet: null, last4: "4242", exp_month: 8, exp_year: 2028, bank_name: null, status: "active", is_default: true, source: "hub", saved_via: "client",
+    removed_at: null, removed_reason: null, created_at: "2026-10-01T15:00:00Z", updated_at: "2026-10-01T15:00:00Z",
+  };
+  const agreed = {
+    id: AGREEMENT, company_id: ROOFER, client_id: CLIENT, payment_method_id: CARD, terms: "We charge the card on file after each visit is done.", terms_version: "2026-10-01T15:00:00",
+    accepted_at: "2026-10-01T15:05:00Z", source: "hub", link_kind: "client", link_via: "client", paused_at: null, paused_by: null, revoked_at: null, revoked_by: null, revoked_via: null,
+    created_at: "2026-10-01T15:05:00Z", updated_at: "2026-10-01T15:05:00Z",
+  };
+
+  /** Autopay on in Settings → Payments, the business's own key saved, and the key able to save cards. */
+  async function takesAutopay(tips: boolean) {
+    const company = state.tables.companies![0]!;
+    company.settings = {
+      ...(company.settings as Row), hub_tips: tips,
+      autopay: { enabled: true, terms: "We charge the card on file after each visit is done.", terms_version: "2026-10-01T15:00:00", timing: "end_of_day", days: null, max_amount: 500, receipts: true, jobs_default: true, changed_at: "2026-10-01T15:00:00Z", changed_by: null },
+    };
+    state.tables.integration_secrets = [{ company_id: ROOFER, provider: "stripe", ciphertext: await encryptJson(env, { api_key: "rk_test_radford", extra: { account_id: "acct_radford", webhook_secret: "whsec_radford", webhook_id: "we_radford" } }) }];
+    state.tables.integrations = [{ company_id: ROOFER, provider: "stripe", external_account_id: "acct_radford", settings: { autopay: true, refunds: true, events_version: 2, checked_at: new Date().toISOString() } }];
+    state.tables.client_payment_methods = [{ ...visa }];
+    state.tables.autopay_authorizations = [{ ...agreed }];
+  }
+
+  it("says the client is on autopay, and off once they turned it off with the card still saved", async () => {
+    mowed();
+    await takesAutopay(false);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const on = (await (await hub({ t: "client", id: CLIENT })).json()).autopay;
+    expect(on).toMatchObject({ status: "active", method: { id: CARD, label: "Visa ending 4242", exp: "08/28" }, since: "2026-10-01T15:05:00Z", terms_version: "2026-10-01T15:00:00" });
+
+    Object.assign(state.tables.autopay_authorizations![0]!, { revoked_at: "2026-10-20T15:00:00Z", revoked_via: "client" });
+    const off = (await (await hub({ t: "client", id: CLIENT })).json()).autopay;
+    expect(off).toMatchObject({ status: "off", since: null });
+    expect(stripeCalls(fetchSpy)).toEqual([]);
+  });
+
+  it("never offers the office's copy of the link a card it can't say yes to", async () => {
+    mowed();
+    await takesAutopay(false);
+    // A card brought in from Stripe, and no agreement yet.
+    state.tables.autopay_authorizations = [];
+    state.tables.client_payment_methods = [{ ...visa, source: "stripe_import", saved_via: "client" }];
+    expect((await (await hub({ t: "client", id: CLIENT })).json()).autopay).toMatchObject({ status: "agree", imported: true, method: { id: CARD } });
+    expect((await (await hub({ t: "client", id: CLIENT, via: "office" })).json()).autopay).toMatchObject({ status: "off", method: null, imported: false });
+    // Nor on a link minted before the client's own were marked (one from the timeline, say).
+    expect((await (await hub({ t: "client", id: CLIENT, old: true })).json()).autopay).toMatchObject({ status: "off", method: null, imported: false });
+    // Saved on the client's own link: still not on the office's copy.
+    state.tables.client_payment_methods = [{ ...visa, saved_via: "client" }];
+    expect((await (await hub({ t: "client", id: CLIENT, via: "office" })).json()).autopay).toMatchObject({ status: "off", method: null });
+    // Saved through an office copy: that one waits for the tick there.
+    state.tables.client_payment_methods = [{ ...visa, saved_via: "office" }];
+    expect((await (await hub({ t: "client", id: CLIENT, via: "office" })).json()).autopay).toMatchObject({ status: "agree", method: { id: CARD } });
+  });
+
+  it("never offers a tip after an automatic charge to the card while tips are off", async () => {
+    paidMow(false);
+    await takesAutopay(false);
+    state.tables.autopay_charges = [{
+      id: "ch-2", company_id: ROOFER, client_id: CLIENT, job_id: null, bill: "visits", invoice_id: MOW, payment_method_id: CARD, status: "paid", attempts: 1, failures: 0,
+      charged_amount: 45, charged_at: CHARGED_AT, due_at: "2026-10-27T05:00:00Z", created_at: "2026-10-26T20:00:00Z",
+      method: { type: "card", brand: "visa", last4: "4242", bank_name: null, wallet: null },
+    }];
+    state.tables.stripe_invoices = [{ company_id: ROOFER, invoice_id: MOW, origin: "crewtavo", purpose: "invoice", collection: "charge_automatically", status: "paid", livemode: false, detached_at: null, tip_amount: 0 }];
+    const off = await invoicePage();
+    expect(off).toMatchObject({ tips: false, tip_after: false, tip_method: null, autopay: { status: "paid" } });
+    // The same invoice with tips on offers one, to the card that paid.
+    state.tables.companies![0]!.settings = { ...(state.tables.companies![0]!.settings as Row), hub_tips: true };
+    expect(await invoicePage()).toMatchObject({ tips: true, tip_after: true, tip_method: "Visa ending 4242" });
   });
 });
