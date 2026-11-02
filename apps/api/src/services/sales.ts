@@ -5,6 +5,7 @@
  * both use these, with the person's own client. Also how a quote that offers options is priced before
  * the client chooses, and the most its deposit can be.
  */
+import { localDate } from "@crewtavo/core";
 import { hidesExactPrice, inRangeMode, optionsIntroText, rangeIntroText } from "@crewtavo/core/estimates";
 import { optionBaseTotal, toCents, type Amount, type OptionLine, type TotalsPromo } from "@crewtavo/core/money";
 import { z } from "zod";
@@ -354,7 +355,8 @@ export async function invoiceJobs(s: SalesScope, jobIds: readonly string[], send
  * while autopay is charging it or will try the card again (its own notice already went).
  */
 export async function remindInvoices(s: SalesScope, invoiceIds: readonly string[]) {
-  const company = must(await s.db.from("companies").select("name, currency").eq("id", s.companyId).maybeSingle());
+  const company = must(await s.db.from("companies").select("name, currency, timezone").eq("id", s.companyId).maybeSingle());
+  const today = localDate(new Date(), company.timezone || "UTC");
   const invoices = must(
     await s.db
       .from("invoices")
@@ -386,12 +388,15 @@ export async function remindInvoices(s: SalesScope, invoiceIds: readonly string[
       continue;
     }
     const amount = new Intl.NumberFormat("en-US", { style: "currency", currency: company.currency || "USD" }).format(Number(invoice.balance_due));
-    const due = invoice.due_on ? new Date(`${invoice.due_on}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" }) : null;
+    // An early reminder says when it's due; once that day has passed, when it was.
+    const due = invoice.due_on
+      ? `${invoice.due_on < today ? "was" : "is"} due ${new Date(`${invoice.due_on}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" })}`
+      : null;
     try {
       const result = await deliver(s, "invoice", invoice, {
         channel: "email",
         subject: `Reminder: invoice #${invoice.number} from ${company.name}`,
-        message: `A friendly reminder that ${amount} is still owed on invoice #${invoice.number}${due ? `, which was due ${due}` : ""}. You can view and pay it online:`,
+        message: `A friendly reminder that ${amount} is still owed on invoice #${invoice.number}${due ? `, which ${due}` : ""}. You can view and pay it online:`,
       });
       if (result.sent) sent++;
       else skipped.push({ number: invoice.number, reason: result.reason ?? "Not sent" });

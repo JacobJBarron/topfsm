@@ -269,9 +269,11 @@ check(Boolean(visit.id), "the foreman schedules a visit for his crew");
   check(allVisits.every((v) => mineIds.has(v.id)), "the employee sees only their own visits on the schedule", { visible: allVisits.length, assigned: mineIds.size });
   const fVisits = must(await foreman.db.from("visits").select("id").eq("company_id", companyId), "foreman visits");
   check(fVisits.length > allVisits.length, "the foreman sees the whole team's schedule");
-  const move = await api(employee, "PATCH", `/visits/${visit.id}`, { scheduled_on: new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10) });
+  // Two days after the visit, so it's always a real change (the guard lets an unchanged date through).
+  const later = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+  const move = await api(employee, "PATCH", `/visits/${visit.id}`, { scheduled_on: later });
   check(move.status === 403, "the employee can't reschedule it", move.body);
-  const direct = await employee.db.from("visits").update({ scheduled_on: day.replace(/\d\d$/, "01") }).eq("id", visit.id).select("id");
+  const direct = await employee.db.from("visits").update({ scheduled_on: later }).eq("id", visit.id).select("id");
   check(Boolean(direct.error) || direct.data?.length === 0, "and can't get around that through the database", direct.error?.message);
   const ownJob = must(await employee.db.from("jobs").select("id").eq("id", jobId), "employee job");
   check(ownJob.length === 1, "the employee can open the job they're assigned to");
