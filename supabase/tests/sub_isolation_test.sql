@@ -297,7 +297,7 @@ insert into public.drive_folders (company_id, name) values (:'co', 'Company file
 insert into public.trashed_files (company_id, path, source, label) values (:'co', :'co' || '/receipts/d1070000-0000-0000-0000-0000000000d8.jpg', 'receipt', 'Receipt');
 insert into public.storage_allowances (company_id, role_key, limit_bytes) values (:'co', 'field_crew', 1000000000);
 -- Ann's card on file, her agreement to autopay and a charge on the roof invoice that was declined
--- (20261031000100_autopay.sql): the office's, never a sub's.
+-- (20261101000100_autopay.sql): the office's, never a sub's.
 insert into public.client_payment_methods (company_id, client_id, stripe_payment_method_id, stripe_customer_id, livemode, type, brand, last4, exp_month, exp_year, is_default)
   values (:'co', :'c1', 'pm_t1070', 'cus_t1070', false, 'card', 'visa', '4242', 8, 2030, true) returning id as ann_card \gset
 insert into public.autopay_authorizations (company_id, client_id, payment_method_id, terms, terms_version, source)
@@ -553,7 +553,7 @@ select t1070.check(not exists (select 1 from unnest(array['public.record_referra
     'public.begin_referral_ask(uuid, uuid, boolean, integer, uuid)']) as f
   where has_function_privilege('authenticated', f, 'execute') or has_function_privilege('anon', f, 'execute')),
   'recording a referral and a referral ask are the server''s alone');
--- So are autopay's task, the Hub's card and agreement writes, and card alerts (20261031000100_autopay.sql).
+-- So are autopay's task, the Hub's card and agreement writes, and card alerts (20261101000100_autopay.sql).
 select t1070.check(not exists (select 1 from unnest(array['public.claim_autopay_charges(integer, uuid)', 'public.autopay_bill(uuid, uuid)',
     'public.autopay_mark_sent(uuid, uuid, integer)', 'public.finish_autopay_charge(uuid, text, uuid, text, text, numeric, uuid)',
     'public.release_autopay_charges(uuid, uuid[])', 'public.autopay_save_payment_method(uuid, uuid, jsonb)',

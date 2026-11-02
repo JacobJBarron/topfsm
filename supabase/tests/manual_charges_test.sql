@@ -1,4 +1,4 @@
--- Database tests for Charge card (20261101000200_manual_charges.sql): who may charge saved cards
+-- Database tests for Charge card (20261101000300_manual_charges.sql): who may charge saved cards
 -- (the office with the invoices area, never crews, estimators or subs); what request_manual_charges
 -- says for each invoice (queued, not found, not owed, no card, already under way, autopay off, the
 -- amount changed from what the office saw), one at a time, at most 50, with an activity row for

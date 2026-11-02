@@ -2,7 +2,7 @@
  * Autopay (docs/autopay-plan.md): a client saves a card or bank account once, agrees to be charged,
  * and each finished visit (or a one-off job's finished work) is billed and charged to it on the
  * server, after the company's wait. The rules live in Postgres
- * (supabase/migrations/20261031000100_autopay.sql); these are their words and their defaults, so
+ * (supabase/migrations/20261101000100_autopay.sql); these are their words and their defaults, so
  * the screens, the emails and the database say the same thing: the company's settings with the
  * starter terms filled in, a saved card's name ("Visa ending 4242"), when a charge goes, and the
  * one rule for tips.

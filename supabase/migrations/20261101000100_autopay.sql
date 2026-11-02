@@ -994,14 +994,15 @@ end $$;
 create trigger autopay_guard before insert on public.payments
   for each row execute function private.autopay_payment_guard();
 
--- Activity (20261020000200_invoice_write_off.sql), plus: whether autopay is charging the invoice,
--- for automations that treat those differently.
+-- Activity (20261031000510_credit_covered_invoices.sql), plus: whether autopay is charging the
+-- invoice, for automations that treat those differently.
 create or replace function private.activity_invoices() returns trigger
 language plpgsql security definer set search_path = '' as $$
 declare
   v_client text := private.client_name(new.client_id);
   v_data jsonb := jsonb_build_object('number', new.number, 'total', new.total, 'balance_due', new.balance_due,
     'autopay', exists (select 1 from public.autopay_charges a where a.invoice_id = new.id and a.status <> 'called_off'));
+  v_credit boolean := coalesce(new.amount_paid, 0) = 0 and coalesce(new.credit_amount, 0) > 0;
 begin
   if (tg_op = 'INSERT' and new.status <> 'draft') or (tg_op = 'UPDATE' and new.status is distinct from old.status) then
     case new.status
@@ -1010,7 +1011,12 @@ begin
           perform private.emit(new.company_id, 'invoice.sent', 'invoice', new.id, format('Invoice #%s sent to %s (%s)', new.number, v_client, private.money(new.total)), v_data);
         end if;
       when 'paid' then
-        perform private.emit(new.company_id, 'invoice.paid', 'invoice', new.id, format('Invoice #%s paid by %s (%s)', new.number, v_client, private.money(new.total)), v_data);
+        perform private.emit(new.company_id, 'invoice.paid', 'invoice', new.id,
+          case
+            when v_credit then format('Invoice #%s for %s covered by a referral credit', new.number, v_client)
+            when coalesce(new.amount_paid, 0) = 0 then format('Invoice #%s for %s had nothing to pay', new.number, v_client)
+            else format('Invoice #%s paid by %s (%s)', new.number, v_client, private.money(new.total)) end,
+          v_data || jsonb_build_object('amount_paid', coalesce(new.amount_paid, 0), 'covered_by_credit', v_credit));
       when 'overdue' then
         if tg_op = 'INSERT' or old.status <> 'written_off' then
           perform private.emit(new.company_id, 'invoice.overdue', 'invoice', new.id, format('Invoice #%s for %s is past due (%s owing)', new.number, v_client, private.money(new.balance_due)), v_data);

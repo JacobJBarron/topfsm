@@ -70,7 +70,7 @@ export const DEFAULT_TERMS =
  * The starter terms printed above the signatures, by trade. DEFAULT_TERMS is paving's and roofing's
  * (unchanged). A lawn company bills after each visit, often to the card on file, and has no
  * deposits or materials warranty to speak of. The migration that brought these in
- * (20261031000100_autopay.sql) moved lawn templates still on the old starter to the lawn one.
+ * (20261101000100_autopay.sql) moved lawn templates still on the old starter to the lawn one.
  */
 export const TRADE_TERMS: Record<string, string> = {
   lawn_exterior:

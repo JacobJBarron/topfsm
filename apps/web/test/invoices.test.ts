@@ -300,7 +300,7 @@ describe("an invoice whose autopay bank payment is on its way", () => {
     expect(control(html, "Void invoice")).not.toBeNull();
     expect(html).toContain("was still clearing in the Stripe account Crewtavo used before, so it won&#x27;t show up here on its own. Check it in that Stripe account, and record it here once it clears.");
     expect(html).not.toContain("Record any other payment once it clears or bounces.");
-    const migration = readFileSync(fileURLToPath(new URL("../../../supabase/migrations/20261031000100_autopay.sql", import.meta.url)), "utf8");
+    const migration = readFileSync(fileURLToPath(new URL("../../../supabase/migrations/20261101000100_autopay.sql", import.meta.url)), "utf8");
     expect(migration).toMatch(/s\.status = 'processing' and s\.detached_at is not null/);
   });
 
@@ -357,7 +357,7 @@ describe("a charge waiting for the office's OK", () => {
   });
 
   it("reads the reasons the database gives", () => {
-    const migration = readFileSync(fileURLToPath(new URL("../../../supabase/migrations/20261031000100_autopay.sql", import.meta.url)), "utf8");
+    const migration = readFileSync(fileURLToPath(new URL("../../../supabase/migrations/20261101000100_autopay.sql", import.meta.url)), "utf8");
     expect(migration).toContain("then 'Includes visits from before autopay started'");
     expect(migration).toContain("then 'Includes visits autopay didn''t queue (finished while it was off, or from a voided invoice)'");
   });

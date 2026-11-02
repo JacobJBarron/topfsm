@@ -51,7 +51,7 @@ language sql stable security definer set search_path = '' as $$
   )
 $$;
 
--- As in 20261031000100_autopay.sql, but each charge is paid only by its own Stripe invoice
+-- As in 20261101000100_autopay.sql, but each charge is paid only by its own Stripe invoice
 -- (autopay_paid_by_charge since it was made); otherwise it was paid another way.
 create or replace function private.autopay_invoice_changed() returns trigger
 language plpgsql security definer set search_path = '' as $$
@@ -85,7 +85,7 @@ end $$;
 -- The terms clients agree to
 -- ---------------------------------------------------------------------------------------------
 
--- As in 20261031000100_autopay.sql, plus: the card is charged for other invoices we send too (core
+-- As in 20261101000100_autopay.sql, plus: the card is charged for other invoices we send too (core
 -- starterAutopayTerms has the same words).
 create or replace function private.autopay_starter_terms(p_trade text) returns text
 language sql immutable security definer set search_path = '' as $$
@@ -291,7 +291,7 @@ end $$;
 -- ---------------------------------------------------------------------------------------------
 
 /**
- * As in 20261031000100_autopay.sql, plus manual charges. One is billed already (its invoice), and
+ * As in 20261101000100_autopay.sql, plus manual charges. One is billed already (its invoice), and
  * the office pressed it: no job, visits, dates or cap to check. It still needs autopay on, the
  * client's agreement in force (autopay_ready), and the invoice owed, for the client it was pressed
  * for and for no more than the office saw then (approved_amount).
@@ -458,7 +458,7 @@ begin
 end $$;
 
 /**
- * As in 20261031000100_autopay.sql, plus: a manual charge declined isn't tried again by itself. It
+ * As in 20261101000100_autopay.sql, plus: a manual charge declined isn't tried again by itself. It
  * needs the client at once (the notice with the Pay link, and the office told), with the decline
  * counted but the card left as it is: one decline the office asked for doesn't pause autopay. A
  * decline without Stripe's code is kept as 'card_declined', so it never reads as the bank asking
@@ -573,7 +573,7 @@ end $$;
 -- Who's told what
 -- ---------------------------------------------------------------------------------------------
 
--- As in 20261031000100_autopay.sql, plus: a manual charge's card declined tells the office it was
+-- As in 20261101000100_autopay.sql, plus: a manual charge's card declined tells the office it was
 -- declined once, and that the client was sent the Pay link (autopay isn't paused for it).
 --
 -- paid (from charging or processing): the receipt, but not between tries after a busy Stripe

@@ -45,7 +45,7 @@ const SUB_VARIABLES = [
 ];
 
 /**
- * Autopay (supabase/migrations/20261031000100_autopay.sql): a client set it up, a charge failed, or
+ * Autopay (supabase/migrations/20261101000100_autopay.sql): a client set it up, a charge failed, or
  * a saved card runs out next month. Only someone with the invoices area builds these rules or sees
  * them, and only the office with that area is told. No client note: crews who see the client read
  * the notes. The card, the reason a charge failed and the client's own link go in the office's

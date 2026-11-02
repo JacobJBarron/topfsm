@@ -1,6 +1,6 @@
 /**
  * Autopay (docs/autopay-plan.md): a client's saved card or bank account, charged on the server once
- * the work is done. The rules live in Postgres (supabase/migrations/20261031000100_autopay.sql: what
+ * the work is done. The rules live in Postgres (supabase/migrations/20261101000100_autopay.sql: what
  * is queued, when it falls due, what may be charged without asking) and Stripe is spoken to in
  * integrations/stripe.ts. Here:
  *   - the 5-minute task that charges what's due (chargeDueAutopay), holding each row with a claim

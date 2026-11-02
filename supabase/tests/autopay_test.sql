@@ -1,4 +1,4 @@
--- Database tests for autopay (20261031000100_autopay.sql): who reads the saved cards, agreements
+-- Database tests for autopay (20261101000100_autopay.sql): who reads the saved cards, agreements
 -- and charges (the office with the invoices area, never crews or subs); the company's settings and
 -- their guard, and tips turned off reaching Stripe invoices already made with one; a finished visit
 -- or a one-off job's finished work queueing one charge, due when the company says, only for a

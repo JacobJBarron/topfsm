@@ -1,4 +1,4 @@
--- Database tests for giving admin access (20261101000100_admin_grants.sql): the browser can't give
+-- Database tests for giving admin access (20261101000200_admin_grants.sql): the browser can't give
 -- it straight to the database, the server can once the giver's password checks out, and everything
 -- else people do with the team still works as before.
 -- Run with scripts/test-db.sh (plain Postgres + prelude.sql). Any failed check stops with an error.
