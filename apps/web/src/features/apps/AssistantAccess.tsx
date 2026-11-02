@@ -159,19 +159,19 @@ const LEVELS: Array<{ level: Access["level"]; label: string; hint: string }> = [
   { level: "read", label: "Read only", hint: "Looks things up. Can't add or change anything." },
   { level: "areas", label: "Choose what it can change", hint: "Adds and changes things in the areas you tick, but doesn't delete." },
   { level: "full", label: "Full access", hint: "Everything you can change, including deleting, people and money." },
-  { level: "full_no_money", label: "Full access, no money", hint: "Everything you can change, including deleting, except quotes, invoices, payments and pay." },
+  { level: "full_no_money", label: "Full access, no money", hint: "Everything you can change, including deleting, except quotes, invoices, payments, pay and promo codes." },
 ];
 
 /** What each full level lets it do, for the warning before giving it. */
 const FULL_WARNING: Record<"full" | "full_no_money", (name: string) => { title: string; body: string; confirmLabel: string }> = {
   full: (name) => ({
     title: `Give ${name} full access?`,
-    body: `${name} will be able to add, change and delete anything you can in Crewtavo: clients, jobs and the schedule, quotes, invoices and payments, people and roles, time and pay, and the business's setup. It still can't change anyone's sign-in or password, connected apps and keys, or its own access, and it can't refund or delete payments. Everything it does shows in Recent assistant activity, and you can switch it back to Read only any time.`,
+    body: `${name} will be able to add, change and delete anything you can in Crewtavo: clients, jobs and the schedule, quotes, invoices and payments, people and roles, time and pay, marketing and promo codes, and the business's setup. It still can't change anyone's sign-in or password, connected apps and keys, or its own access, and it can't refund or delete payments. Everything it does shows in Recent assistant activity, and you can switch it back to Read only any time.`,
     confirmLabel: "Give full access",
   }),
   full_no_money: (name) => ({
     title: `Give ${name} full access, without money?`,
-    body: `${name} will be able to add, change and delete anything you can in Crewtavo except money: clients, jobs and the schedule, people and roles, time, and the business's setup. It can't change quotes, invoices, payments or pay, anyone's sign-in or password, connected apps and keys, or its own access. Everything it does shows in Recent assistant activity, and you can switch it back to Read only any time.`,
+    body: `${name} will be able to add, change and delete anything you can in Crewtavo except money: clients, jobs and the schedule, people and roles, time, marketing, and the business's setup. It can't change quotes, invoices, payments, pay or promo codes, anyone's sign-in or password, connected apps and keys, or its own access. Everything it does shows in Recent assistant activity, and you can switch it back to Read only any time.`,
     confirmLabel: "Give full access",
   }),
 };

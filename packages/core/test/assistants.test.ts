@@ -51,14 +51,16 @@ describe("assistant access", () => {
   });
 
   it("offers only what the person's role can change", () => {
-    expect(areasForRole("owner", memberPermissions("owner"))).toHaveLength(16);
+    expect(areasForRole("owner", memberPermissions("owner"))).toHaveLength(19);
     expect(areasForRole("office", memberPermissions("office"))).not.toContain("company");
     expect(areasForRole("office", memberPermissions("office"))).not.toContain("team");
     expect(areasForRole("estimator", memberPermissions("estimator"))).toEqual(["clients", "records", "jobs", "schedule", "time", "quotes"]);
     expect(areasForRole("crew_lead", memberPermissions("crew_lead"))).toEqual(["schedule", "time"]);
     expect(areasForRole("field_crew", memberPermissions("field_crew"))).toEqual(["time"]);
     // A custom office role without guides or money.
-    expect(areasForRole("office", memberPermissions("office", ["settings", "automations"]))).toEqual(["clients", "records", "jobs", "schedule", "time", "prices", "crews", "checklists", "booking", "automations"]);
+    expect(areasForRole("office", memberPermissions("office", ["settings", "automations"]))).toEqual(["clients", "records", "jobs", "schedule", "time", "prices", "templates", "crews", "checklists", "booking", "automations"]);
+    // Marketing and promo codes go with the Marketing area of a role.
+    expect(areasForRole("office", memberPermissions("office", ["marketing"]))).toEqual(["clients", "records", "jobs", "schedule", "time", "marketing", "promos"]);
   });
 
   it("full access without money changes and deletes everything else", () => {
@@ -68,7 +70,7 @@ describe("assistant access", () => {
     expect(mayChange(access, "team")).toBe(true);
     for (const money of ["quotes", "invoices", "pay"] as const) expect(mayChange(access, money)).toBe(false);
     expect(describeAssistantAccess(access)).toBe("Full access, no money");
-    expect(assistantRefusal("invoices", false, access)).toBe("This assistant can't change money: quotes, invoices, payments or pay. To let it, give it Full access in Crewtavo, under Settings → AI assistants.");
+    expect(assistantRefusal("invoices", false, access)).toBe("This assistant can't change money: quotes, invoices, payments, pay or promo codes. To let it, give it Full access in Crewtavo, under Settings → AI assistants.");
     expect(assistantRefusal("prices", true, { level: "read", areas: [] })).toMatch(/^This assistant can't change the price list\./);
   });
 });
