@@ -192,9 +192,10 @@ function layoutOf(vars: Record<string, string>): Layout {
   };
 }
 
-/** Railway's bucket regions, by where the storage service runs (us-west2, us-east4-eqdc4a, europe-west4-drams3a, asia-southeast1-eqsg3a). */
+/** Railway's bucket regions, by where the storage service runs (iad, or us-west2, us-east4-eqdc4a, europe-west4-drams3a, asia-southeast1-eqsg3a). */
 function bucketRegion(region: string | null): string | null {
   if (!region) return null;
+  if (region in REGION_NAMES) return region;
   if (region.startsWith("us-west")) return "sjc";
   if (region.startsWith("us-east")) return "iad";
   if (region.startsWith("europe")) return "ams";
@@ -1507,28 +1508,32 @@ type RailwayCall = <T>(call: (access: RailwayAccess) => Promise<T>) => Promise<T
 async function findOrMakeBucket(env: Env, railway: RailwayCall, storageId: string, known: RailwayBucket | null, then: string): Promise<RailwayBucket | StorageByHand> {
   const buckets = await railway((access) => projectBuckets(env, access)).catch((error) => (refused(error) ? null : Promise.reject(error)));
   const found = (known && (buckets ? buckets.find((b) => b.id === known.id) : known)) || buckets?.find((b) => b.name === FILES_BUCKET);
-  if (found) return found;
+  // One made before but never put in this environment (Railway turned its deploy down) is deployed again below.
+  if (found && (await railway((access) => bucketUsage(env, access, found.id)).then((usage) => usage !== null, (error) => (refused(error) ? true : Promise.reject(error))))) return found;
   const region = bucketRegion(await railway((access) => serviceRegion(env, access, storageId)).catch((error) => (error instanceof NoAccess ? Promise.reject(error) : null)));
-  let bucket: RailwayBucket;
-  try {
-    bucket = await railway((access) => createBucket(env, access, FILES_BUCKET));
-  } catch (error) {
-    if (!refused(error)) throw error;
-    return {
-      title: "Add a bucket in Railway",
-      steps: [
-        "Open your project in Railway.",
-        `Press Create, choose Bucket, and name it ${FILES_BUCKET}${region ? ` (pick the ${REGION_NAMES[region]} region, where your services run)` : ""}.`,
-        "Press Deploy to add it.",
-        then,
-      ],
-      link: railwayPage(env),
-      watching: false,
-    };
+  let bucket = found;
+  if (!bucket) {
+    try {
+      bucket = await railway((access) => createBucket(env, access, FILES_BUCKET));
+    } catch (error) {
+      if (!refused(error)) throw error;
+      return {
+        title: "Add a bucket in Railway",
+        steps: [
+          "Open your project in Railway.",
+          `Press Create, choose Bucket, and name it ${FILES_BUCKET}${region ? ` (pick the ${REGION_NAMES[region]} region, where your services run)` : ""}.`,
+          "Press Deploy to add it.",
+          then,
+        ],
+        link: railwayPage(env),
+        watching: false,
+      };
+    }
   }
+  const { id } = bucket;
   let deployed: "deployed" | "staged";
   try {
-    deployed = await railway((access) => deployBucket(env, access, bucket.id, region));
+    deployed = await railway((access) => deployBucket(env, access, id, region));
   } catch (error) {
     if (!refused(error)) throw error;
     deployed = "staged";

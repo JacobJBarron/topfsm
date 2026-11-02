@@ -285,7 +285,8 @@ async function railway(body: { query: string; variables: Record<string, any> }, 
     if (!options.stuck) state.deployed = resolve(state.vars, options.emptyReferences);
     return data({ serviceInstanceRedeploy: true });
   }
-  if (field === "serviceInstance") return data({ serviceInstance: { region: "us-east4-eqdc4a" } });
+  // Railway leaves `region` empty now, and keeps it in the deployment's multiRegionConfig.
+  if (field === "serviceInstance") return data({ serviceInstance: { region: null, latestDeployment: { meta: { serviceManifest: { deploy: { region: null, multiRegionConfig: { iad: { numReplicas: 1 } } } } } } } });
   if (field === "bucketCreate") {
     state.buckets.push({ id: "bkt-new", name: variables.input.name, deployed: false });
     return data({ bucketCreate: { id: "bkt-new", name: variables.input.name } });
@@ -295,10 +296,13 @@ async function railway(body: { query: string; variables: Record<string, any> }, 
     return data({ environment: { unmergedChangesCount: 0, volumeInstances: { edges: volumes } } });
   }
   if (field === "environmentPatchCommit") {
-    for (const id of Object.keys(variables.patch.buckets)) state.buckets.find((b) => b.id === id)!.deployed = true;
+    // Railway takes the commit, then fails it without a region: the bucket isn't put here.
+    for (const [id, bucket] of Object.entries(variables.patch.buckets as Record<string, { region?: string }>)) if (bucket.region) state.buckets.find((b) => b.id === id)!.deployed = true;
     return data({ environmentPatchCommit: "patch-1" });
   }
-  if (field === "bucketS3Credentials") return data({ bucketS3Credentials: state.buckets.find((b) => b.id === variables.bucketId)?.deployed ? [CREDENTIALS] : [] });
+  const notHere = (field === "bucketS3Credentials" || field === "bucketInstanceDetails") && !state.buckets.find((b) => b.id === variables.bucketId)?.deployed;
+  if (notHere) return Response.json({ errors: [{ message: "BucketInstance not found" }], data: { [field]: null } });
+  if (field === "bucketS3Credentials") return data({ bucketS3Credentials: [CREDENTIALS] });
   if (field === "bucketInstanceDetails") return data({ bucketInstanceDetails: { sizeBytes: String([...world.s3.values()].reduce((n, o) => n + o.body.length, 0)), objectCount: String(world.s3.size) } });
   return Response.json({ errors: [{ message: `unexpected ${field}` }] });
 }
@@ -536,6 +540,16 @@ describe("moving files to a Railway bucket", () => {
     expect(upserts(sent).at(-1)).toEqual({ STORAGE_BACKEND: "file", STORAGE_S3_BUCKET: "crewtavo" });
     expect(sent.railway.filter((b) => b.query.includes("serviceInstanceRedeploy"))).toHaveLength(2);
     expect(storageWritesPaused()).toBe(false);
+  });
+
+  it("puts a bucket made before but never deployed here into this environment, near storage, then moves files", async () => {
+    const files = onTheVolume();
+    state.buckets.push({ id: "bkt-left", name: "files", deployed: false });
+    const sent = await moveToBucket();
+    expect(railwayFields(sent)).not.toContain("bucketCreate");
+    expect(sent.railway.find((b) => b.query.includes("environmentPatchCommit"))!.variables.patch).toEqual({ buckets: { "bkt-left": { region: "iad", isCreated: true } } });
+    expect(saved()).toMatchObject({ step: "done", bucket: { id: "bkt-left", name: "files" } });
+    for (const f of files) expect(text(storageReads(f)?.body)).toBe(text(world.s3.get(keyOf(f))!.body));
   });
 
   it("puts the bucket's own values in when Railway leaves the references empty", async () => {

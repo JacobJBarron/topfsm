@@ -434,15 +434,22 @@ export async function projectBuckets(env: Env, access: RailwayAccess): Promise<R
   return project.buckets?.edges.map((e) => e.node) ?? [];
 }
 
+/** Railway's answer for a bucket that isn't in this environment (never deployed here, or not yet). */
+const notHere = <T>(error: unknown): T | null => {
+  if (error instanceof RailwayError && /BucketInstance not found/i.test(error.message)) return null;
+  throw error;
+};
+
 /** What a bucket holds in this environment; null when it isn't in this environment. */
 export async function bucketUsage(env: Env, access: RailwayAccess, bucketId: string): Promise<{ sizeBytes: number; objects: number } | null> {
   // Both are BigInts, which come as strings once they're large.
-  const { bucketInstanceDetails: details } = await gql<{ bucketInstanceDetails: { sizeBytes: number | string; objectCount: number | string } | null }>(
+  const data = await gql<{ bucketInstanceDetails: { sizeBytes: number | string; objectCount: number | string } | null }>(
     access,
     "query ($bucketId: String!, $environmentId: String!) { bucketInstanceDetails(bucketId: $bucketId, environmentId: $environmentId) { sizeBytes objectCount } }",
     { bucketId, environmentId: ids(env).environmentId },
-  );
-  return details ? { sizeBytes: Number(details.sizeBytes) || 0, objects: Number(details.objectCount) || 0 } : null;
+  ).catch(notHere<{ bucketInstanceDetails: null }>);
+  const details = data?.bucketInstanceDetails;
+  return details ?{ sizeBytes: Number(details.sizeBytes) || 0, objects: Number(details.objectCount) || 0 } : null;
 }
 
 /** Makes a bucket in the project. It isn't in any environment until deployBucket puts it in this one. */
@@ -503,22 +510,27 @@ export interface BucketCredentials {
 /** Null until the bucket is in this environment. */
 export async function bucketCredentials(env: Env, access: RailwayAccess, bucketId: string): Promise<BucketCredentials | null> {
   const { projectId, environmentId } = ids(env);
-  const { bucketS3Credentials } = await gql<{ bucketS3Credentials: BucketCredentials[] | null }>(
+  const data = await gql<{ bucketS3Credentials: BucketCredentials[] | null }>(
     access,
     "query ($projectId: String!, $environmentId: String!, $bucketId: String!) { bucketS3Credentials(projectId: $projectId, environmentId: $environmentId, bucketId: $bucketId) { accessKeyId secretAccessKey endpoint bucketName region urlStyle } }",
     { projectId, environmentId, bucketId },
-  );
-  return bucketS3Credentials?.[0] ?? null;
+  ).catch(notHere<{ bucketS3Credentials: null }>);
+  return data?.bucketS3Credentials?.[0] ?? null;
 }
 
-/** Where a service runs in this environment, like "us-east4-eqdc4a"; null when Railway doesn't say. */
+/**
+ * Where a service runs in this environment, like "iad" or "us-east4-eqdc4a"; null when Railway
+ * doesn't say. Railway now leaves `region` empty and keeps it in the deployment's multiRegionConfig.
+ */
 export async function serviceRegion(env: Env, access: RailwayAccess, serviceId: string): Promise<string | null> {
-  const { serviceInstance } = await gql<{ serviceInstance: { region: string | null } | null }>(
+  type Deploy = { region?: string | null; multiRegionConfig?: Record<string, unknown> | null };
+  const { serviceInstance } = await gql<{ serviceInstance: { region: string | null; latestDeployment: { meta: { serviceManifest?: { deploy?: Deploy } } | null } | null } | null }>(
     access,
-    "query ($environmentId: String!, $serviceId: String!) { serviceInstance(environmentId: $environmentId, serviceId: $serviceId) { region } }",
+    "query ($environmentId: String!, $serviceId: String!) { serviceInstance(environmentId: $environmentId, serviceId: $serviceId) { region latestDeployment { meta } } }",
     { environmentId: ids(env).environmentId, serviceId },
   );
-  return serviceInstance?.region ?? null;
+  const deploy = serviceInstance?.latestDeployment?.meta?.serviceManifest?.deploy;
+  return serviceInstance?.region || deploy?.region || Object.keys(deploy?.multiRegionConfig ?? {})[0] || null;
 }
 
 /** This project's page on Railway, in this environment, or one of a service's tabs there. */
