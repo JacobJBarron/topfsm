@@ -101,6 +101,8 @@ export interface DocumentData {
   total: number;
   /** Estimates: the deposit to get on the schedule. */
   deposit?: number | null;
+  /** Estimates for recurring work: how often ("Every 2 weeks, Tuesday"). Its total is then per visit. */
+  repeats?: string | null;
   /**
    * Invoices: payments and refunds so far, and what's left. A payment's amount is what was paid
    * (printed as "−$500.00"); a refund's is negative (printed as "+$50.00").

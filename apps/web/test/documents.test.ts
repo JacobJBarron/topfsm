@@ -270,6 +270,20 @@ describe("a quote as a document", () => {
     expect(custom).toMatchObject({ client: { name: "Dana", lines: [] }, date: "2026-10-24", discountLabel: undefined });
   });
 
+  it("says how often recurring work is done, and that its total is per visit", () => {
+    const quote = { number: 8, subtotal: 55, discount_amount: 0, tax_amount: 0, total: 55, recurrence_rule: "FREQ=WEEKLY;INTERVAL=2;BYDAY=TU", active_months: [4, 5, 6, 7, 8, 9, 10] };
+    const doc = quoteDocument(quote, [{ name: "Mow", quantity: 1, unit: "visit", unit_price: 55, option_id: null }]);
+    expect(doc.repeats).toBe("Every 2 weeks, Tuesday, April to October");
+    const html = page({}, doc);
+    expect(html).toContain("Total per visit");
+    expect(html).toContain("How often");
+    expect(html).toContain("Every 2 weeks, Tuesday, April to October");
+    // One time: the total is the total, and nothing says how often.
+    const once = page({}, quoteDocument({ ...quote, recurrence_rule: null }, []));
+    expect(once).not.toContain("per visit");
+    expect(once).not.toContain("How often");
+  });
+
   it("has believable samples whose totals add up", () => {
     expect(SAMPLE_DOCUMENT.total).toBe(18304);
     expect(SAMPLE_DOCUMENT.subtotal).toBe(SAMPLE_DOCUMENT.lines.reduce((s, l) => s + l.total, 0));

@@ -43,6 +43,8 @@ export interface ClientView {
    */
   quotes: Array<{
     id: string; number: number; title: string; status: string; total: number | null;
+    /** Recurring work: its total is per visit. */
+    per_visit?: boolean;
     range?: { low: number; high: number; accepted_at: string | null } | null;
     options?: { count: number; from: number } | null;
     valid_until: string | null; approved_at: string | null; link: string;
@@ -211,7 +213,7 @@ function Home({ token, data, go, onMessage }: { token: string; data: ClientView;
                   <strong className="hub-title">{q.title}</strong>
                   {q.options && <span className="hub-range-line">{q.options.count} options, from {formatMoneyCents(q.options.from)}</span>}
                 </span>
-                {!q.options && q.total !== null && <strong className="hub-amount">{formatMoneyCents(q.total)}</strong>}
+                {!q.options && q.total !== null && <strong className="hub-amount">{formatMoneyCents(q.total)}{q.per_visit ? " per visit" : ""}</strong>}
               </div>
               <a className="hub-btn hub-btn-brand" href={q.link}>{q.options ? "See your options" : "Review and approve"}</a>
             </article>

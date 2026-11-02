@@ -343,12 +343,20 @@ export async function removeOption(db: Db, companyId: string, quoteId: string, o
 
 /**
  * "Copy as new draft" (POST /quotes/:id/duplicate): a new draft for the same client with the same
- * lines, its options copied with new ids and the same option shown. Returns the copy's id.
+ * lines, its options copied with new ids and the same option shown, and how often it repeats.
+ * Returns the copy's id.
  */
 export async function duplicateQuote(db: Db, companyId: string, quoteId: string): Promise<{ id: string }> {
-  must(await db.from("quotes").select("id").eq("id", quoteId).eq("company_id", companyId).maybeSingle(), QUOTE_NOT_FOUND);
+  const { recurrence_rule, active_months, starts_on, ends_on } = must(
+    await db.from("quotes").select("id, recurrence_rule, active_months, starts_on, ends_on").eq("id", quoteId).eq("company_id", companyId).maybeSingle(),
+    QUOTE_NOT_FOUND,
+  );
   const { data, error } = await db.rpc("duplicate_quote", { p_quote: quoteId });
   if (error) throw dbError(error);
   if (!data) throw new HttpError(404, QUOTE_NOT_FOUND);
+  if (recurrence_rule) {
+    const copied = await db.from("quotes").update({ recurrence_rule, active_months, starts_on, ends_on }).eq("id", data);
+    if (copied.error) throw dbError(copied.error);
+  }
   return { id: data };
 }

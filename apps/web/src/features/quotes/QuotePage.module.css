@@ -11,6 +11,9 @@
 .validUntil :global(.btn-icon) { margin-left: -6px; }
 /* The date reads as the figures do; only its hover says it opens the picker. */
 .validUntil .validUntilDate { font-size: inherit; font-weight: 400; }
+/* "How often": "Every 2 weeks, Tuesday, April to October" wraps rather than pushing the card wider. */
+.howOften { height: auto; min-height: var(--control-sm); white-space: normal; text-align: right; }
+.howOftenRow > :first-child { white-space: nowrap; }
 
 /* Which option did they choose? */
 .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: 12px; }
