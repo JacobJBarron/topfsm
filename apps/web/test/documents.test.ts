@@ -31,7 +31,6 @@ import {
   invoiceDocument,
   licenseLine,
   liveContract,
-  logoUrl,
   longDate,
   quantityLabel,
   quoteDate,
@@ -51,6 +50,7 @@ import { invoiceFill } from "../src/features/documents/data";
 import { documentBlocks, EstimateDocument } from "../src/features/documents/EstimateDocument";
 import styles from "../src/features/documents/EstimateDocument.module.css";
 import type { DocumentCompany, DocumentData, DocumentLayout, DocumentOption, DocumentSection, PaperPart } from "../src/features/documents/types";
+import { logoUrl } from "../src/lib/files";
 import { contractBlocks, contractTable, sanitizeContractHtml, type ContractBlock } from "../src/lib/html";
 
 vi.mock("../src/lib/html", async (importOriginal) => {

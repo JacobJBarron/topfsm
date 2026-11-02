@@ -98,6 +98,13 @@ export async function logoPicture(file: File, maxWidth = 720, maxHeight = 240): 
   }
 }
 
+/** Where the business's logo loads from (the public logo route), or null when it has none. */
+export function logoUrl(settings: unknown): string | null {
+  const branding = settings && typeof settings === "object" ? (settings as { branding?: { logo?: unknown } }).branding : null;
+  const path = branding?.logo;
+  return typeof path === "string" && path.includes("/logo/") ? `/api/public/logo/${path.replace("/logo/", "/")}` : null;
+}
+
 /** The server takes a package picture up to 1.4 MB (apps/api/src/services/packagePictures.ts); a little under it. */
 const PACKAGE_PICTURE_BYTES = 1_300_000;
 

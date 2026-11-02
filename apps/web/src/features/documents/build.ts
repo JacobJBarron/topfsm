@@ -16,6 +16,7 @@ import { countsOn, lineTotal, optionBaseTotal, optionTierLabels, optionTotals, q
 import { SITE_ADJUSTMENT_NAME } from "@crewtavo/core/estimates";
 import { isPackagePicturePath, packagePictureSrc } from "@crewtavo/core/presets";
 import { isIsoDate } from "@crewtavo/core/time";
+import { logoUrl } from "@/lib/files";
 import { dateIn, formatDate, todayIn } from "@/lib/format";
 import { scheduleText } from "../jobs/repeatText";
 import type { DocumentCompany, DocumentContract, DocumentData, DocumentLine, DocumentOption, DocumentSection, DocumentSignature } from "./types";
@@ -31,13 +32,6 @@ type Address = { line1?: string | null; line2?: string | null; city?: string | n
  * lines a contract's {Customer address} and {Job address} fill in with (core contracts.ts).
  */
 export { addressLines };
-
-/** Where the business's logo loads from (the public logo route), or null when it has none. */
-export function logoUrl(settings: unknown): string | null {
-  const branding = settings && typeof settings === "object" ? (settings as { branding?: { logo?: unknown } }).branding : null;
-  const path = branding?.logo;
-  return typeof path === "string" && path.includes("/logo/") ? `/api/public/logo/${path.replace("/logo/", "/")}` : null;
-}
 
 /** "Ridgeline Roofing Co." -> "RR", for a business with no logo. */
 export function initials(name: string): string {

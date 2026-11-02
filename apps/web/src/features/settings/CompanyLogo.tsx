@@ -12,11 +12,16 @@ import { base64Of, logoPicture } from "@/lib/files";
 import { useSession } from "@/lib/session";
 
 export function CompanyLogo({ path }: { path: string | null }) {
-  const { company } = useSession();
+  const session = useSession();
+  const { company } = session;
   const queryClient = useQueryClient();
   const input = useRef<HTMLInputElement>(null);
-  // Settings → Company saves the settings it loaded, so it reloads them with the new logo.
-  const changed = () => queryClient.invalidateQueries({ queryKey: ["company", company.id] });
+  // Settings → Company saves the settings it loaded, so it reloads them with the new logo, and the
+  // session's copy has it too, for the top bar.
+  const changed = () => {
+    queryClient.invalidateQueries({ queryKey: ["company", company.id] });
+    session.refresh();
+  };
   // The logo changing in place says it worked.
   const set = useMutation({
     mutationFn: async (file: File) => {

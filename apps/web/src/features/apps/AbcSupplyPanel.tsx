@@ -18,7 +18,7 @@ import type { AppRow, SupplierSettings } from "./catalog";
 
 const ABC_PORTAL = "https://partners-developer.abcsupply.com/";
 const MY_ABC = "https://www.myabcsupply.com/";
-/** ABC's form wants a redirect address even for apps that never sign anyone in; this is the one its guide suggests. */
+/** ABC's form wants a redirect address even for apps that never sign anyone in; it fills in this one, which its guide suggests. */
 const PLACEHOLDER_REDIRECT = "https://localhost:4000";
 
 export function AbcSupplyPanel({ app, onChanged }: { app: AppRow; onChanged: () => void }) {
@@ -59,22 +59,24 @@ export function AbcSupplyPanel({ app, onChanged }: { app: AppRow; onChanged: () 
       </div>
       <ol className="app-steps" style={{ gap: 14 }}>
         <li><div className="stack-sm" style={{ gap: 8 }}>
-          <span>Open ABC's developer portal and sign up with a work email you'll keep (ABC writes to it about your app). Confirm the email and set a password.</span>
+          <span>
+            Open ABC's developer portal and sign up with a work email you'll keep (ABC writes to it about your app). Confirm the email and set a password. When ABC asks for a <strong>Developer Organization</strong>, give it your company's name and click <strong>Complete ABC API Developer Account</strong>.
+          </span>
           <a className="btn btn-sm" style={{ justifySelf: "start" }} href={ABC_PORTAL} target="_blank" rel="noreferrer">Open ABC's developer portal <Icon name="external" size={12} /></a>
         </div></li>
-        <li>Make a <strong>Developer Organization</strong> with your company's name.</li>
         <li><div className="stack-sm" style={{ gap: 8 }}>
           <span>Click <strong>Create New App</strong> and fill it in with these:</span>
           <CopyRow label="Application Name" value="Crewtavo" />
-          <div className="app-copy"><span>Integration usage intent</span><strong>Individual Business</strong><span /></div>
-          <CopyRow label="OAuth 2.0 Redirect URI" value={PLACEHOLDER_REDIRECT} />
-          <span className="small muted">Crewtavo doesn't use the redirect address, but ABC's form needs one.</span>
+          <div className="app-copy"><span>Used by multiple ABC customers?</span><strong>No</strong><span /></div>
+          <span className="small muted">That's ABC's question "Do you plan to integrate our APIs into a product or platform that will be used by multiple ABC customers?" The app is for your company only.</span>
+          <CopyRow label="OAuth 2.0 Redirect URIs" value={PLACEHOLDER_REDIRECT} />
+          <span className="small muted">ABC fills this in already: leave it as it is. Crewtavo doesn't use it, but ABC's form needs one. Description and Application URL can stay empty.</span>
           <span>Then click <strong>Create App</strong>. ABC sets it up in its sandbox, with test prices, right away.</span>
         </div></li>
-        <li>Click <strong>Manage</strong> next to the app and copy its <strong>Client ID</strong> and <strong>Client Secret</strong>. Keep them private, like a password. Paste them below with <strong>Sandbox</strong> ticked and click <strong>Connect</strong> to try it with ABC's test prices.</li>
+        <li>Under <strong>Manage Applications</strong>, click <strong>Manage</strong> next to the app and copy its <strong>Client ID</strong> and <strong>Client Secret</strong>. Keep them private, like a password. Paste them below with <strong>Sandbox</strong> ticked and click <strong>Connect</strong> to try it with ABC's test prices.</li>
         <li><div className="stack-sm" style={{ gap: 8 }}>
           <span>
-            For your real prices, click <strong>Production Request</strong> on the app in ABC's portal and give ABC your account number and your myABCSupply email. ABC usually approves it in a business day or two.
+            For your real prices, click <strong>Manage</strong> next to the app again, then <strong>Production Request</strong>. Give ABC your myABCSupply email and your account number and click <strong>Continue</strong>. ABC usually approves it in a business day or two.
           </span>
         </div></li>
         <li>Once ABC approves it, come back to this page, click <strong>Change keys</strong>, and paste the app's keys again with <strong>Sandbox</strong> unticked. Your estimates then use your real prices.</li>

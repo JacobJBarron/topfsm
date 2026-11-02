@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, Navigate, NavLink, Outlet, useLocation, useNavigate, useNavigation, useViewTransitionState } from "react-router-dom";
 import { supabase } from "@/lib/api";
+import { logoUrl } from "@/lib/files";
 import { usePresence } from "@/lib/motion";
 import { isSub, useSession } from "@/lib/session";
 import { prefetchScreens } from "@/routes";
@@ -40,6 +41,14 @@ function useNewRequests() {
     refetchInterval: 60_000,
     meta: { silent: true },
   });
+}
+
+/** The business's logo on white, as clients see it, or its initials when it has none (or it can't load). */
+function BusinessTile({ name, settings }: { name: string; settings: Record<string, unknown> }) {
+  const logo = logoUrl(settings);
+  const [broken, setBroken] = useState<string | null>(null);
+  if (!logo || broken === logo) return <span className="business-tile" aria-hidden="true">{initials(name)}</span>;
+  return <span className="business-tile business-logo" aria-hidden="true"><img src={logo} alt="" draggable={false} onError={() => setBroken(logo)} /></span>;
 }
 
 function useOnline() {
@@ -215,7 +224,7 @@ export function AppShell() {
       <div className="main">
         <header className="topbar" data-scrolled={scrolled || undefined}>
           <div className="business">
-            <span className="business-tile" aria-hidden="true">{initials(session.company.name)}</span>
+            <BusinessTile name={session.company.name} settings={session.company.settings} />
             {session.companies.length > 1 ? (
               <select className="business-name" aria-label="Switch business" value={session.company.id} onChange={(e) => session.switchCompany(e.target.value)}>
                 {session.companies.map((m) => (
