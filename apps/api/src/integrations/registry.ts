@@ -97,7 +97,7 @@ export const CATALOG: CatalogEntry[] = [
     category: "Team",
     description: "Ask happy clients for Google reviews with reminders, and for referrals with a credit on their next invoice, and send email campaigns, automated ones too, with opens, clicks and the work they bring in.",
     auth: "builtin",
-    docs: "https://crewtavo.com/docs/connections/marketing/",
+    docs: "https://crewtavo.com/docs/clients/marketing/",
     available: () => true,
   },
   {
@@ -107,7 +107,7 @@ export const CATALOG: CatalogEntry[] = [
     description: "Bring your Google reviews into Marketing → Reviews: your rating and trend, replies with a suggestion to start from, and no more review asks to clients who already left one.",
     auth: "oauth",
     // Google's prerequisites until Crewtavo's own page for it is written (docs/marketing-plan.md).
-    docs: "https://developers.google.com/my-business/content/prereqs",
+    docs: "https://crewtavo.com/docs/connections/google-business-profile/",
     available: (env) => Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
     appKeys: true,
   },
@@ -117,7 +117,7 @@ export const CATALOG: CatalogEntry[] = [
     category: "Marketing",
     description: "Post job photos and 4 and 5-star reviews to your Facebook Page and Instagram, with your own Meta app.",
     auth: "oauth",
-    docs: "https://developers.facebook.com/docs/development/create-an-app/",
+    docs: "https://crewtavo.com/docs/connections/facebook-and-instagram/",
     // Each business makes its own Meta app: nothing to set up on the server, and nothing it can offer.
     available: () => false,
     appKeys: true,

@@ -360,7 +360,7 @@ export const APP_INFO: Record<string, AppInfo> = {
       "Uninstalling hides Marketing and stops every automatic message it sends to clients, and keeps everything",
     ],
     connectsWith: "Your email and Twilio",
-    website: "https://crewtavo.com/docs/connections/marketing/",
+    website: "https://crewtavo.com/docs/clients/marketing/",
     open: "/marketing",
   },
   google_business: {
@@ -383,8 +383,7 @@ export const APP_INFO: Record<string, AppInfo> = {
       "Uninstalling stops bringing reviews in and keeps the ones already here",
     ],
     connectsWith: "Google sign-in",
-    // Google's own page until Crewtavo's docs page for it is written (docs/marketing-plan.md).
-    website: "https://www.google.com/business/",
+    website: "https://crewtavo.com/docs/connections/google-business-profile/",
     open: "/marketing?tab=reviews",
   },
   meta: {
@@ -405,7 +404,7 @@ export const APP_INFO: Record<string, AppInfo> = {
       "Uninstalling signs your Meta app out of your Page and keeps the posts already made",
     ],
     connectsWith: "Your own Meta app",
-    website: "https://developers.facebook.com/docs/development/create-an-app/",
+    website: "https://crewtavo.com/docs/connections/facebook-and-instagram/",
     open: "/marketing?tab=social",
   },
   google_calendar: {

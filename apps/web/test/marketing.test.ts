@@ -88,7 +88,7 @@ describe("Crewtavo - Marketing in Apps", () => {
     expect(info.developer).toBe("Crewtavo");
     expect(info.highlights.map((h) => h.title)).toEqual(["Reviews", "Referrals", "Campaigns", "Social"]);
     expect(info.access).toContain("Uninstalling hides Marketing and stops every automatic message it sends to clients, and keeps everything");
-    expect(info.website).toBe("https://crewtavo.com/docs/connections/marketing/");
+    expect(info.website).toBe("https://crewtavo.com/docs/clients/marketing/");
   });
 
   it("has Crewtavo's own icon, and installs and uninstalls like the other built-in apps", () => {
@@ -590,8 +590,7 @@ describe("Google Business Profile in Apps", () => {
       "Needs Crewtavo - Marketing",
       "Uninstalling stops bringing reviews in and keeps the ones already here",
     ]));
-    // Google's own pages until Crewtavo's docs page is written.
-    expect(info.website).toBe("https://www.google.com/business/");
+    expect(info.website).toBe("https://crewtavo.com/docs/connections/google-business-profile/");
     expect(source("../src/features/apps/AppIcon.tsx")).toContain("google_business: googleBusinessLogo");
     expect(APPS.keywords).toContain("google reviews google business profile");
   });
