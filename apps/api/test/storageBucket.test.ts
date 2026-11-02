@@ -11,7 +11,7 @@ import type { Env } from "../src/env";
 import { encryptJson } from "../src/lib/crypto";
 import { adminClient } from "../src/lib/supabase";
 import { railwayAccess } from "../src/services/railway";
-import { moveClock, startStorageMove, storageMoveSettled, storageOverview, storageWritesPaused } from "../src/services/storageBucket";
+import { bucketForDrive, moveClock, startStorageMove, storageMoveSettled, storageOverview, storageWritesPaused } from "../src/services/storageBucket";
 import { forgetStorageFacts } from "../src/services/storageUsage";
 
 interface Row {
@@ -981,5 +981,45 @@ describe("the page", () => {
     // The record's own bookkeeping stays on the server.
     expect(overview.move).not.toHaveProperty("lease");
     expect(overview.move).not.toHaveProperty("undo");
+  });
+});
+
+describe("installing Drive", () => {
+  it("makes the bucket with the company's Railway connection, then moves files into it", async () => {
+    const files = onTheVolume();
+    const sent = await serve();
+    await bucketForDrive(env, adminClient(env), "co-1");
+    await storageMoveSettled("co-1");
+    expect(railwayFields(sent).filter((f) => f === "bucketCreate")).toHaveLength(1);
+    expect(saved()).toMatchObject({ direction: "to_bucket", step: "done", bucket: { id: "bkt-new", name: "files" } });
+    for (const f of files) expect(text(storageReads(f)?.body)).toBe(text(world.s3.get(keyOf(f))!.body));
+  });
+
+  it("stops with what to do when Railway isn't connected or won't make the bucket, and moves nothing", async () => {
+    onTheVolume();
+    await serve();
+    railwayStatus = "disconnected";
+    await expect(bucketForDrive(env, adminClient(env), "co-1")).rejects.toThrow("Connect Railway in Settings → Hosting, then press Install again.");
+
+    const sent = await serve({ refuse: ["bucketCreate"] });
+    await expect(bucketForDrive(env, adminClient(env), "co-1")).rejects.toThrow(
+      /^Drive keeps photos and files in a Railway bucket\. Add a bucket in Railway: Open your project in Railway\. .*name it files \(pick the US East region.* Then come back and press Install again\.$/,
+    );
+    expect(state.row).toBeNull();
+    expect(sent.s3).toEqual([]);
+    expect(state.deployed.STORAGE_BACKEND).toBe("file");
+  });
+
+  it("leaves files where they are when they're in a bucket already, or off Railway", async () => {
+    state.vars.STORAGE_BACKEND = "s3";
+    const sent = await serve();
+    await bucketForDrive(env, adminClient(env), "co-1");
+    expect(railwayFields(sent)).not.toContain("bucketCreate");
+    expect(state.row).toBeNull();
+
+    const { RAILWAY_PROJECT_ID: _, RAILWAY_PUBLIC_DOMAIN: __, ...elsewhere } = env;
+    const offRailway = await serve();
+    await bucketForDrive(elsewhere as Env, adminClient(env), "co-1");
+    expect(offRailway.railway).toEqual([]);
   });
 });

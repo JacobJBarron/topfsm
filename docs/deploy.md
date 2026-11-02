@@ -374,6 +374,13 @@ Word documents to read and edit, and photos to zoom; saving an edit always makes
 nothing is written over. A file can be attached to a client's property, request, quote or job (the
 crew sees it there when it's shown to crew), or kept office-only.
 
+On Railway, Drive's files go in a bucket, not the volume (a full volume stops every upload). So
+**Install** first makes the `files` bucket with Crewtavo's Railway connection and starts
+[moving files to it](#moving-files-to-a-bucket); Drive is installed while they copy. When it
+can't (Railway isn't connected in **Settings → Hosting**, or Railway won't let Crewtavo make or
+deploy the bucket), Drive isn't installed, and the page says what to do before pressing
+**Install** again. Off Railway, files stay where storage keeps them.
+
 Uploads go up in 6 MB pieces and carry on where they left off, so a big plan set gets past a proxy
 that caps a request at 100 MB (Cloudflare's free plan does) and survives patchy signal. Storage keeps
 an unfinished upload for a day (`TUS_URL_EXPIRY_MS` on the `storage` service; instances made before
@@ -415,7 +422,7 @@ On Railway, photos and files live on the `storage` service's volume. A Railway s
 them for a tenth of the price ($0.015 per GB a month instead of $0.15) and has no size to outgrow,
 but Railway's Limited Trial has no buckets, and Railway backs up volumes (on Pro) but never buckets.
 So the template keeps the volume, and an owner or admin can move files from **Settings → Hosting →
-Files storage** (`apps/api/src/services/storageBucket.ts`):
+Files storage** (`apps/api/src/services/storageBucket.ts`); installing Drive does it too:
 
 1. Crewtavo makes a bucket named `files` in the project, in the region the services run in.
 2. It copies every file into it, a few at a time, skipping any already there, then copies whatever

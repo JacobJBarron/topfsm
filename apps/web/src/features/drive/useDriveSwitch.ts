@@ -20,8 +20,9 @@ export function useDriveSwitch() {
       queryClient.invalidateQueries({ queryKey: ["drive"] });
       return res;
     },
-    // Installing shows on the page itself (its ring, then Uninstall).
-    meta: { success: (res: { enabled: boolean }) => (res.enabled ? null : "Drive uninstalled") },
+    // Installing shows on the page itself (its ring, then Uninstall), and so do errors: on Railway,
+    // what to do when Drive's bucket couldn't be made.
+    meta: { success: (res: { enabled: boolean }) => (res.enabled ? null : "Drive uninstalled"), inline: true },
   });
   const turnOff = async () => {
     const ok = await confirm({

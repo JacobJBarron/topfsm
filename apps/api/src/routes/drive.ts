@@ -5,6 +5,7 @@
  * restores them itself, under row-level security. These routes do what the browser can't:
  *
  *   POST /api/drive/enabled                  Install and Uninstall (owners and admins who connect apps)
+ *                                            (on Railway, Install makes the files bucket first)
  *   POST /api/drive/import                   files picked in Google Drive, brought into a folder or onto
  *                                            a client's property, request, quote or job
  *   POST /api/drive/trash/:id/to-drive       a file from elsewhere in Crewtavo (a visit photo, a
@@ -36,6 +37,7 @@ import { reportError } from "../lib/monitoring";
 import { reserveStorage, snapshotsFrom } from "../lib/storageLimits";
 import { adminClient, type Db } from "../lib/supabase";
 import { inCompany, removeStored } from "../services/planFiles";
+import { bucketForDrive } from "../services/storageBucket";
 import { UPLOAD_LIMIT } from "../services/uploads";
 
 export const drive = new Hono<AppEnv>();
@@ -49,6 +51,8 @@ const OWNERS: readonly Role[] = ["owner"];
 
 drive.post("/drive/enabled", requireUser, requireCompany(ADMINS, "apps"), async (c) => {
   const body = await readJson(c, z.object({ enabled: z.boolean() }));
+  // On Railway, Drive's files go in a bucket: made now, or Drive isn't installed (services/storageBucket.ts).
+  if (body.enabled) await bucketForDrive(c.env, adminClient(c.env), c.var.companyId);
   const { error } = await c.var.db.rpc("drive_set_enabled", { p_company: c.var.companyId, p_enabled: body.enabled });
   if (error) throw dbError(error);
   return c.json({ enabled: body.enabled });

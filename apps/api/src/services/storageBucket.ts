@@ -92,7 +92,7 @@ import {
 } from "../integrations/railway";
 import { forgetHosting } from "./hosting";
 import { railwayAccess } from "./railway";
-import { forgetStorageFacts, keepStorageDefault } from "./storageUsage";
+import { forgetStorageFacts, keepStorageDefault, onRailway } from "./storageUsage";
 
 /** The integrations row a move's progress is kept on (one per company; never shown on the Apps page). */
 const PROVIDER = "railway_storage";
@@ -603,7 +603,8 @@ class Move {
     if (this.layout.backend === "bucket") throw new Stop("Files are already in a bucket.");
     if (!this.layout.folder) throw new Stop("Crewtavo can't tell which folder on the volume storage keeps files in (GLOBAL_S3_BUCKET isn't set on it), so files have to be moved by hand.");
     await this.update({ step: "bucket", folder: this.layout.folder });
-    const bucket = await this.findOrMakeBucket(r.bucket);
+    const bucket = await findOrMakeBucket(this.env, (call) => this.railway(call), this.storageId, r.bucket, CARRY_ON);
+    if (!("id" in bucket)) return this.park(bucket);
     await this.update({ bucket });
     this.store = await this.bucketStore(bucket);
     await this.update({ step: "copying" });
@@ -611,41 +612,6 @@ class Move {
     await this.copyUntilCaughtUp();
     await this.switchTo("bucket");
     await this.checkBucket();
-  }
-
-  /** The bucket a last move used (moving again after moving back), else one named FILES_BUCKET (made by hand, say), else a new one. */
-  private async findOrMakeBucket(known: RailwayBucket | null): Promise<RailwayBucket> {
-    const buckets = await this.railway((access) => projectBuckets(this.env, access)).catch((error) => (refused(error) ? null : Promise.reject(error)));
-    const found = (known && (buckets ? buckets.find((b) => b.id === known.id) : known)) || buckets?.find((b) => b.name === FILES_BUCKET);
-    if (found) return found;
-    const region = bucketRegion(await this.railway((access) => serviceRegion(this.env, access, this.storageId)).catch((error) => (error instanceof NoAccess ? Promise.reject(error) : null)));
-    let bucket: RailwayBucket;
-    try {
-      bucket = await this.railway((access) => createBucket(this.env, access, FILES_BUCKET));
-    } catch (error) {
-      if (!refused(error)) throw error;
-      return this.park({
-        title: "Add a bucket in Railway",
-        steps: [
-          "Open your project in Railway.",
-          `Press Create, choose Bucket, and name it ${FILES_BUCKET}${region ? ` (pick the ${REGION_NAMES[region]} region, where your services run)` : ""}.`,
-          "Press Deploy to add it.",
-          "Come back here and press Carry on. Crewtavo finds the bucket and does the rest.",
-        ],
-        link: railwayPage(this.env),
-        watching: false,
-      });
-    }
-    await this.update({ bucket });
-    let deployed: "deployed" | "staged";
-    try {
-      deployed = await this.railway((access) => deployBucket(this.env, access, bucket.id, region));
-    } catch (error) {
-      if (!refused(error)) throw error;
-      deployed = "staged";
-    }
-    if (deployed === "staged") return this.park(DEPLOY_BUCKET(this.env));
-    return bucket;
   }
 
   /** The bucket's S3 keys: a new bucket can take a minute before Railway has them. */
@@ -1521,16 +1487,54 @@ class Move {
 
 const REGION_NAMES: Record<string, string> = { sjc: "US West", iad: "US East", ams: "EU West", sin: "Southeast Asia" };
 
-const DEPLOY_BUCKET = (env: Env): StorageByHand => ({
+/** The last step of the steps below, on Settings → Hosting. */
+const CARRY_ON = "Come back here and press Carry on.";
+
+const DEPLOY_BUCKET = (env: Env, then = CARRY_ON): StorageByHand => ({
   title: "Deploy the new bucket in Railway",
-  steps: [
-    "Open your project in Railway. The files bucket is waiting there to be deployed, maybe with other changes someone made.",
-    "Check the changes, then press Deploy.",
-    "Come back here and press Carry on.",
-  ],
+  steps: ["Open your project in Railway. The files bucket is waiting there to be deployed, maybe with other changes someone made.", "Check the changes, then press Deploy.", then],
   link: railwayPage(env),
   watching: false,
 });
+
+type RailwayCall = <T>(call: (access: RailwayAccess) => Promise<T>) => Promise<T>;
+
+/**
+ * The bucket a last move used (moving again after moving back), else one named FILES_BUCKET (made
+ * by hand, say), else a new one put in this environment near storage; or the steps to do in
+ * Railway when it doesn't let Crewtavo make or deploy it, ending with `then`.
+ */
+async function findOrMakeBucket(env: Env, railway: RailwayCall, storageId: string, known: RailwayBucket | null, then: string): Promise<RailwayBucket | StorageByHand> {
+  const buckets = await railway((access) => projectBuckets(env, access)).catch((error) => (refused(error) ? null : Promise.reject(error)));
+  const found = (known && (buckets ? buckets.find((b) => b.id === known.id) : known)) || buckets?.find((b) => b.name === FILES_BUCKET);
+  if (found) return found;
+  const region = bucketRegion(await railway((access) => serviceRegion(env, access, storageId)).catch((error) => (error instanceof NoAccess ? Promise.reject(error) : null)));
+  let bucket: RailwayBucket;
+  try {
+    bucket = await railway((access) => createBucket(env, access, FILES_BUCKET));
+  } catch (error) {
+    if (!refused(error)) throw error;
+    return {
+      title: "Add a bucket in Railway",
+      steps: [
+        "Open your project in Railway.",
+        `Press Create, choose Bucket, and name it ${FILES_BUCKET}${region ? ` (pick the ${REGION_NAMES[region]} region, where your services run)` : ""}.`,
+        "Press Deploy to add it.",
+        then,
+      ],
+      link: railwayPage(env),
+      watching: false,
+    };
+  }
+  let deployed: "deployed" | "staged";
+  try {
+    deployed = await railway((access) => deployBucket(env, access, bucket.id, region));
+  } catch (error) {
+    if (!refused(error)) throw error;
+    deployed = "staged";
+  }
+  return deployed === "staged" ? DEPLOY_BUCKET(env, then) : bucket;
+}
 
 /** Runs `work` on each item, PARALLEL at a time. */
 async function inParallel<T>(items: T[], work: (item: T) => Promise<void>): Promise<void> {
@@ -1698,6 +1702,33 @@ export async function startStorageMove(env: Env, admin: Db, companyId: string, d
   if (!(await claim(admin, companyId, record, previous?.lease ?? null))) throw new HttpError(409, "Files are already moving. Settings → Hosting shows how far along it is.");
   launch(env, admin, companyId, instance, record);
   return storageOverview(env, admin, companyId);
+}
+
+/**
+ * Installing Drive (routes/drive.ts) on Railway: Drive's files go in a bucket, never the volume,
+ * which stops every upload once it's full. So this makes the bucket with the company's Railway
+ * connection and starts moving files into it, as Settings → Hosting does; when it can't, it throws
+ * what to do instead, and Drive isn't installed. Off Railway, or with storage that isn't Crewtavo's
+ * own (no JWT_SECRET), there's no volume to leave.
+ */
+export async function bucketForDrive(env: Env, admin: Db, companyId: string): Promise<void> {
+  if (!onRailway(env) || !stackServices(env as unknown as Record<string, string | undefined>)) return;
+  const access = await railwayAccess(env, admin, companyId);
+  if (!access) throw new HttpError(400, "Drive keeps photos and files in a Railway bucket, which Crewtavo makes with your Railway account. Connect Railway in Settings → Hosting, then press Install again.");
+  const record = await readRecord(admin, companyId);
+  if (record && storageMoving(record) && !parked(record)) {
+    if (record.direction === "to_bucket") return;
+    throw new HttpError(409, "Files are moving back to the volume. Once that's finished (Settings → Hosting shows how far along it is), press Install again.");
+  }
+  const storageId = await serviceIdByName(env, access, "storage").catch(rethrowPlain);
+  if (!storageId) throw new HttpError(400, "Crewtavo can't find the storage service in this Railway project, so it can't make Drive's bucket. It's named storage in the template: put the name back in Railway, then press Install again.");
+  if (layoutOf(await serviceVariables(env, access, storageId).catch(rethrowPlain)).backend === "bucket") return;
+  const instance = instanceOf(env);
+  if (typeof instance === "string") throw new HttpError(400, instance);
+  const bucket = await findOrMakeBucket(env, (call) => call(access), storageId, record?.bucket ?? null, "Then come back and press Install again.").catch(rethrowPlain);
+  if (!("id" in bucket)) throw new HttpError(409, `Drive keeps photos and files in a Railway bucket. ${bucket.title}: ${bucket.steps.join(" ")}`);
+  // The move finds the bucket by its name and carries on from there.
+  await startStorageMove(env, admin, companyId, "to_bucket");
 }
 
 const NO_VOLUME = "The storage service has no volume any more, so files can't move back to one: storage would keep them where they're lost at its next restart. Add a volume to it in Railway, mounted at /var/lib/storage, then try again.";

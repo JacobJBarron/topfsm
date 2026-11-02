@@ -364,6 +364,13 @@ function AppListing({ app, all, mcpUrl }: { app: AppRow; all: AppRow[]; mcpUrl: 
       )}
 
       {/* ---- Installing it ---- */}
+      {/* Installing Drive on Railway makes its bucket first, and says what to do when it can't. */}
+      {app.id === "drive" && driveSwitch.toggle.error && (
+        <div className="callout callout-warning" role="alert">
+          <Icon name="alert" size={20} />
+          <div className="grow">{driveSwitch.toggle.error.message} <Link to="/settings?tab=hosting">Settings → Hosting</Link></div>
+        </div>
+      )}
       {!installed && unavailable && <NotAvailable app={app} />}
       {needsMarketing && !unavailable && (
         <div className="callout" role="note">

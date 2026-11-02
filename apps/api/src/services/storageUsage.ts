@@ -49,7 +49,7 @@ export interface StorageFactsHint {
 /** Railway is read again for the default after this long; "Check again", the tasks and a finished move don't wait. */
 const FACTS_MS = 5 * 60_000;
 
-const onRailway = (env: Env) => env.CREWTAVO_SINGLE_COMPANY === "1" && platformOf(env) === "railway";
+export const onRailway = (env: Env) => env.CREWTAVO_SINGLE_COMPANY === "1" && platformOf(env) === "railway";
 
 const planOf = (plan: string | null | undefined): RailwayPlan | null => {
   const name = (plan ?? "").toLowerCase();
